@@ -13,6 +13,7 @@ build/
 # Data / generated files
 storage/uploads/
 storage/jobs/
+storage/knowledge/
 *.xlsx
 *.xls
 *.csv

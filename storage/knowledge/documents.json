@@ -48,5 +48,25 @@
     "chunk_count": 1,
     "indexed": true,
     "index_error": null
+  },
+  {
+    "doc_id": "732b11d878b34291ac722bfdd0dac05a",
+    "filename": "scenario_prediction_ml_knowledge.md",
+    "file_type": "md",
+    "raw_path": "storage\\knowledge\\raw\\732b11d878b34291ac722bfdd0dac05a\\scenario_prediction_ml_knowledge.md",
+    "created_at": "2026-05-27T08:45:23.267133+00:00",
+    "chunk_count": 3,
+    "indexed": true,
+    "index_error": null
+  },
+  {
+    "doc_id": "188974b196794a188bd38c19d385aa5c",
+    "filename": "scenario_prediction_explanation_guidelines.md",
+    "file_type": "md",
+    "raw_path": "storage\\knowledge\\raw\\188974b196794a188bd38c19d385aa5c\\scenario_prediction_explanation_guidelines.md",
+    "created_at": "2026-05-27T08:45:31.806434+00:00",
+    "chunk_count": 2,
+    "indexed": true,
+    "index_error": null
   }
 ]
