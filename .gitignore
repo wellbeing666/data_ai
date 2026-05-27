@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Node
+node_modules/
+dist/
+build/
+
+# Data / generated files
+storage/uploads/
+storage/jobs/
+*.xlsx
+*.xls
+*.csv
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,99 @@
+{
+  "dataset_id": "prediction_smoke_sales",
+  "filename": "sales.csv",
+  "file_type": "csv",
+  "file_path": "storage\\uploads\\prediction_smoke_sales\\sales.csv",
+  "profile_path": "storage\\uploads\\prediction_smoke_sales\\profile.json",
+  "row_count": 10,
+  "column_count": 4,
+  "columns": [
+    "商品",
+    "销量",
+    "营销预算",
+    "价格"
+  ],
+  "dtypes": {
+    "商品": "object",
+    "销量": "int64",
+    "营销预算": "int64",
+    "价格": "float64"
+  },
+  "missing_values": {
+    "商品": {
+      "count": 0,
+      "ratio": 0.0
+    },
+    "销量": {
+      "count": 0,
+      "ratio": 0.0
+    },
+    "营销预算": {
+      "count": 0,
+      "ratio": 0.0
+    },
+    "价格": {
+      "count": 0,
+      "ratio": 0.0
+    }
+  },
+  "numeric_summary": {
+    "销量": {
+      "min": 75,
+      "max": 300,
+      "mean": 161.5
+    },
+    "营销预算": {
+      "min": 10,
+      "max": 80,
+      "mean": 35.4
+    },
+    "价格": {
+      "min": 7.5,
+      "max": 18.0,
+      "mean": 11.580000000000002
+    }
+  },
+  "text_summary": {
+    "商品": {
+      "unique_values": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E"
+      ]
+    }
+  },
+  "sample_rows": [
+    {
+      "商品": "A",
+      "销量": 120,
+      "营销预算": 20,
+      "价格": 9.9
+    },
+    {
+      "商品": "B",
+      "销量": 180,
+      "营销预算": 45,
+      "价格": 12.5
+    },
+    {
+      "商品": "C",
+      "销量": 90,
+      "营销预算": 12,
+      "价格": 8.8
+    },
+    {
+      "商品": "D",
+      "销量": 240,
+      "营销预算": 60,
+      "价格": 15.0
+    },
+    {
+      "商品": "E",
+      "销量": 160,
+      "营销预算": 30,
+      "价格": 11.0
+    }
+  ]
+}

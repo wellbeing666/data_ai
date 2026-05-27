@@ -1,0 +1,52 @@
+[
+  {
+    "doc_id": "30dc420d9891433881593c9cc8e098ed",
+    "filename": "chart_selection_guidelines.md",
+    "file_type": "md",
+    "raw_path": "storage\\knowledge\\raw\\30dc420d9891433881593c9cc8e098ed\\chart_selection_guidelines.md",
+    "created_at": "2026-05-26T10:35:14.050050+00:00",
+    "chunk_count": 1,
+    "indexed": true,
+    "index_error": null
+  },
+  {
+    "doc_id": "7cffe1fbc0524a5fb5db88b49b7fcc5b",
+    "filename": "data_quality_checks.md",
+    "file_type": "md",
+    "raw_path": "storage\\knowledge\\raw\\7cffe1fbc0524a5fb5db88b49b7fcc5b\\data_quality_checks.md",
+    "created_at": "2026-05-26T10:35:22.469227+00:00",
+    "chunk_count": 1,
+    "indexed": true,
+    "index_error": null
+  },
+  {
+    "doc_id": "c90aaadcff4f4df494ff51e20b0582f8",
+    "filename": "grade_analysis_metrics.md",
+    "file_type": "md",
+    "raw_path": "storage\\knowledge\\raw\\c90aaadcff4f4df494ff51e20b0582f8\\grade_analysis_metrics.md",
+    "created_at": "2026-05-26T10:35:22.496572+00:00",
+    "chunk_count": 1,
+    "indexed": true,
+    "index_error": null
+  },
+  {
+    "doc_id": "c838f90ac001462190db7e2a09074d68",
+    "filename": "report_and_ppt_style.md",
+    "file_type": "md",
+    "raw_path": "storage\\knowledge\\raw\\c838f90ac001462190db7e2a09074d68\\report_and_ppt_style.md",
+    "created_at": "2026-05-26T10:35:22.525678+00:00",
+    "chunk_count": 1,
+    "indexed": true,
+    "index_error": null
+  },
+  {
+    "doc_id": "d0011d0badcf4fe89a9d9de4550d804d",
+    "filename": "sales_decline_analysis.md",
+    "file_type": "md",
+    "raw_path": "storage\\knowledge\\raw\\d0011d0badcf4fe89a9d9de4550d804d\\sales_decline_analysis.md",
+    "created_at": "2026-05-26T10:35:22.558168+00:00",
+    "chunk_count": 1,
+    "indexed": true,
+    "index_error": null
+  }
+]
