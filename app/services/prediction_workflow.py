@@ -125,12 +125,19 @@ def run_prediction_job(
 
     def progress(stage: str, message: str) -> None:
         events.append(create_event(stage, "running", message))
+        write_stage_snapshot(stage)
+
+    def existing_job_file(filename: str) -> str | None:
+        path = job_dir / filename
+        return str(path) if path.exists() else None
+
+    def write_stage_snapshot(stage: str, status_value: str = "running") -> None:
         _write_progress(
             job_dir=job_dir,
             job_id=job_id,
             dataset_id=dataset_id,
             user_goal=user_goal,
-            status_value="running",
+            status_value=status_value,
             current_stage=stage,
             attempts=attempts,
             events=events,
@@ -140,6 +147,10 @@ def run_prediction_job(
             final_report_data_path=final_report_data_path,
             final_validation_result_path=final_validation_result_path,
             prediction_explanation_path=prediction_explanation_path,
+            dataset_profile_path=existing_job_file("dataset_profile.json"),
+            rag_retrieval_path=existing_job_file("rag_retrieval.json"),
+            hypothesis_plan_path=existing_job_file("hypothesis_plan.json"),
+            prediction_plan_path=existing_job_file("prediction_plan.json"),
         )
 
     progress("loading_dataset", "正在读取上传数据并生成数据画像。")
@@ -184,6 +195,7 @@ def run_prediction_job(
 
     for attempt in range(1, total_attempts + 1):
         events.append(create_event("code_generation", "running", f"预测 Code Agent 正在生成第 {attempt} 次脚本。", attempt=attempt))
+        write_stage_snapshot("code_generation")
         script_path = job_dir / f"generated_prediction_script_attempt_{attempt}.py"
         script_code = code_agent.generate_script(
             input_file=str(input_file),
@@ -211,6 +223,7 @@ def run_prediction_job(
             "severity": "unknown",
         }
         attempts.append(attempt_result)
+        events.append(create_event("code_generation", "success", f"预测 Code Agent 已生成第 {attempt} 次脚本。", attempt=attempt))
         _write_progress(
             job_dir=job_dir,
             job_id=job_id,
@@ -228,13 +241,18 @@ def run_prediction_job(
             prediction_plan_path=str(job_dir / "prediction_plan.json"),
         )
 
+        events.append(create_event("code_safety", "running", f"正在对第 {attempt} 次预测脚本进行静态安全检查。", attempt=attempt))
+        write_stage_snapshot("code_safety")
         safety_issues = validate_script_static_safety(script_path=script_path, input_file=input_file, output_dir=job_dir)
         safety_result = {"passed": not bool(safety_issues), "issues": safety_issues}
         _write_json(safety_attempt_path, safety_result)
+        events.append(create_event("code_safety", "success" if safety_result["passed"] else "failed", "静态安全检查通过。" if safety_result["passed"] else "静态安全检查失败，准备进入修复循环。", attempt=attempt))
         if safety_issues:
             execution_result = _static_safety_failure(job_id, script_path, input_file, job_dir, safety_issues)
             _write_json(job_dir / "execution_result.json", execution_result)
             shutil.copy2(job_dir / "execution_result.json", execution_attempt_path)
+            events.append(create_event("validation", "running", f"预测验证 Agent 正在检查第 {attempt} 次安全失败结果。", attempt=attempt))
+            write_stage_snapshot("validation")
             validation_result = validate_prediction_outputs(job_id)
             shutil.copy2(job_dir / "prediction_validation_result.json", validation_attempt_path)
             attempt_result.update(
@@ -252,6 +270,7 @@ def run_prediction_job(
             continue
 
         events.append(create_event("sandbox", "running", f"沙箱正在执行第 {attempt} 次预测脚本。", attempt=attempt))
+        write_stage_snapshot("sandbox")
         execution_result = sandbox_executor.execute(
             generated_script_path=str(script_path),
             input_file=str(input_file),
@@ -262,6 +281,7 @@ def run_prediction_job(
         events.append(create_event("sandbox", "success" if execution_result.get("success") else "failed", "沙箱已完成预测脚本执行。", attempt=attempt))
 
         events.append(create_event("validation", "running", f"预测验证 Agent 正在检查第 {attempt} 次产物。", attempt=attempt))
+        write_stage_snapshot("validation")
         validation_result = validate_prediction_outputs(job_id)
         shutil.copy2(job_dir / "prediction_validation_result.json", validation_attempt_path)
         attempt_result.update(

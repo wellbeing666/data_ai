@@ -25,6 +25,7 @@ import {
 import type {
   AnalysisResult,
   AutoRepairAnalysisJobResponse,
+  AutoRepairAttemptResult,
   DatasetProfile,
   DatasetUploadResponse,
   ExecutionAttemptLog,
@@ -54,6 +55,44 @@ interface StepView {
   stageNames: string[];
   status: "pending" | "active" | "done" | "failed";
   summary: string;
+}
+
+type ArtifactKind =
+  | "visual"
+  | "rag"
+  | "controller"
+  | "understanding"
+  | "analysis"
+  | "hypothesis"
+  | "prediction_plan"
+  | "code"
+  | "execution"
+  | "validation"
+  | "explanation"
+  | "generic";
+
+interface AgentCardView extends StepView {
+  agentName: string;
+  inputSource: string;
+  action: string;
+  evidence: string[];
+  output: string;
+  artifactKind: ArtifactKind;
+  artifactLabel?: string;
+  artifactPath?: string | null;
+  raw?: unknown;
+}
+
+interface AttemptProgressView {
+  attempt: number;
+  codeStatus?: string;
+  safetyStatus?: string;
+  sandboxStatus?: string;
+  validationStatus?: string;
+  repairStatus?: string;
+  attemptResult?: AutoRepairAttemptResult;
+  execution?: ExecutionAttemptLog;
+  validation?: ValidationAttemptLog;
 }
 
 const emptyExplanation: ExplanationResult = {
@@ -207,10 +246,8 @@ export default function App() {
 
   const isFallbackMode = !health?.deepseek_configured || health.llm_mode !== "deepseek";
   const isPredictionWorkflow = job?.workflow_type === "what_if_prediction" || job?.task_type === "what_if_prediction";
-  const events = executionLog?.events?.length ? executionLog.events : job?.events ?? [];
+  const events = mergeWorkflowEvents(job?.events, executionLog?.events);
   const chartPaths = isPredictionWorkflow ? predictionResult?.charts ?? [] : getChartPaths(analysisResult);
-  const latestValidation = lastItem(executionLog?.validation_results);
-  const latestExecution = lastItem(executionLog?.execution_results);
 
   const steps = useMemo(
     () => {
@@ -655,6 +692,7 @@ export default function App() {
           {activePage === "process" ? (
             <ProcessPage
               job={job}
+              log={executionLog}
               steps={steps}
               controllerPlan={controllerPlan}
               ragRetrieval={ragRetrieval}
@@ -663,24 +701,26 @@ export default function App() {
               analysisPlan={analysisPlan}
               hypothesisPlan={hypothesisPlan}
               predictionPlan={predictionPlan}
+              explanation={isPredictionWorkflow ? toExplanationResult(predictionExplanation) : normalizeExplanationResult(explanation)}
               isPredictionWorkflow={isPredictionWorkflow}
               events={events}
             />
           ) : null}
 
           {activePage === "charts" ? (
-            <ChartsPage analysisResult={analysisResult} chartPaths={chartPaths} />
+            <ChartsPage analysisResult={analysisResult} chartPaths={chartPaths} job={job} />
           ) : null}
 
           {activePage === "insights" ? (
             <InsightsPage
-              explanation={isPredictionWorkflow ? toExplanationResult(predictionExplanation) : explanation}
+              explanation={isPredictionWorkflow ? toExplanationResult(predictionExplanation) : normalizeExplanationResult(explanation)}
               report={isPredictionWorkflow ? null : report}
+              job={job}
             />
           ) : null}
 
           {activePage === "logs" ? (
-            <LogsPage job={job} events={events} latestExecution={latestExecution} latestValidation={latestValidation} />
+            <LogsPage job={job} log={executionLog} events={events} />
           ) : null}
         </section>
       </section>
@@ -1019,13 +1059,13 @@ function PredictionPage({
         <JsonSummary title="假设解析 Agent 输出" value={hypothesisPlan} />
         <JsonSummary title="预测计划 Agent 输出" value={predictionPlan} />
       </div>
-      <RecentEvents events={events} />
     </section>
   );
 }
 
 function ProcessPage({
   job,
+  log,
   steps,
   controllerPlan,
   ragRetrieval,
@@ -1034,10 +1074,12 @@ function ProcessPage({
   analysisPlan,
   hypothesisPlan,
   predictionPlan,
+  explanation,
   isPredictionWorkflow,
   events
 }: {
   job: WorkflowJobResponse | null;
+  log: WorkflowLogResponse | null;
   steps: StepView[];
   controllerPlan: AnyRecord | null;
   ragRetrieval: AnyRecord | null;
@@ -1046,53 +1088,522 @@ function ProcessPage({
   analysisPlan: AnyRecord | null;
   hypothesisPlan: AnyRecord | null;
   predictionPlan: AnyRecord | null;
+  explanation: ExplanationResult;
   isPredictionWorkflow: boolean;
   events: ExecutionLogEvent[];
 }) {
+  const cards = buildAgentCards({
+    job,
+    log,
+    steps,
+    controllerPlan,
+    ragRetrieval,
+    visualParseResult,
+    dataUnderstanding,
+    analysisPlan,
+    hypothesisPlan,
+    predictionPlan,
+    explanation,
+    isPredictionWorkflow
+  });
+  const attemptViews = buildAttemptProgressViews({
+    job,
+    log,
+    events
+  });
+
   return (
     <section className="page-section">
       <div className="section-heading">
-        <h2>Agent 工作过程</h2>
-        {job ? <span>Job {job.job_id}</span> : <span>等待任务启动</span>}
+        <h2>Agent 对话过程</h2>
+        {job ? <span>{workflowLabel(job.workflow_type || job.task_type)} · Job {job.job_id}</span> : <span>等待任务启动</span>}
       </div>
-      <div className="agent-timeline">
-        {steps.map((step) => (
-          <article className={`agent-step ${step.status}`} key={step.key}>
-            <span className="agent-dot" />
-            <div>
-              <strong>{step.title}</strong>
-              <p>{step.summary}</p>
-            </div>
-          </article>
-        ))}
-      </div>
-      <div className="agent-output-grid">
-        <JsonSummary title="主控 Agent 输出" value={controllerPlan} />
-        <JsonSummary title="RAG 命中上下文" value={ragRetrieval} />
-        <JsonSummary title="视觉解析 Agent 输出" value={visualParseResult as AnyRecord | null} />
-        {isPredictionWorkflow ? (
-          <>
-            <JsonSummary title="假设解析 Agent 输出" value={hypothesisPlan} />
-            <JsonSummary title="预测计划 Agent 输出" value={predictionPlan} />
-          </>
+      <div className="agent-chat-list">
+        {cards.length ? (
+          cards.map((card) => <AgentMessageCard card={card} key={card.key} />)
         ) : (
-          <>
-            <JsonSummary title="数据理解 Agent 输出" value={dataUnderstanding} />
-            <JsonSummary title="分析 Agent 输出" value={analysisPlan} />
-          </>
+          <EmptyState title="等待 Agent 接入" text="任务启动后，实际参与工作的 Agent 会按执行顺序逐个出现在这里。" compact />
         )}
       </div>
-      <RecentEvents events={events} />
+      <AttemptProgressSection attempts={attemptViews} isPredictionWorkflow={isPredictionWorkflow} />
     </section>
+  );
+}
+
+function AgentMessageCard({ card }: { card: AgentCardView }) {
+  return (
+    <article className={`agent-message-card ${card.status}`}>
+      <div className="agent-avatar">{agentInitial(card.agentName)}</div>
+      <div className="agent-message-body">
+        <div className="agent-message-head">
+          <div>
+            <strong>{card.agentName}</strong>
+            <span>{card.title}</span>
+          </div>
+          <span className={`agent-status-badge ${card.status}`}>{stepStatusLabel(card.status)}</span>
+        </div>
+
+        <dl className="agent-detail-grid">
+          <div>
+            <dt>输入来源</dt>
+            <dd>{card.inputSource}</dd>
+          </div>
+          <div>
+            <dt>当前动作</dt>
+            <dd>{card.action}</dd>
+          </div>
+          <div>
+            <dt>输出摘要</dt>
+            <dd>{card.output}</dd>
+          </div>
+        </dl>
+
+        {card.evidence.length ? (
+          <div className="agent-evidence">
+            <span>可审计依据</span>
+            <ul>
+              {card.evidence.map((item, index) => (
+                <li key={`${card.key}-evidence-${index}`}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        <ArtifactSummary card={card} />
+
+        {card.artifactPath ? (
+          <a className="artifact-link" href={toStorageUrl(card.artifactPath)} target="_blank" rel="noreferrer">
+            查看产物：{card.artifactLabel ?? shortPath(card.artifactPath)}
+          </a>
+        ) : null}
+
+        <RawJsonDetails value={card.raw} title="查看原始输出" />
+      </div>
+    </article>
+  );
+}
+
+function AttemptProgressSection({
+  attempts,
+  isPredictionWorkflow
+}: {
+  attempts: AttemptProgressView[];
+  isPredictionWorkflow: boolean;
+}) {
+  if (!attempts.length) {
+    return null;
+  }
+  return (
+    <section className="attempt-section">
+      <div className="section-heading">
+        <h2>{isPredictionWorkflow ? "预测脚本生成与验证" : "代码生成与验证"}</h2>
+        <span>{attempts.length} 次尝试</span>
+      </div>
+      <div className="attempt-list">
+        {attempts.map((attempt) => (
+          <AttemptProgressCard attempt={attempt} key={attempt.attempt} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function AttemptProgressCard({ attempt }: { attempt: AttemptProgressView }) {
+  const validationIssues = attempt.validation?.issues ?? [];
+  const repairSuggestions = attempt.validation?.repair_suggestions ?? [];
+  return (
+    <article className="attempt-card">
+      <div className="attempt-card-head">
+        <strong>第 {attempt.attempt} 次尝试</strong>
+        <span className={`agent-status-badge ${attemptStatusClass(attempt)}`}>
+          {attemptStatusText(attempt)}
+        </span>
+      </div>
+      <div className="attempt-stage-row">
+        <AttemptStage label="脚本生成" status={attempt.codeStatus} />
+        <AttemptStage label="安全检查" status={attempt.safetyStatus} />
+        <AttemptStage label="沙箱执行" status={attempt.sandboxStatus} />
+        <AttemptStage label="结果验证" status={attempt.validationStatus} />
+      </div>
+
+      <dl className="compact-list attempt-meta">
+        <div>
+          <dt>脚本路径</dt>
+          <dd>{attempt.attemptResult?.script_path ? shortPath(attempt.attemptResult.script_path) : "生成中或等待生成"}</dd>
+        </div>
+        <div>
+          <dt>执行结果</dt>
+          <dd>{attempt.execution ? (attempt.execution.success ? "执行成功" : "执行失败") : "等待执行"}</dd>
+        </div>
+        <div>
+          <dt>验证结果</dt>
+          <dd>{attempt.validation ? (attempt.validation.passed ? "验证通过" : `验证未通过，严重级别 ${severityLabel(attempt.validation.severity)}`) : "等待验证"}</dd>
+        </div>
+      </dl>
+
+      {validationIssues.length ? (
+        <IssueList title="验证发现的问题" items={validationIssues} />
+      ) : null}
+      {repairSuggestions.length ? (
+        <IssueList title="修复建议" items={repairSuggestions} />
+      ) : null}
+      {attempt.attemptResult?.safety_issues?.length ? (
+        <ChipList title="安全检查问题" items={attempt.attemptResult.safety_issues} tone="warning" />
+      ) : null}
+    </article>
+  );
+}
+
+function AttemptStage({ label, status }: { label: string; status?: string }) {
+  return (
+    <div className={`attempt-stage ${attemptStageClass(status)}`}>
+      <span>{label}</span>
+      <strong>{attemptStageText(status)}</strong>
+    </div>
+  );
+}
+
+function IssueList({ title, items }: { title: string; items: Array<Record<string, unknown>> }) {
+  if (!items.length) {
+    return null;
+  }
+  return (
+    <div className="issue-list">
+      <span>{title}</span>
+      {items.map((item, index) => (
+        <article key={`${title}-${index}`}>
+          <strong>{stringValue(item.issue_type ?? item.target_agent, `问题 ${index + 1}`)}</strong>
+          <p>{stringValue(item.message, formatListItem(item))}</p>
+          {item.location ? <small>{String(item.location)}</small> : null}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function ArtifactSummary({ card }: { card: AgentCardView }) {
+  if (!card.raw) {
+    return <p className="agent-muted">等待该 Agent 生成输出。</p>;
+  }
+
+  if (card.artifactKind === "visual") {
+    return <VisualArtifactSummary value={card.raw as VisualParseResult} />;
+  }
+  if (card.artifactKind === "rag") {
+    return <RagArtifactSummary value={card.raw as AnyRecord} />;
+  }
+  if (card.artifactKind === "controller") {
+    return <ControllerArtifactSummary value={card.raw as AnyRecord} />;
+  }
+  if (card.artifactKind === "understanding") {
+    return <UnderstandingArtifactSummary value={card.raw as AnyRecord} />;
+  }
+  if (card.artifactKind === "analysis") {
+    return <AnalysisPlanArtifactSummary value={card.raw as AnyRecord} />;
+  }
+  if (card.artifactKind === "hypothesis") {
+    return <HypothesisArtifactSummary value={card.raw as AnyRecord} />;
+  }
+  if (card.artifactKind === "prediction_plan") {
+    return <PredictionPlanArtifactSummary value={card.raw as AnyRecord} />;
+  }
+  if (card.artifactKind === "execution") {
+    return <ExecutionArtifactSummary value={card.raw as ExecutionAttemptLog} />;
+  }
+  if (card.artifactKind === "validation") {
+    return <ValidationArtifactSummary value={card.raw as ValidationAttemptLog} />;
+  }
+  if (card.artifactKind === "explanation") {
+    return <ExplanationArtifactSummary value={card.raw as ExplanationResult} />;
+  }
+  return <GenericArtifactSummary value={card.raw} />;
+}
+
+function ControllerArtifactSummary({ value }: { value: AnyRecord }) {
+  return (
+    <div className="artifact-summary">
+      <KeyValueGrid
+        items={[
+          ["任务类型", stringValue(value.task_type, "-")],
+          ["任务名称", stringValue(value.task_name, "-")],
+          ["分流结果", workflowLabel(value.task_type)]
+        ]}
+      />
+      <SummaryParagraph label="判断依据" text={stringValue(value.reasoning_summary, "主控 Agent 已生成任务计划。")} />
+      <ChipList title="执行步骤" items={arrayValue(value.steps).slice(0, 6)} />
+    </div>
+  );
+}
+
+function VisualArtifactSummary({ value }: { value: VisualParseResult }) {
+  const warnings = [...(value.warnings ?? []), ...(value.limitations ?? [])].filter(Boolean);
+  return (
+    <div className="artifact-summary">
+      <div className="metric-row">
+        <div>
+          <strong>{value.columns?.length ?? 0}</strong>
+          <span>抽取列数</span>
+        </div>
+        <div>
+          <strong>{value.rows?.length ?? 0}</strong>
+          <span>抽取行数</span>
+        </div>
+        <div>
+          <strong>{Number.isFinite(value.confidence) ? `${Math.round(value.confidence * 100)}%` : "-"}</strong>
+          <span>置信度</span>
+        </div>
+      </div>
+      <ChipList title="字段" items={value.columns ?? []} />
+      {warnings.length ? <ChipList title="警告与限制" items={warnings} tone="warning" /> : null}
+      <DataPreviewTable rows={value.rows ?? []} columns={value.columns ?? []} />
+    </div>
+  );
+}
+
+function RagArtifactSummary({ value }: { value: AnyRecord }) {
+  const results = Array.isArray(value.results) ? value.results.slice(0, 3) : [];
+  return (
+    <div className="artifact-summary">
+      <SummaryParagraph label="检索结果" text={ragSummary(value)} />
+      {results.length ? (
+        <div className="mini-list">
+          {results.map((item, index) => {
+            const record = item as AnyRecord;
+            return (
+              <article key={`rag-${index}`}>
+                <strong>{stringValue(record.filename, `知识片段 ${index + 1}`)}</strong>
+                <p>{stringValue(record.chunk, stringValue(record.source, "已命中相关知识。"))}</p>
+              </article>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function UnderstandingArtifactSummary({ value }: { value: AnyRecord }) {
+  return (
+    <div className="artifact-summary">
+      <KeyValueGrid
+        items={[
+          ["适用性评分", value.suitability_score === undefined ? "-" : String(value.suitability_score)],
+          ["日期字段", arrayValue(value.date_columns).join("、") || "-"]
+        ]}
+      />
+      <ChipList title="目标字段" items={arrayValue(value.target_columns)} />
+      <ChipList title="维度字段" items={arrayValue(value.dimension_columns)} />
+      <ChipList title="数值字段" items={arrayValue(value.numeric_columns)} />
+      <ChipList title="质量问题" items={arrayValue(value.quality_issues)} tone="warning" />
+    </div>
+  );
+}
+
+function AnalysisPlanArtifactSummary({ value }: { value: AnyRecord }) {
+  const chartPlan = Array.isArray(value.chart_plan) ? value.chart_plan.slice(0, 4) : [];
+  return (
+    <div className="artifact-summary">
+      <SummaryParagraph label="分析目标" text={stringValue(value.analysis_goal, "已生成分析计划。")} />
+      <ChipList title="分析方法" items={arrayValue(value.methods)} />
+      <ChipList title="分组维度" items={arrayValue(value.grouping_dimensions)} />
+      <ChipList title="分析指标" items={arrayValue(value.metrics)} />
+      {chartPlan.length ? <GenericArtifactSummary value={chartPlan} title="图表计划" /> : null}
+      <ChipList title="限制说明" items={arrayValue(value.limitations)} tone="warning" />
+    </div>
+  );
+}
+
+function HypothesisArtifactSummary({ value }: { value: AnyRecord }) {
+  return (
+    <div className="artifact-summary">
+      <KeyValueGrid
+        items={[
+          ["目标指标", stringValue(value.target_metric, "-")],
+          ["对象维度", stringValue(value.entity_dimension, "-")],
+          ["干预方向", stringValue(value.intervention_direction, "-")]
+        ]}
+      />
+      <SummaryParagraph label="假设摘要" text={stringValue(value.scenario_summary, stringValue(value.hypothesis, "已完成假设解析。"))} />
+      <ChipList title="限制说明" items={arrayValue(value.limitations)} tone="warning" />
+    </div>
+  );
+}
+
+function PredictionPlanArtifactSummary({ value }: { value: AnyRecord }) {
+  return (
+    <div className="artifact-summary">
+      <KeyValueGrid
+        items={[
+          ["目标指标", stringValue(value.target_metric, "-")],
+          ["对象维度", stringValue(value.entity_dimension, "-")],
+          ["候选模型", arrayValue(value.model_candidates).join("、") || "-"]
+        ]}
+      />
+      <ChipList title="预测步骤" items={arrayValue(value.steps)} />
+      <ChipList title="限制说明" items={arrayValue(value.limitations)} tone="warning" />
+    </div>
+  );
+}
+
+function ExecutionArtifactSummary({ value }: { value: ExecutionAttemptLog }) {
+  return (
+    <div className="artifact-summary">
+      <KeyValueGrid
+        items={[
+          ["是否成功", value.success ? "是" : "否"],
+          ["退出码", value.exit_code === undefined || value.exit_code === null ? "-" : String(value.exit_code)],
+          ["耗时", `${value.duration_ms ?? "-"} ms`]
+        ]}
+      />
+      <details className="raw-json-details">
+        <summary>查看沙箱输出</summary>
+        <pre>{String(value.stderr || value.stdout || "暂无执行输出")}</pre>
+      </details>
+    </div>
+  );
+}
+
+function ValidationArtifactSummary({ value }: { value: ValidationAttemptLog }) {
+  return (
+    <div className="artifact-summary">
+      <KeyValueGrid
+        items={[
+          ["是否通过", value.passed ? "是" : "否"],
+          ["严重级别", severityLabel(value.severity)],
+          ["是否建议重试", value.should_retry ? "是" : "否"]
+        ]}
+      />
+      <GenericArtifactSummary value={value.issues ?? []} title="问题列表" />
+      <GenericArtifactSummary value={value.repair_suggestions ?? []} title="修复建议" />
+    </div>
+  );
+}
+
+function ExplanationArtifactSummary({ value }: { value: ExplanationResult }) {
+  return (
+    <div className="artifact-summary">
+      <SummaryParagraph label="结论摘要" text={value.summary || "等待解释 Agent 输出结论。"} />
+      <ChipList title="关键发现" items={value.key_findings ?? []} />
+      <ChipList title="建议动作" items={value.recommendations ?? []} />
+      <ChipList title="限制说明" items={value.limitations ?? []} tone="warning" />
+    </div>
+  );
+}
+
+function GenericArtifactSummary({ value, title = "结构化输出" }: { value: unknown; title?: string }) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return (
+    <details className="raw-json-details compact" open={false}>
+      <summary>{title}</summary>
+      <pre>{JSON.stringify(value, null, 2)}</pre>
+    </details>
+  );
+}
+
+function RawJsonDetails({ value, title }: { value: unknown; title: string }) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return (
+    <details className="raw-json-details">
+      <summary>{title}</summary>
+      <pre>{JSON.stringify(value, null, 2)}</pre>
+    </details>
+  );
+}
+
+function DataPreviewTable({ rows, columns }: { rows: Array<Record<string, unknown>>; columns: string[] }) {
+  const previewRows = rows.slice(0, 5);
+  const visibleColumns = columns.slice(0, 6);
+  if (!previewRows.length || !visibleColumns.length) {
+    return null;
+  }
+  return (
+    <div className="table-wrap compact-table">
+      <table>
+        <thead>
+          <tr>
+            {visibleColumns.map((column) => (
+              <th key={column}>{column}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {previewRows.map((row, rowIndex) => (
+            <tr key={`preview-${rowIndex}`}>
+              {visibleColumns.map((column) => (
+                <td key={`${rowIndex}-${column}`}>{formatCell(row[column])}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function KeyValueGrid({ items }: { items: Array<[string, string]> }) {
+  return (
+    <dl className="compact-list artifact-kv">
+      {items.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function SummaryParagraph({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="summary-block">
+      <span>{label}</span>
+      <p>{text}</p>
+    </div>
+  );
+}
+
+function ChipList({ title, items, tone = "default" }: { title: string; items: string[]; tone?: "default" | "warning" }) {
+  const cleanItems = items.filter(Boolean);
+  if (!cleanItems.length) {
+    return null;
+  }
+  return (
+    <div className="chip-section">
+      <span>{title}</span>
+      <div className="chip-row">
+        {cleanItems.map((item, index) => (
+          <span className={`summary-chip ${tone}`} key={`${title}-${index}-${item}`}>
+            {item}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DataSourceNotice({ job }: { job: WorkflowJobResponse | null }) {
+  if (job?.asset_type !== "image") {
+    return null;
+  }
+  return (
+    <div className="source-notice">
+      本次数据来源于视觉解析，图片抽取可能存在识别误差，建议结合原图核对关键字段和数值。
+    </div>
   );
 }
 
 function ChartsPage({
   analysisResult,
-  chartPaths
+  chartPaths,
+  job
 }: {
   analysisResult: AnalysisResult | null;
   chartPaths: string[];
+  job: WorkflowJobResponse | null;
 }) {
   return (
     <section className="page-section">
@@ -1100,6 +1611,7 @@ function ChartsPage({
         <h2>最终图表</h2>
         <span>{chartPaths.length} 个图表</span>
       </div>
+      <DataSourceNotice job={job} />
       {chartPaths.length ? (
         <div className="chart-grid">
           {chartPaths.map((chartPath, index) => (
@@ -1118,10 +1630,12 @@ function ChartsPage({
 
 function InsightsPage({
   explanation,
-  report
+  report,
+  job
 }: {
   explanation: ExplanationResult;
   report: ReportGenerateResponse | null;
+  job: WorkflowJobResponse | null;
 }) {
   return (
     <section className="page-section">
@@ -1135,6 +1649,7 @@ function InsightsPage({
           <span>等待报告生成</span>
         )}
       </div>
+      <DataSourceNotice job={job} />
       {explanation.summary ? (
         <>
           <p className="summary-text">{explanation.summary}</p>
@@ -1152,65 +1667,157 @@ function InsightsPage({
 
 function LogsPage({
   job,
-  events,
-  latestExecution,
-  latestValidation
+  log,
+  events
 }: {
   job: WorkflowJobResponse | null;
+  log: WorkflowLogResponse | null;
   events: ExecutionLogEvent[];
-  latestExecution: ExecutionAttemptLog | undefined;
-  latestValidation: ValidationAttemptLog | undefined;
 }) {
+  const executionResults = log?.execution_results ?? [];
+  const validationResults = log?.validation_results ?? [];
+
   return (
     <section className="page-section">
       <div className="section-heading">
         <h2>执行日志</h2>
-        <span>{job?.status ?? "unknown"}</span>
+        <span>{job ? statusLabel(statusFromJob(job.status)) : "等待任务启动"}</span>
       </div>
-      <div className="log-grid">
-        <div className="log-block">
-          <h3>沙箱执行</h3>
-          <dl className="compact-list">
-            <div>
-              <dt>成功</dt>
-              <dd>{latestExecution?.success ? "是" : latestExecution ? "否" : "-"}</dd>
-            </div>
-            <div>
-              <dt>耗时</dt>
-              <dd>{String(latestExecution?.duration_ms ?? "-")} ms</dd>
-            </div>
-          </dl>
-          <pre>{String(latestExecution?.stderr || latestExecution?.stdout || "暂无执行输出")}</pre>
+
+      <div className="log-summary-grid">
+        <div>
+          <span>事件数量</span>
+          <strong>{events.length}</strong>
         </div>
-        <div className="log-block">
-          <h3>验证 Agent</h3>
-          <dl className="compact-list">
-            <div>
-              <dt>严重级别</dt>
-              <dd>{String(latestValidation?.severity ?? "-")}</dd>
-            </div>
-            <div>
-              <dt>是否重试</dt>
-              <dd>{latestValidation?.should_retry ? "是" : latestValidation ? "否" : "-"}</dd>
-            </div>
-          </dl>
-          <pre>{JSON.stringify(latestValidation?.issues ?? [], null, 2)}</pre>
+        <div>
+          <span>沙箱执行次数</span>
+          <strong>{executionResults.length}</strong>
+        </div>
+        <div>
+          <span>验证次数</span>
+          <strong>{validationResults.length}</strong>
         </div>
       </div>
-      <RecentEvents events={events} />
+
+      <section className="result-section">
+        <div className="section-heading">
+          <h2>完整事件流</h2>
+          <span>{events.length} 条事件</span>
+        </div>
+        <EventLogList events={events} />
+      </section>
+
+      <section className="result-section">
+        <div className="section-heading">
+          <h2>沙箱执行日志</h2>
+          <span>{executionResults.length} 次执行</span>
+        </div>
+        {executionResults.length ? (
+          <div className="log-stack">
+            {executionResults.map((execution, index) => (
+              <ExecutionLogBlock execution={execution} key={`${execution.path}-${index}`} />
+            ))}
+          </div>
+        ) : (
+          <EmptyState title="暂无沙箱执行日志" text="代码 Agent 生成脚本并进入沙箱后，这里会显示完整 stdout / stderr。" compact />
+        )}
+      </section>
+
+      <section className="result-section">
+        <div className="section-heading">
+          <h2>验证 Agent 日志</h2>
+          <span>{validationResults.length} 次验证</span>
+        </div>
+        {validationResults.length ? (
+          <div className="log-stack">
+            {validationResults.map((validation, index) => (
+              <ValidationLogBlock validation={validation} key={`${validation.path}-${index}`} />
+            ))}
+          </div>
+        ) : (
+          <EmptyState title="暂无验证日志" text="沙箱执行结束后，验证 Agent 的完整问题和修复建议会显示在这里。" compact />
+        )}
+      </section>
     </section>
   );
 }
 
-function ResultList({ title, items }: { title: string; items: string[] }) {
-  if (!items.length) {
+function ExecutionLogBlock({ execution }: { execution: ExecutionAttemptLog }) {
+  return (
+    <article className="log-block">
+      <h3>第 {execution.attempt} 次沙箱执行</h3>
+      <dl className="compact-list">
+        <div>
+          <dt>成功</dt>
+          <dd>{execution.success ? "是" : "否"}</dd>
+        </div>
+        <div>
+          <dt>退出码</dt>
+          <dd>{String(execution.exit_code ?? "-")}</dd>
+        </div>
+        <div>
+          <dt>耗时</dt>
+          <dd>{String(execution.duration_ms ?? "-")} ms</dd>
+        </div>
+        <div>
+          <dt>结果文件</dt>
+          <dd>{shortPath(execution.path)}</dd>
+        </div>
+      </dl>
+      <details className="raw-json-details" open>
+        <summary>完整 stdout / stderr</summary>
+        <pre>{String(execution.stderr || execution.stdout || "暂无执行输出")}</pre>
+      </details>
+      <RawJsonDetails value={execution} title="查看原始执行记录" />
+    </article>
+  );
+}
+
+function ValidationLogBlock({ validation }: { validation: ValidationAttemptLog }) {
+  return (
+    <article className="log-block">
+      <h3>第 {validation.attempt} 次验证</h3>
+      <dl className="compact-list">
+        <div>
+          <dt>是否通过</dt>
+          <dd>{validation.passed ? "是" : "否"}</dd>
+        </div>
+        <div>
+          <dt>严重级别</dt>
+          <dd>{severityLabel(validation.severity)}</dd>
+        </div>
+        <div>
+          <dt>是否重试</dt>
+          <dd>{validation.should_retry ? "是" : "否"}</dd>
+        </div>
+        <div>
+          <dt>验证文件</dt>
+          <dd>{shortPath(validation.path)}</dd>
+        </div>
+      </dl>
+      <details className="raw-json-details" open>
+        <summary>完整问题列表</summary>
+        <pre>{JSON.stringify(validation.issues ?? [], null, 2)}</pre>
+      </details>
+      <details className="raw-json-details" open>
+        <summary>完整修复建议</summary>
+        <pre>{JSON.stringify(validation.repair_suggestions ?? [], null, 2)}</pre>
+      </details>
+      <RawJsonDetails value={validation} title="查看原始验证记录" />
+    </article>
+  );
+}
+
+function ResultList({ title, items }: { title: string; items?: unknown[] | null }) {
+  const normalizedItems = Array.isArray(items) ? items.map((item) => formatListItem(item)).filter(Boolean) : [];
+  if (!normalizedItems.length) {
     return null;
   }
   return (
     <div className="finding-list">
       <h3>{title}</h3>
-      {items.map((item) => (
-        <div className="finding-item" key={item}>
+      {normalizedItems.map((item, index) => (
+        <div className="finding-item" key={`${title}-${index}-${item}`}>
           <p>{item}</p>
         </div>
       ))}
@@ -1219,13 +1826,14 @@ function ResultList({ title, items }: { title: string; items: string[] }) {
 }
 
 function PptOutline({ outline }: { outline: ExplanationResult["ppt_outline"] }) {
-  if (!outline.length) {
+  const normalizedOutline = normalizePptOutline(outline);
+  if (!normalizedOutline.length) {
     return null;
   }
   return (
     <div className="finding-list">
       <h3>PPT 大纲</h3>
-      {outline.map((slide, index) => (
+      {normalizedOutline.map((slide, index) => (
         <div className="finding-item" key={`${slide.title}-${index}`}>
           <strong>{slide.title}</strong>
           <p>{slide.bullets.join("；")}</p>
@@ -1244,18 +1852,17 @@ function JsonSummary({ title, value }: { title: string; value: AnyRecord | null 
   );
 }
 
-function RecentEvents({ events }: { events: ExecutionLogEvent[] }) {
-  const recent = events.slice(-8).reverse();
-  if (!recent.length) {
+function EventLogList({ events }: { events: ExecutionLogEvent[] }) {
+  if (!events.length) {
     return <EmptyState title="暂无日志" text="任务启动后，Agent 事件会实时追加到这里。" compact />;
   }
   return (
     <div className="log-event-list">
-      {recent.map((event, index) => (
+      {events.map((event, index) => (
         <article className="log-event" key={`${event.timestamp}-${index}`}>
           <span>
-            {stageLabel(event.stage)} · {event.status}
-            {event.attempt ? ` · attempt ${event.attempt}` : ""}
+            {stageLabel(event.stage)} · {eventStatusLabel(event.status)}
+            {event.attempt ? ` · 第 ${event.attempt} 次尝试` : ""}
           </span>
           <strong>{event.message}</strong>
           <p>{formatTime(event.timestamp)}</p>
@@ -1272,6 +1879,367 @@ function EmptyState({ title, text, compact = false }: { title: string; text: str
       <p>{text}</p>
     </div>
   );
+}
+
+function buildAgentCards(input: {
+  job: WorkflowJobResponse | null;
+  log: WorkflowLogResponse | null;
+  steps: StepView[];
+  controllerPlan: AnyRecord | null;
+  ragRetrieval: AnyRecord | null;
+  visualParseResult: VisualParseResult | null;
+  dataUnderstanding: AnyRecord | null;
+  analysisPlan: AnyRecord | null;
+  hypothesisPlan: AnyRecord | null;
+  predictionPlan: AnyRecord | null;
+  explanation: ExplanationResult;
+  isPredictionWorkflow: boolean;
+}): AgentCardView[] {
+  const latestAttempt = lastItem(input.job?.attempts);
+  const latestExecution = lastItem(input.log?.execution_results);
+  const latestValidation = lastItem(input.log?.validation_results);
+  const explanationRaw = input.explanation.summary ? input.explanation : null;
+
+  return input.steps.map((step): AgentCardView => {
+    const base = cardBase(step, input.isPredictionWorkflow);
+    const card: AgentCardView = {
+      ...step,
+      ...base,
+      output: step.summary,
+      artifactKind: base.artifactKind,
+      evidence: base.evidence
+    };
+
+    if (step.key === "visual") {
+      return {
+        ...card,
+        raw: input.visualParseResult,
+        artifactPath: input.job?.visual_parse_result_path,
+        artifactLabel: "visual_parse_result.json",
+        evidence: visualEvidence(input.visualParseResult, input.job)
+      };
+    }
+    if (step.key === "rag") {
+      return {
+        ...card,
+        raw: input.ragRetrieval,
+        artifactPath: input.job?.rag_retrieval_path,
+        artifactLabel: "rag_retrieval.json",
+        evidence: ragEvidence(input.ragRetrieval)
+      };
+    }
+    if (step.key === "controller") {
+      return {
+        ...card,
+        raw: input.controllerPlan,
+        artifactPath: input.job?.controller_plan_path,
+        artifactLabel: "controller_plan.json",
+        evidence: controllerEvidence(input.controllerPlan, input.job)
+      };
+    }
+    if (step.key === "understanding") {
+      return {
+        ...card,
+        raw: input.dataUnderstanding,
+        artifactPath: input.job?.data_understanding_path,
+        artifactLabel: "data_understanding.json",
+        evidence: understandingEvidence(input.dataUnderstanding)
+      };
+    }
+    if (step.key === "analysis") {
+      return {
+        ...card,
+        raw: input.analysisPlan,
+        artifactPath: input.job?.analysis_plan_path,
+        artifactLabel: "analysis_plan.json",
+        evidence: analysisEvidence(input.analysisPlan)
+      };
+    }
+    if (step.key === "hypothesis") {
+      return {
+        ...card,
+        raw: input.hypothesisPlan,
+        artifactPath: input.job?.hypothesis_plan_path,
+        artifactLabel: "hypothesis_plan.json",
+        evidence: hypothesisEvidence(input.hypothesisPlan)
+      };
+    }
+    if (step.key === "prediction_plan") {
+      return {
+        ...card,
+        raw: input.predictionPlan,
+        artifactPath: input.job?.prediction_plan_path,
+        artifactLabel: "prediction_plan.json",
+        evidence: predictionEvidence(input.predictionPlan)
+      };
+    }
+    if (step.key === "code" || step.key === "safety") {
+      return {
+        ...card,
+        raw: latestAttempt ?? null,
+        artifactPath: step.key === "code" ? latestAttempt?.script_path : latestAttempt?.safety_result_path,
+        artifactLabel: step.key === "code" ? "generated_script.py" : "safety_result.json",
+        evidence: attemptEvidence(latestAttempt)
+      };
+    }
+    if (step.key === "sandbox") {
+      return {
+        ...card,
+        raw: latestExecution ?? null,
+        artifactKind: "execution",
+        artifactPath: latestExecution?.path,
+        artifactLabel: "execution_result.json",
+        evidence: executionEvidence(latestExecution)
+      };
+    }
+    if (step.key === "validation") {
+      return {
+        ...card,
+        raw: latestValidation ?? null,
+        artifactKind: "validation",
+        artifactPath: latestValidation?.path,
+        artifactLabel: "validation_result.json",
+        evidence: validationEvidence(latestValidation)
+      };
+    }
+    if (step.key === "explanation") {
+      return {
+        ...card,
+        raw: explanationRaw,
+        artifactKind: "explanation",
+        artifactPath: input.isPredictionWorkflow ? input.job?.prediction_explanation_path : input.job?.explanation_path,
+        artifactLabel: input.isPredictionWorkflow ? "prediction_explanation.json" : "explanation.json",
+        evidence: explanationEvidence(input.explanation)
+      };
+    }
+    return card;
+  }).filter((card) => shouldShowAgentCard(card, input.job));
+}
+
+function buildAttemptProgressViews(input: {
+  job: WorkflowJobResponse | null;
+  log: WorkflowLogResponse | null;
+  events: ExecutionLogEvent[];
+}): AttemptProgressView[] {
+  const attemptIds = new Set<number>();
+  for (const attempt of input.job?.attempts ?? []) {
+    if (attempt.attempt) {
+      attemptIds.add(attempt.attempt);
+    }
+  }
+  for (const execution of input.log?.execution_results ?? []) {
+    if (execution.attempt) {
+      attemptIds.add(execution.attempt);
+    }
+  }
+  for (const validation of input.log?.validation_results ?? []) {
+    if (validation.attempt) {
+      attemptIds.add(validation.attempt);
+    }
+  }
+  for (const event of input.events) {
+    if (event.attempt) {
+      attemptIds.add(event.attempt);
+    }
+  }
+
+  return Array.from(attemptIds)
+    .sort((left, right) => left - right)
+    .map((attemptNumber) => ({
+      attempt: attemptNumber,
+      codeStatus: latestAttemptStageStatus(input.events, attemptNumber, ["code_generation"]),
+      safetyStatus: latestAttemptStageStatus(input.events, attemptNumber, ["code_safety"]),
+      sandboxStatus: latestAttemptStageStatus(input.events, attemptNumber, ["sandbox"]),
+      validationStatus: latestAttemptStageStatus(input.events, attemptNumber, ["validation"]),
+      repairStatus: latestAttemptStageStatus(input.events, attemptNumber, ["repair"]),
+      attemptResult: (input.job?.attempts ?? []).find((item) => item.attempt === attemptNumber),
+      execution: (input.log?.execution_results ?? []).find((item) => item.attempt === attemptNumber),
+      validation: (input.log?.validation_results ?? []).find((item) => item.attempt === attemptNumber)
+    }));
+}
+
+function latestAttemptStageStatus(events: ExecutionLogEvent[], attempt: number, stages: string[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.attempt === attempt && stages.includes(event.stage)) {
+      return event.status;
+    }
+  }
+  return undefined;
+}
+
+function attemptStageText(status: string | undefined): string {
+  if (!status) {
+    return "等待中";
+  }
+  return eventStatusLabel(status);
+}
+
+function attemptStageClass(status: string | undefined): string {
+  if (status === "success" || status === "fallback") {
+    return "done";
+  }
+  if (status === "running" || status === "retrying") {
+    return "active";
+  }
+  if (status === "failed") {
+    return "failed";
+  }
+  return "pending";
+}
+
+function attemptStatusClass(attempt: AttemptProgressView): StepView["status"] {
+  if (attempt.validation?.passed) {
+    return "done";
+  }
+  if (attempt.validation && !attempt.validation.passed) {
+    return attempt.validation.should_retry ? "active" : "failed";
+  }
+  if (attempt.sandboxStatus === "failed" || attempt.validationStatus === "failed") {
+    return "failed";
+  }
+  if (attempt.codeStatus || attempt.safetyStatus || attempt.sandboxStatus || attempt.validationStatus) {
+    return "active";
+  }
+  return "pending";
+}
+
+function attemptStatusText(attempt: AttemptProgressView): string {
+  if (attempt.validation?.passed) {
+    return "验证通过";
+  }
+  if (attempt.validation && !attempt.validation.passed) {
+    return attempt.validation.should_retry ? "已反馈修复" : "验证失败";
+  }
+  if (attempt.validationStatus === "running") {
+    return "验证中";
+  }
+  if (attempt.sandboxStatus === "running") {
+    return "执行中";
+  }
+  if (attempt.safetyStatus === "running") {
+    return "安全检查中";
+  }
+  if (attempt.codeStatus === "running") {
+    return "生成中";
+  }
+  return "等待中";
+}
+
+function shouldShowAgentCard(card: AgentCardView, job: WorkflowJobResponse | null): boolean {
+  if (!job) {
+    return false;
+  }
+  if (card.key === "visual" && job.asset_type !== "image") {
+    return false;
+  }
+  if (card.status === "active" || card.status === "failed" || card.status === "done") {
+    return true;
+  }
+  if (card.raw !== null && card.raw !== undefined) {
+    return true;
+  }
+  if (card.artifactPath) {
+    return true;
+  }
+  return card.stageNames.includes(job.current_stage ?? "");
+}
+
+function cardBase(step: StepView, isPredictionWorkflow: boolean): Omit<AgentCardView, keyof StepView | "output"> {
+  const prediction = isPredictionWorkflow;
+  const byKey: Record<string, Omit<AgentCardView, keyof StepView | "output">> = {
+    visual: {
+      agentName: "视觉解析 Agent",
+      inputSource: "上传图片或表格输入状态",
+      action: "识别图片中的表格、图表和业务字段，并转成结构化数据。",
+      evidence: [],
+      artifactKind: "visual"
+    },
+    rag: {
+      agentName: "RAG 检索",
+      inputSource: "数据画像和用户目标",
+      action: "检索业务知识库，给主控和后续 Agent 补充上下文。",
+      evidence: [],
+      artifactKind: "rag"
+    },
+    controller: {
+      agentName: "主控 Agent",
+      inputSource: "用户目标、数据画像和 RAG 上下文",
+      action: "判断任务类型，并选择普通数据分析或情景预测工作流。",
+      evidence: [],
+      artifactKind: "controller"
+    },
+    understanding: {
+      agentName: "数据理解 Agent",
+      inputSource: "数据画像与字段样例",
+      action: "识别目标字段、维度字段、数值字段和潜在质量问题。",
+      evidence: [],
+      artifactKind: "understanding"
+    },
+    analysis: {
+      agentName: "分析计划 Agent",
+      inputSource: "字段语义、主控计划和用户目标",
+      action: "选择统计方法、指标、分组维度和图表计划。",
+      evidence: [],
+      artifactKind: "analysis"
+    },
+    hypothesis: {
+      agentName: "假设解析 Agent",
+      inputSource: "用户的 if/假设/预测问题",
+      action: "抽取干预变量、目标指标、对象维度和预测假设。",
+      evidence: [],
+      artifactKind: "hypothesis"
+    },
+    prediction_plan: {
+      agentName: "预测计划 Agent",
+      inputSource: "结构化假设和数据画像",
+      action: "选择预测方法、基准口径、影响对象和输出格式。",
+      evidence: [],
+      artifactKind: "prediction_plan"
+    },
+    code: {
+      agentName: prediction ? "预测 Code Agent" : "代码 Agent",
+      inputSource: prediction ? "预测计划" : "分析计划",
+      action: "生成可在沙箱中执行的数据处理脚本。",
+      evidence: [],
+      artifactKind: "code"
+    },
+    safety: {
+      agentName: "代码安全检查",
+      inputSource: "生成的 Python 脚本",
+      action: "检查危险导入、系统命令、越权路径和不安全操作。",
+      evidence: [],
+      artifactKind: "code"
+    },
+    sandbox: {
+      agentName: "沙箱执行器",
+      inputSource: "通过安全检查的脚本",
+      action: "在隔离环境中运行脚本并收集 stdout、stderr、图表和 JSON 产物。",
+      evidence: [],
+      artifactKind: "execution"
+    },
+    validation: {
+      agentName: prediction ? "预测验证 Agent" : "验证 Agent",
+      inputSource: prediction ? "prediction_result.json" : "analysis_result.json",
+      action: "检查输出结构、业务合理性、图表产物和是否需要修复。",
+      evidence: [],
+      artifactKind: "validation"
+    },
+    explanation: {
+      agentName: prediction ? "预测解释 Agent" : "解释 Agent",
+      inputSource: "通过验证的结果、图表和限制说明",
+      action: "生成面向用户的结论、发现、建议和限制说明。",
+      evidence: [],
+      artifactKind: "explanation"
+    }
+  };
+  return byKey[step.key] ?? {
+    agentName: step.title,
+    inputSource: "上一步 Agent 输出",
+    action: step.summary,
+    evidence: [],
+    artifactKind: "generic"
+  };
 }
 
 function buildAgentSteps(input: {
@@ -1339,7 +2307,7 @@ function buildAgentSteps(input: {
       key: "safety",
       title: "代码安全检查正在运行",
       stageNames: ["code_safety"],
-      done: Boolean(attempt?.safety_result_path || attempt?.safety_issues),
+      done: Boolean(attempt?.safety_issues),
       summary: attempt?.safety_issues?.length
         ? `发现 ${attempt.safety_issues.length} 个安全问题，准备修复。`
         : "检查脚本是否包含危险导入、系统命令或越权路径访问。"
@@ -1371,14 +2339,17 @@ function buildAgentSteps(input: {
     }
   ];
 
-  return definitions.map((definition) => ({
-    ...definition,
-    status: stepStatus({
-      done: definition.done,
-      active: definition.stageNames.includes(currentStage),
-      failed: terminalFailed && hasFailedEvent(input.events, definition.stageNames)
-    })
-  }));
+  return definitions.map((definition) => {
+    const eventState = latestStageEvent(input.events, definition.stageNames);
+    return {
+      ...definition,
+      status: stepStatus({
+        done: definition.done || isDoneEventStatus(eventState?.status),
+        active: definition.stageNames.includes(currentStage) || isActiveEventStatus(eventState?.status),
+        failed: terminalFailed && (eventState?.status === "failed" || hasFailedEvent(input.events, definition.stageNames))
+      })
+    };
+  });
 }
 
 function buildPredictionSteps(input: {
@@ -1463,14 +2434,17 @@ function buildPredictionSteps(input: {
       summary: input.explanation.summary || "等待预测结果验证通过。"
     }
   ];
-  return definitions.map((definition) => ({
-    ...definition,
-    status: stepStatus({
-      done: definition.done,
-      active: definition.stageNames.includes(currentStage),
-      failed: terminalFailed && hasFailedEvent(input.events, definition.stageNames)
-    })
-  }));
+  return definitions.map((definition) => {
+    const eventState = latestStageEvent(input.events, definition.stageNames);
+    return {
+      ...definition,
+      status: stepStatus({
+        done: definition.done || isDoneEventStatus(eventState?.status),
+        active: definition.stageNames.includes(currentStage) || isActiveEventStatus(eventState?.status),
+        failed: terminalFailed && (eventState?.status === "failed" || hasFailedEvent(input.events, definition.stageNames))
+      })
+    };
+  });
 }
 
 function stepStatus(input: { done: boolean; active: boolean; failed: boolean }): StepView["status"] {
@@ -1488,6 +2462,146 @@ function stepStatus(input: { done: boolean; active: boolean; failed: boolean }):
 
 function hasFailedEvent(events: ExecutionLogEvent[], stages: string[]): boolean {
   return events.some((event) => stages.includes(event.stage) && event.status === "failed");
+}
+
+function latestStageEvent(events: ExecutionLogEvent[], stages: string[]): ExecutionLogEvent | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (stages.includes(event.stage)) {
+      return event;
+    }
+  }
+  return undefined;
+}
+
+function isActiveEventStatus(status: string | undefined): boolean {
+  return status === "running" || status === "retrying";
+}
+
+function isDoneEventStatus(status: string | undefined): boolean {
+  return status === "success" || status === "fallback" || status === "failed";
+}
+
+function visualEvidence(result: VisualParseResult | null, job: WorkflowJobResponse | null): string[] {
+  if (job?.asset_type !== "image") {
+    return ["输入是表格文件，视觉解析步骤自动跳过。"];
+  }
+  if (!result) {
+    return ["等待豆包视觉模型返回结构化抽取结果。"];
+  }
+  const evidence = [
+    `图片类型：${imageTypeLabel(result.image_type)}`,
+    `抽取规模：${result.columns.length} 列、${result.rows.length} 行`,
+    `置信度：${Number.isFinite(result.confidence) ? `${Math.round(result.confidence * 100)}%` : "-"}`
+  ];
+  return [...evidence, ...result.warnings.slice(0, 2)];
+}
+
+function ragEvidence(result: AnyRecord | null): string[] {
+  if (!result) {
+    return ["等待知识库检索结果。"];
+  }
+  const results = Array.isArray(result.results) ? result.results : [];
+  return [`命中知识片段：${results.length} 条`, stringValue(result.message, "已完成知识库检索。")];
+}
+
+function controllerEvidence(plan: AnyRecord | null, job: WorkflowJobResponse | null): string[] {
+  if (!plan) {
+    return ["等待主控 Agent 输出任务类型。"];
+  }
+  return [
+    `任务类型：${stringValue(plan.task_type, stringValue(job?.task_type, "-"))}`,
+    `工作流：${workflowLabel(job?.workflow_type || plan.task_type)}`,
+    stringValue(plan.reasoning_summary, "已根据用户目标和数据画像完成分流。")
+  ];
+}
+
+function understandingEvidence(result: AnyRecord | null): string[] {
+  if (!result) {
+    return ["等待字段语义识别结果。"];
+  }
+  return [
+    `目标字段：${arrayValue(result.target_columns).join("、") || "-"}`,
+    `维度字段：${arrayValue(result.dimension_columns).join("、") || "-"}`,
+    `质量问题：${arrayValue(result.quality_issues).length} 项`
+  ];
+}
+
+function analysisEvidence(plan: AnyRecord | null): string[] {
+  if (!plan) {
+    return ["等待分析计划。"];
+  }
+  return [
+    `分析方法：${arrayValue(plan.methods).join("、") || "-"}`,
+    `指标：${arrayValue(plan.metrics).join("、") || "-"}`,
+    `图表数量：${Array.isArray(plan.chart_plan) ? plan.chart_plan.length : 0}`
+  ];
+}
+
+function hypothesisEvidence(plan: AnyRecord | null): string[] {
+  if (!plan) {
+    return ["等待假设解析。"];
+  }
+  return [
+    `目标指标：${stringValue(plan.target_metric, "-")}`,
+    `对象维度：${stringValue(plan.entity_dimension, "-")}`,
+    `干预变量：${stringValue(plan.intervention_variable, stringValue(plan.intervention, "-"))}`
+  ];
+}
+
+function predictionEvidence(plan: AnyRecord | null): string[] {
+  if (!plan) {
+    return ["等待预测计划。"];
+  }
+  return [
+    `目标指标：${stringValue(plan.target_metric, "-")}`,
+    `对象维度：${stringValue(plan.entity_dimension, "-")}`,
+    `候选模型：${arrayValue(plan.model_candidates).join("、") || "-"}`
+  ];
+}
+
+function attemptEvidence(attempt: AutoRepairAttemptResult | undefined): string[] {
+  if (!attempt) {
+    return ["等待代码生成。"];
+  }
+  return [
+    `尝试次数：第 ${attempt.attempt} 次`,
+    `脚本：${attempt.script_path ? shortPath(attempt.script_path) : "-"}`,
+    `当前验证：${attempt.passed ? "通过" : "未通过"}`
+  ];
+}
+
+function executionEvidence(execution: ExecutionAttemptLog | undefined): string[] {
+  if (!execution) {
+    return ["等待沙箱执行。"];
+  }
+  return [
+    `执行结果：${execution.success ? "成功" : "失败"}`,
+    `退出码：${execution.exit_code ?? "-"}`,
+    `耗时：${execution.duration_ms ?? "-"} ms`
+  ];
+}
+
+function validationEvidence(validation: ValidationAttemptLog | undefined): string[] {
+  if (!validation) {
+    return ["等待验证 Agent 输出。"];
+  }
+  return [
+    `验证结果：${validation.passed ? "通过" : "未通过"}`,
+    `严重级别：${severityLabel(validation.severity)}`,
+    `问题数量：${validation.issues.length}`
+  ];
+}
+
+function explanationEvidence(explanation: ExplanationResult): string[] {
+  if (!explanation.summary) {
+    return ["等待解释 Agent 生成结论。"];
+  }
+  return [
+    `关键发现：${explanation.key_findings.length} 条`,
+    `建议动作：${explanation.recommendations.length} 条`,
+    `限制说明：${explanation.limitations.length} 条`
+  ];
 }
 
 function controllerSummary(plan: AnyRecord | null): string {
@@ -1554,14 +2668,77 @@ function getChartPaths(result: AnalysisResult | null): string[] {
 }
 
 function toExplanationResult(predictionExplanation: PredictionExplanationResult): ExplanationResult {
-  return {
+  return normalizeExplanationResult({
     summary: predictionExplanation.summary,
     key_findings: predictionExplanation.key_findings,
     chart_explanations: [],
     recommendations: predictionExplanation.recommendations,
     limitations: predictionExplanation.limitations,
     ppt_outline: predictionExplanation.ppt_outline
+  });
+}
+
+function normalizeExplanationResult(value: Partial<ExplanationResult> | null | undefined): ExplanationResult {
+  return {
+    summary: typeof value?.summary === "string" ? value.summary : "",
+    key_findings: normalizeStringArray(value?.key_findings),
+    chart_explanations: Array.isArray(value?.chart_explanations) ? value.chart_explanations : [],
+    recommendations: normalizeStringArray(value?.recommendations),
+    limitations: normalizeStringArray(value?.limitations),
+    ppt_outline: normalizePptOutline(value?.ppt_outline)
   };
+}
+
+function normalizePptOutline(value: unknown): ExplanationResult["ppt_outline"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item, index) => {
+      if (typeof item === "string") {
+        const [title, ...rest] = item.split(/[：:]/);
+        return {
+          title: title.trim() || `第 ${index + 1} 页`,
+          bullets: [rest.join("：").trim() || item.trim()]
+        };
+      }
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        const bullets = normalizeStringArray(record.bullets);
+        const fallbackText = formatListItem(record.content ?? record.description ?? record.text);
+        return {
+          title: stringValue(record.title, `第 ${index + 1} 页`),
+          bullets: bullets.length ? bullets : fallbackText ? [fallbackText] : [],
+          chart: typeof record.chart === "string" ? record.chart : undefined
+        };
+      }
+      return null;
+    })
+    .filter((item): item is ExplanationResult["ppt_outline"][number] => Boolean(item && item.title));
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => formatListItem(item)).filter(Boolean);
+}
+
+function formatListItem(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function chartTitle(path: string, index: number): string {
@@ -1610,6 +2787,52 @@ function statusLabel(value: string): string {
   return labels[value] ?? value;
 }
 
+function stepStatusLabel(value: StepView["status"]): string {
+  const labels: Record<StepView["status"], string> = {
+    pending: "等待中",
+    active: "运行中",
+    done: "已完成",
+    failed: "失败"
+  };
+  return labels[value];
+}
+
+function workflowLabel(value: unknown): string {
+  const text = String(value ?? "");
+  if (text === "what_if_prediction") {
+    return "情景预测工作流";
+  }
+  if (text === "auto_repair") {
+    return "数据分析工作流";
+  }
+  if (text) {
+    return text;
+  }
+  return "等待主控分流";
+}
+
+function imageTypeLabel(value: string): string {
+  const labels: Record<string, string> = {
+    table: "表格截图",
+    chart: "图表截图",
+    dashboard: "业务看板",
+    other: "其他图片"
+  };
+  return labels[value] ?? value;
+}
+
+function severityLabel(value: string): string {
+  const labels: Record<string, string> = {
+    none: "无问题",
+    info: "提示",
+    low: "低",
+    medium: "中",
+    high: "高",
+    critical: "严重"
+  };
+  return labels[value] ?? value ?? "-";
+}
+
 function stageLabel(value: string): string {
   const labels: Record<string, string> = {
     idle: "待开始",
@@ -1636,6 +2859,69 @@ function stageLabel(value: string): string {
   return labels[value] ?? value;
 }
 
+function eventStatusLabel(value: string): string {
+  const labels: Record<string, string> = {
+    pending: "等待中",
+    running: "运行中",
+    success: "已完成",
+    failed: "失败",
+    fallback: "降级继续",
+    retrying: "准备重试"
+  };
+  return labels[value] ?? value;
+}
+
+function mergeWorkflowEvents(
+  primary: ExecutionLogEvent[] | undefined,
+  secondary: ExecutionLogEvent[] | undefined
+): ExecutionLogEvent[] {
+  const merged = [...(primary ?? []), ...(secondary ?? [])];
+  const seen = new Set<string>();
+  return merged
+    .filter((event) => {
+      const key = `${event.timestamp}|${event.stage}|${event.status}|${event.attempt ?? ""}|${event.message}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) => eventTime(left) - eventTime(right));
+}
+
+function eventTime(event: ExecutionLogEvent): number {
+  const value = new Date(event.timestamp).getTime();
+  return Number.isNaN(value) ? 0 : value;
+}
+
+function agentInitial(name: string): string {
+  if (name.includes("视觉")) {
+    return "视";
+  }
+  if (name.includes("主控")) {
+    return "控";
+  }
+  if (name.includes("预测")) {
+    return "预";
+  }
+  if (name.includes("验证")) {
+    return "验";
+  }
+  if (name.includes("解释")) {
+    return "释";
+  }
+  if (name.includes("代码") || name.includes("Code")) {
+    return "码";
+  }
+  if (name.includes("沙箱")) {
+    return "箱";
+  }
+  if (name.includes("RAG")) {
+    return "R";
+  }
+  return name.slice(0, 1) || "A";
+}
+
 function formatNumber(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "-";
 }
@@ -1645,7 +2931,13 @@ function formatPercent(value: number): string {
 }
 
 function stringValue(value: unknown, fallback: string): string {
-  return typeof value === "string" && value ? value : fallback;
+  if (typeof value === "string" && value) {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return fallback;
 }
 
 function arrayValue(value: unknown): string[] {
@@ -1664,6 +2956,16 @@ function formatTime(value: string): string {
     return value;
   }
   return date.toLocaleTimeString();
+}
+
+function formatCell(value: unknown): string {
+  if (value === null || value === undefined || value === "") {
+    return "-";
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return JSON.stringify(value);
 }
 
 function lastItem<T>(items: T[] | undefined): T | undefined {

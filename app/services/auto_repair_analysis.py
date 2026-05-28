@@ -132,12 +132,27 @@ def run_auto_repair_analysis_job(
 
     def progress(stage: str, status_text: str, message: str) -> None:
         events.append(create_event(stage, status_text, message))
+        write_stage_snapshot(stage, "running" if status_text != "failed" else "failed")
+
+    attempts: list[dict[str, Any]] = []
+    final_result_path = None
+    final_report_data_path = None
+    final_validation_result_path = None
+    explanation_path = None
+    rag_retrieval_path = None
+    rag_context: list[dict[str, Any]] = []
+
+    def existing_job_file(filename: str) -> str | None:
+        path = job_dir / filename
+        return str(path) if path.exists() else None
+
+    def write_stage_snapshot(stage: str, status_value: str = "running") -> None:
         _write_progress(
             job_dir=job_dir,
             job_id=job_id,
             dataset_id=dataset_id,
             user_goal=user_goal,
-            status_value="running" if status_text != "failed" else "failed",
+            status_value=status_value,
             current_stage=stage,
             max_retries=effective_max_retries,
             attempts=attempts,
@@ -147,15 +162,12 @@ def run_auto_repair_analysis_job(
             final_report_data_path=final_report_data_path,
             final_validation_result_path=final_validation_result_path,
             explanation_path=explanation_path,
+            controller_plan_path=existing_job_file("controller_plan.json"),
+            rag_retrieval_path=rag_retrieval_path or existing_job_file("rag_retrieval.json"),
+            dataset_profile_path=existing_job_file("dataset_profile.json"),
+            data_understanding_path=existing_job_file("data_understanding.json"),
+            analysis_plan_path=existing_job_file("analysis_plan.json"),
         )
-
-    attempts: list[dict[str, Any]] = []
-    final_result_path = None
-    final_report_data_path = None
-    final_validation_result_path = None
-    explanation_path = None
-    rag_retrieval_path = None
-    rag_context: list[dict[str, Any]] = []
 
     progress("loading_dataset", "running", "正在读取上传数据并生成数据画像。")
     input_file, _df = load_uploaded_dataset(dataset_id)
@@ -285,6 +297,7 @@ def run_auto_repair_analysis_job(
                 attempt=attempt,
             )
         )
+        write_stage_snapshot("code_generation")
         script_path = job_dir / f"generated_script_attempt_{attempt}.py"
         script_code = code_agent.generate_script(
             input_file=str(input_file),
@@ -344,6 +357,7 @@ def run_auto_repair_analysis_job(
                 attempt=attempt,
             )
         )
+        write_stage_snapshot("code_safety")
         static_safety_issues = validate_script_static_safety(
             script_path=script_path,
             input_file=input_file,
@@ -375,6 +389,15 @@ def run_auto_repair_analysis_job(
             _write_json(job_dir / "execution_result.json", execution_result)
             shutil.copy2(job_dir / "execution_result.json", execution_attempt_path)
 
+            events.append(
+                create_event(
+                    "validation",
+                    "running",
+                    f"验证 Agent 正在检查第 {attempt} 次安全失败结果。",
+                    attempt=attempt,
+                )
+            )
+            write_stage_snapshot("validation")
             validation_result = validate_job_outputs(job_id)
             shutil.copy2(job_dir / "validation_result.json", validation_attempt_path)
 
@@ -434,6 +457,7 @@ def run_auto_repair_analysis_job(
                 attempt=attempt,
             )
         )
+        write_stage_snapshot("sandbox")
         execution_result = sandbox_executor.execute(
             generated_script_path=str(script_path),
             input_file=str(input_file),
@@ -458,6 +482,7 @@ def run_auto_repair_analysis_job(
                 attempt=attempt,
             )
         )
+        write_stage_snapshot("validation")
         validation_result = validate_job_outputs(job_id)
         shutil.copy2(job_dir / "validation_result.json", validation_attempt_path)
 
