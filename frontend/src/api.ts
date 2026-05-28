@@ -12,7 +12,9 @@ import type {
   KnowledgeSearchResponse,
   PredictionJobResponse,
   PredictionLogResponse,
-  ReportGenerateResponse
+  ReportGenerateResponse,
+  WorkflowJobResponse,
+  WorkflowLogResponse
 } from "./types";
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -142,6 +144,37 @@ export async function fetchPredictionJobStatus(jobId: string): Promise<Predictio
 export async function fetchPredictionLog(jobId: string): Promise<PredictionLogResponse> {
   const response = await fetch(`/api/predictions/jobs/${jobId}/logs`);
   return parseResponse<PredictionLogResponse>(response);
+}
+
+export async function createWorkflowJobAsync(
+  datasetId: string,
+  userGoal: string,
+  maxRetries = 3
+): Promise<WorkflowJobResponse> {
+  const response = await fetch("/api/workflows/jobs/async", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      dataset_id: datasetId,
+      user_goal: userGoal,
+      max_retries: maxRetries,
+      timeout_seconds: 90
+    })
+  });
+
+  return parseResponse<WorkflowJobResponse>(response);
+}
+
+export async function fetchWorkflowJobStatus(jobId: string): Promise<WorkflowJobResponse> {
+  const response = await fetch(`/api/workflows/jobs/${jobId}`);
+  return parseResponse<WorkflowJobResponse>(response);
+}
+
+export async function fetchWorkflowLog(jobId: string): Promise<WorkflowLogResponse> {
+  const response = await fetch(`/api/workflows/jobs/${jobId}/logs`);
+  return parseResponse<WorkflowLogResponse>(response);
 }
 
 export async function fetchAnalysisResult(resultPath: string): Promise<AnalysisResult> {

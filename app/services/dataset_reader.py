@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 from fastapi import HTTPException, status
 
-from app.services.dataset_storage import ALLOWED_FILE_TYPES, UPLOAD_ROOT
+from app.services.dataset_storage import IMAGE_FILE_TYPES, TABULAR_FILE_TYPES, UPLOAD_ROOT
 
 
 CSV_ENCODINGS = ("utf-8", "utf-8-sig", "gbk")
@@ -36,7 +36,7 @@ def find_dataset_file(dataset_dir: Path) -> Path:
     dataset_files = [
         path
         for path in dataset_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in ALLOWED_FILE_TYPES
+        if path.is_file() and path.suffix.lower() in TABULAR_FILE_TYPES
     ]
 
     if not dataset_files:
@@ -46,6 +46,28 @@ def find_dataset_file(dataset_dir: Path) -> Path:
         )
 
     return sorted(dataset_files, key=lambda path: path.name)[0]
+
+
+def get_uploaded_asset_type(dataset_id: str) -> str:
+    dataset_dir = get_dataset_dir(dataset_id)
+    if any(path.is_file() and path.suffix.lower() in IMAGE_FILE_TYPES for path in dataset_dir.iterdir()):
+        return "image"
+    return "tabular"
+
+
+def find_uploaded_image_file(dataset_id: str) -> Path:
+    dataset_dir = get_dataset_dir(dataset_id)
+    image_files = [
+        path
+        for path in dataset_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in IMAGE_FILE_TYPES
+    ]
+    if not image_files:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image file not found.",
+        )
+    return sorted(image_files, key=lambda path: path.name)[0]
 
 
 def read_dataset(file_path: Path) -> pd.DataFrame:

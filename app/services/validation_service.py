@@ -1,5 +1,6 @@
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,26 @@ METRIC_KEYWORDS = (
     "total",
     "value",
 )
+METRIC_TOKENS = {
+    "average",
+    "avg",
+    "count",
+    "max",
+    "mean",
+    "metric",
+    "min",
+    "rate",
+    "ratio",
+    "score",
+    "total",
+    "value",
+}
+SKIP_METRIC_PATH_KEYS = {
+    "repair_context",
+    "previous_execution_result",
+    "previous_validation_result",
+    "artifacts",
+}
 CONCLUSION_KEYS = {
     "chart_explanations",
     "conclusion",
@@ -247,6 +268,8 @@ def _validate_metric_values(
     repair_suggestions: list[dict[str, str]],
 ) -> None:
     for path, key, value in _walk_json(data):
+        if _is_skipped_metric_path(path):
+            continue
         if not _looks_like_metric_key(key):
             continue
 
@@ -362,7 +385,19 @@ def _walk_json(data: Any, path: str = "$") -> list[tuple[str, str, Any]]:
 
 def _looks_like_metric_key(key: str) -> bool:
     normalized_key = key.lower()
-    return any(keyword in normalized_key for keyword in METRIC_KEYWORDS)
+    if normalized_key in METRIC_KEYWORDS:
+        return True
+    return bool(set(_metric_key_tokens(normalized_key)) & METRIC_TOKENS)
+
+
+def _metric_key_tokens(key: str) -> list[str]:
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
+    return [token.lower() for token in re.split(r"[^A-Za-z0-9]+", normalized) if token]
+
+
+def _is_skipped_metric_path(path: str) -> bool:
+    path_keys = set(re.findall(r"\.([A-Za-z_][A-Za-z0-9_]*)", path))
+    return bool(path_keys & SKIP_METRIC_PATH_KEYS)
 
 
 def _collect_conclusion_items(report_data: Any) -> list[Any]:

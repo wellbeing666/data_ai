@@ -8,6 +8,8 @@ class DatasetUploadResponse(BaseModel):
     filename: str
     file_type: str
     file_path: str
+    asset_type: str = "tabular"
+    preview_url: str | None = None
 
 
 class MissingValueSummary(BaseModel):

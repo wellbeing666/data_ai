@@ -5,7 +5,9 @@ from fastapi import HTTPException, UploadFile, status
 
 
 UPLOAD_ROOT = Path("storage/uploads")
-ALLOWED_FILE_TYPES = {".csv", ".xlsx", ".xls"}
+TABULAR_FILE_TYPES = {".csv", ".xlsx", ".xls"}
+IMAGE_FILE_TYPES = {".png", ".jpg", ".jpeg", ".webp"}
+ALLOWED_FILE_TYPES = TABULAR_FILE_TYPES | IMAGE_FILE_TYPES
 CHUNK_SIZE = 1024 * 1024
 
 
@@ -19,12 +21,13 @@ async def save_uploaded_dataset(file: UploadFile) -> dict[str, str]:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported file type. Allowed types: {allowed}",
         )
+    asset_type = "image" if file_type in IMAGE_FILE_TYPES else "tabular"
 
     dataset_id = uuid4().hex
     dataset_dir = UPLOAD_ROOT / dataset_id
     dataset_dir.mkdir(parents=True, exist_ok=False)
 
-    file_path = dataset_dir / filename
+    file_path = dataset_dir / (f"original{file_type}" if asset_type == "image" else filename)
     await _save_upload_file(file, file_path)
 
     return {
@@ -32,6 +35,8 @@ async def save_uploaded_dataset(file: UploadFile) -> dict[str, str]:
         "filename": filename,
         "file_type": file_type.lstrip("."),
         "file_path": str(file_path),
+        "asset_type": asset_type,
+        "preview_url": _storage_url(file_path) if asset_type == "image" else None,
     }
 
 
@@ -50,6 +55,14 @@ def _get_safe_filename(filename: str | None) -> str:
         )
 
     return safe_filename
+
+
+def _storage_url(path: Path) -> str:
+    normalized = str(path).replace("\\", "/")
+    storage_index = normalized.find("storage/")
+    if storage_index >= 0:
+        return "/" + normalized[storage_index:]
+    return "/" + normalized.lstrip("/")
 
 
 async def _save_upload_file(file: UploadFile, file_path: Path) -> None:

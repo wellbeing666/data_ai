@@ -13,14 +13,14 @@ INPUT_FILE = r"C:\workspace\data.xlsx"
 OUTPUT_DIR = r"C:\workspace\storage\jobs\job1"
 
 DATASET_PROFILE = {
-    "columns": ["班级", "成绩"],
-    "numeric_summary": {"成绩": {"min": 60, "max": 95, "mean": 80}},
+    "columns": ["class", "score"],
+    "numeric_summary": {"score": {"min": 60, "max": 95, "mean": 80}},
 }
 
 ANALYSIS_PLAN = {
-    "analysis_goal": "按班级统计成绩",
-    "grouping_dimensions": ["班级"],
-    "metrics": ["成绩"],
+    "analysis_goal": "Summarize scores by class",
+    "grouping_dimensions": ["class"],
+    "metrics": ["score"],
     "chart_plan": [],
 }
 
@@ -113,12 +113,28 @@ def test_disallowed_import_falls_back_to_rule_based_script():
         attempt=1,
     )
     assert "Current rule-based CodeAgent" not in script
-    assert "CLASS_COLUMN = '班级'" in script
-    assert "SCORE_COLUMN = '成绩'" in script
+    assert "CLASS_COLUMN = 'class'" in script
+    assert "SCORE_COLUMN = 'score'" in script
+
+
+def test_rule_based_script_does_not_write_repair_context_to_outputs():
+    llm = FakeLLMClient(error=RuntimeError("llm unavailable"))
+    script = CodeAgent(llm_client=llm).generate_script(
+        input_file=INPUT_FILE,
+        output_dir=OUTPUT_DIR,
+        analysis_plan=ANALYSIS_PLAN,
+        dataset_profile=DATASET_PROFILE,
+        attempt=2,
+        previous_execution_result={"duration_ms": 1234},
+        previous_validation_result={"should_retry": True},
+    )
+    assert '"repair_context"' not in script
+    assert "REPAIR_CONTEXT" in script
 
 
 if __name__ == "__main__":
     test_uses_llm_python_script()
     test_strips_markdown_fence()
     test_disallowed_import_falls_back_to_rule_based_script()
+    test_rule_based_script_does_not_write_repair_context_to_outputs()
     print("CodeAgent tests passed.")

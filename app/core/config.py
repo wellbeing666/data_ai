@@ -49,6 +49,10 @@ class DeepSeekSettingsMixin:
     def is_rag_enabled(self) -> bool:
         return str(self.rag_enabled).strip().lower() in {"1", "true", "yes", "on"}
 
+    @property
+    def is_doubao_configured(self) -> bool:
+        return bool(self.doubao_api_key.strip())
+
 
 if BaseSettings is not None:
 
@@ -63,6 +67,9 @@ if BaseSettings is not None:
         rag_top_k: int = Field(default=5)
         rag_chunk_size: int = Field(default=800)
         rag_chunk_overlap: int = Field(default=120)
+        doubao_api_key: str = Field(default="")
+        doubao_base_url: str = Field(default="https://ark.cn-beijing.volces.com/api/v3")
+        doubao_vision_model: str = Field(default="")
 
         model_config = SettingsConfigDict(
             env_file=".env",
@@ -98,6 +105,13 @@ else:
         rag_chunk_overlap: int = Field(
             default_factory=lambda: int(_get_env("RAG_CHUNK_OVERLAP", "120"))
         )
+        doubao_api_key: str = Field(default_factory=lambda: _get_env("DOUBAO_API_KEY"))
+        doubao_base_url: str = Field(
+            default_factory=lambda: _get_env(
+                "DOUBAO_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"
+            )
+        )
+        doubao_vision_model: str = Field(default_factory=lambda: _get_env("DOUBAO_VISION_MODEL"))
 
 
 @lru_cache

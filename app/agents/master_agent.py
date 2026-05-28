@@ -30,11 +30,45 @@ def create_rule_based_analysis_plan(
 
 def _detect_task_type(user_goal: str) -> str:
     goal = user_goal.lower()
+    if _looks_like_prediction_goal(goal):
+        return "what_if_prediction"
     if all(keyword in goal for keyword in ("成绩", "班级", "统计")):
         return "grade_analysis"
     if any(keyword in goal for keyword in ("销量下降", "销售下滑", "收入下降", "gmv 下降")):
         return "sales_decline_analysis"
     return "general_data_analysis"
+
+
+def _looks_like_prediction_goal(goal: str) -> bool:
+    prediction_keywords = (
+        "what if",
+        "what-if",
+        "if ",
+        "forecast",
+        "predict",
+        "prediction",
+        "simulate",
+        "simulation",
+        "scenario",
+        "假设",
+        "如果",
+        "预测",
+        "情景",
+        "场景",
+        "模拟",
+        "可能变化",
+        "可能提升",
+        "可能下降",
+        "提升",
+        "提高",
+        "增加",
+        "降低",
+        "减少",
+        "权重",
+        "预算",
+        "干预",
+    )
+    return any(keyword in goal for keyword in prediction_keywords)
 
 
 def _create_grade_analysis_plan(

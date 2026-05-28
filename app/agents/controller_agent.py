@@ -9,6 +9,7 @@ ALLOWED_TASK_TYPES = {
     "grade_analysis",
     "sales_decline_analysis",
     "general_data_analysis",
+    "what_if_prediction",
 }
 
 PLAN_KEYS = [
@@ -41,6 +42,7 @@ You must classify the task_type as exactly one of:
 - grade_analysis
 - sales_decline_analysis
 - general_data_analysis
+- what_if_prediction
 
 Return only one valid JSON object. Do not output markdown, code fences, comments, or extra explanation.
 The JSON object must contain exactly these keys:
@@ -59,6 +61,7 @@ The JSON object must contain exactly these keys:
 Guidance:
 - Choose grade_analysis for score, exam, student, class, pass rate, excellent rate, or grade summary goals.
 - Choose sales_decline_analysis for revenue, sales, GMV, order, conversion, customer, region, category, or time trend decline goals.
+- Choose what_if_prediction for hypothetical, forecast, prediction, simulation, what-if, intervention, budget/weight adjustment, increase/decrease impact, or possible change goals.
 - Choose general_data_analysis when the goal does not clearly match the two specialized task types.
 - Use only columns that appear in the dataset profile when filling required_columns and charts.
 - Keep reasoning_summary concise and factual.

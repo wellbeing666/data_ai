@@ -66,7 +66,39 @@ def test_controller_falls_back_to_rule_plan():
     }
 
 
+def test_controller_accepts_prediction_task_type_from_llm():
+    llm = FakeLLMClient(
+        payload={
+            "task_type": "what_if_prediction",
+            "task_name": "What-if prediction",
+            "reasoning_summary": "The goal asks about a hypothetical budget increase.",
+            "steps": [],
+            "required_columns": [],
+            "analysis_methods": [],
+            "charts": [],
+            "expected_artifacts": [],
+            "risks": [],
+        }
+    )
+    plan = ControllerAgent(llm_client=llm).create_plan(
+        user_goal="If marketing budget increases by 20%, predict sales changes",
+        dataset_profile={"columns": ["product", "sales", "marketing_budget"]},
+    )
+    assert plan["task_type"] == "what_if_prediction"
+
+
+def test_controller_rule_fallback_detects_prediction_goal():
+    llm = FakeLLMClient(error=RuntimeError("llm unavailable"))
+    plan = ControllerAgent(llm_client=llm).create_plan(
+        user_goal="如果营销预算增加 20%，预测销量可能如何变化",
+        dataset_profile={"columns": ["商品", "销量", "营销预算"]},
+    )
+    assert plan["task_type"] == "what_if_prediction"
+
+
 if __name__ == "__main__":
     test_controller_uses_llm_json_plan()
     test_controller_falls_back_to_rule_plan()
+    test_controller_accepts_prediction_task_type_from_llm()
+    test_controller_rule_fallback_detects_prediction_goal()
     print("ControllerAgent tests passed.")

@@ -287,6 +287,16 @@ h3 {
   line-height: 1.5;
 }
 
+.image-preview {
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  margin-top: 12px;
+}
+
 .compact-upload {
   min-height: 96px;
 }

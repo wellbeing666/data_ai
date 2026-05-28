@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   createAutoRepairAnalysisJobAsync,
   createPredictionJobAsync,
+  createWorkflowJobAsync,
   fetchAnalysisResult,
   fetchAutoRepairAnalysisJobStatus,
   fetchDatasetProfile,
@@ -12,6 +13,8 @@ import {
   fetchKnowledgeDocuments,
   fetchPredictionJobStatus,
   fetchPredictionLog,
+  fetchWorkflowJobStatus,
+  fetchWorkflowLog,
   generateReport,
   deleteKnowledgeDocument,
   searchKnowledge,
@@ -36,7 +39,10 @@ import type {
   PredictionLogResponse,
   PredictionResult,
   ReportGenerateResponse,
-  ValidationAttemptLog
+  ValidationAttemptLog,
+  VisualParseResult,
+  WorkflowJobResponse,
+  WorkflowLogResponse
 } from "./types";
 
 type AnyRecord = Record<string, unknown>;
@@ -77,13 +83,14 @@ export default function App() {
   const [uploadInfo, setUploadInfo] = useState<DatasetUploadResponse | null>(null);
   const [profile, setProfile] = useState<DatasetProfile | null>(null);
   const [health, setHealth] = useState<HealthStatus | null>(null);
-  const [job, setJob] = useState<AutoRepairAnalysisJobResponse | null>(null);
-  const [executionLog, setExecutionLog] = useState<ExecutionLog | null>(null);
+  const [job, setJob] = useState<WorkflowJobResponse | null>(null);
+  const [executionLog, setExecutionLog] = useState<WorkflowLogResponse | null>(null);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [controllerPlan, setControllerPlan] = useState<AnyRecord | null>(null);
   const [ragRetrieval, setRagRetrieval] = useState<AnyRecord | null>(null);
   const [dataUnderstanding, setDataUnderstanding] = useState<AnyRecord | null>(null);
   const [analysisPlan, setAnalysisPlan] = useState<AnyRecord | null>(null);
+  const [visualParseResult, setVisualParseResult] = useState<VisualParseResult | null>(null);
   const [explanation, setExplanation] = useState<ExplanationResult>(emptyExplanation);
   const [report, setReport] = useState<ReportGenerateResponse | null>(null);
   const [reportGeneratedFor, setReportGeneratedFor] = useState("");
@@ -96,8 +103,8 @@ export default function App() {
   const [knowledgeMessage, setKnowledgeMessage] = useState("");
   const [predictionFile, setPredictionFile] = useState<File | null>(null);
   const [predictionGoal, setPredictionGoal] = useState("如果下个月营销预算增加 20%，哪些商品的销量最可能提升？");
-  const [predictionJob, setPredictionJob] = useState<PredictionJobResponse | null>(null);
-  const [predictionLog, setPredictionLog] = useState<PredictionLogResponse | null>(null);
+  const [predictionJob, setPredictionJob] = useState<WorkflowJobResponse | null>(null);
+  const [predictionLog, setPredictionLog] = useState<WorkflowLogResponse | null>(null);
   const [predictionResult, setPredictionResult] = useState<PredictionResult | null>(null);
   const [predictionExplanation, setPredictionExplanation] = useState<PredictionExplanationResult>(emptyPredictionExplanation);
   const [hypothesisPlan, setHypothesisPlan] = useState<AnyRecord | null>(null);
@@ -113,6 +120,7 @@ export default function App() {
           status: "unknown",
           llm_mode: "mock/fallback",
           deepseek_configured: false,
+          doubao_configured: false,
           message: "无法读取 DeepSeek 配置状态。"
         });
       });
@@ -130,7 +138,7 @@ export default function App() {
     let cancelled = false;
     const tick = async () => {
       try {
-        const latest = await fetchAutoRepairAnalysisJobStatus(job.job_id);
+        const latest = await fetchWorkflowJobStatus(job.job_id);
         if (!cancelled) {
           await applyJobUpdate(latest);
         }
@@ -150,14 +158,14 @@ export default function App() {
   }, [job?.job_id, job?.status]);
 
   useEffect(() => {
-    if (!predictionJob?.job_id || terminalStatuses.has(predictionJob.status)) {
+    if (!predictionJob?.job_id || predictionJob.job_id === job?.job_id || terminalStatuses.has(predictionJob.status)) {
       return;
     }
 
     let cancelled = false;
     const tick = async () => {
       try {
-        const latest = await fetchPredictionJobStatus(predictionJob.job_id);
+        const latest = await fetchWorkflowJobStatus(predictionJob.job_id);
         if (!cancelled) {
           await applyPredictionJobUpdate(latest);
         }
@@ -198,24 +206,56 @@ export default function App() {
   }, [analysisResult, job, reportGeneratedFor]);
 
   const isFallbackMode = !health?.deepseek_configured || health.llm_mode !== "deepseek";
+  const isPredictionWorkflow = job?.workflow_type === "what_if_prediction" || job?.task_type === "what_if_prediction";
   const events = executionLog?.events?.length ? executionLog.events : job?.events ?? [];
-  const chartPaths = getChartPaths(analysisResult);
+  const chartPaths = isPredictionWorkflow ? predictionResult?.charts ?? [] : getChartPaths(analysisResult);
   const latestValidation = lastItem(executionLog?.validation_results);
   const latestExecution = lastItem(executionLog?.execution_results);
 
   const steps = useMemo(
-    () =>
-      buildAgentSteps({
+    () => {
+      if (isPredictionWorkflow) {
+        return buildPredictionSteps({
+          job,
+          log: executionLog,
+          controllerPlan,
+          ragRetrieval,
+          visualParseResult,
+          hypothesisPlan,
+          predictionPlan,
+          predictionResult,
+          explanation: predictionExplanation,
+          events
+        });
+      }
+      return buildAgentSteps({
         job,
         controllerPlan,
         ragRetrieval,
+        visualParseResult,
         dataUnderstanding,
         analysisPlan,
         executionLog,
         explanation,
         events
-      }),
-    [job, controllerPlan, ragRetrieval, dataUnderstanding, analysisPlan, executionLog, explanation, events]
+      });
+    },
+    [
+      job,
+      isPredictionWorkflow,
+      executionLog,
+      hypothesisPlan,
+      predictionPlan,
+      predictionResult,
+      predictionExplanation,
+      events,
+      controllerPlan,
+      ragRetrieval,
+      visualParseResult,
+      dataUnderstanding,
+      analysisPlan,
+      explanation
+    ]
   );
 
   async function refreshKnowledgeDocuments() {
@@ -297,7 +337,7 @@ export default function App() {
       setProfile(datasetProfile);
       setPredictionStatus("running");
       setPredictionMessage("情景预测任务已启动，状态将实时刷新。");
-      const createdJob = await createPredictionJobAsync(uploaded.dataset_id, predictionGoal, 3);
+      const createdJob = await createWorkflowJobAsync(uploaded.dataset_id, predictionGoal, 3);
       await applyPredictionJobUpdate(createdJob);
     } catch (error) {
       setPredictionStatus("failed");
@@ -305,7 +345,7 @@ export default function App() {
     }
   }
 
-  async function applyPredictionJobUpdate(nextJob: PredictionJobResponse) {
+  async function applyPredictionJobUpdate(nextJob: WorkflowJobResponse) {
     setPredictionJob(nextJob);
     setPredictionStatus(statusFromJob(nextJob.status));
     setPredictionMessage(predictionMessageFromJob(nextJob));
@@ -321,7 +361,7 @@ export default function App() {
 
   async function refreshPredictionLog(jobId: string) {
     try {
-      setPredictionLog(await fetchPredictionLog(jobId));
+      setPredictionLog(await fetchWorkflowLog(jobId));
     } catch {
       // The prediction log appears shortly after the background workflow writes progress.
     }
@@ -351,7 +391,7 @@ export default function App() {
 
   async function handleRunAnalysis() {
     if (!selectedFile) {
-      setMessage("请先选择 CSV / Excel 文件。");
+      setMessage("请先选择 CSV / Excel 文件或图片。");
       return;
     }
     if (!userGoal.trim()) {
@@ -369,20 +409,33 @@ export default function App() {
     setRagRetrieval(null);
     setDataUnderstanding(null);
     setAnalysisPlan(null);
+    setVisualParseResult(null);
     setExplanation(emptyExplanation);
     setReport(null);
     setReportGeneratedFor("");
+    setPredictionJob(null);
+    setPredictionLog(null);
+    setPredictionResult(null);
+    setPredictionExplanation(emptyPredictionExplanation);
+    setHypothesisPlan(null);
+    setPredictionPlan(null);
+    setPredictionStatus("idle");
+    setPredictionMessage("");
 
     try {
       const uploaded = await uploadDataset(selectedFile);
       setUploadInfo(uploaded);
 
-      const datasetProfile = await fetchDatasetProfile(uploaded.dataset_id);
-      setProfile(datasetProfile);
+      if (uploaded.asset_type === "image") {
+        setProfile(null);
+      } else {
+        const datasetProfile = await fetchDatasetProfile(uploaded.dataset_id);
+        setProfile(datasetProfile);
+      }
 
       setStatus("running");
       setMessage("任务已启动，Agent 状态将实时刷新。");
-      const createdJob = await createAutoRepairAnalysisJobAsync(uploaded.dataset_id, userGoal, 3);
+      const createdJob = await createWorkflowJobAsync(uploaded.dataset_id, userGoal, 3);
       await applyJobUpdate(createdJob);
     } catch (error) {
       setStatus("failed");
@@ -390,25 +443,37 @@ export default function App() {
     }
   }
 
-  async function applyJobUpdate(nextJob: AutoRepairAnalysisJobResponse) {
+  async function applyJobUpdate(nextJob: WorkflowJobResponse) {
     setJob(nextJob);
     setStatus(statusFromJob(nextJob.status));
     setMessage(messageFromJob(nextJob));
+    const predictionWorkflow = nextJob.workflow_type === "what_if_prediction" || nextJob.task_type === "what_if_prediction";
+    if (predictionWorkflow) {
+      setPredictionJob(nextJob);
+      setPredictionStatus(statusFromJob(nextJob.status));
+      setPredictionMessage(predictionMessageFromJob(nextJob));
+    }
 
     await Promise.allSettled([
       refreshExecutionLog(nextJob.job_id),
       refreshJsonPath(nextJob.controller_plan_path, setControllerPlan),
       refreshJsonPath(nextJob.rag_retrieval_path, setRagRetrieval),
+      refreshJsonPath(nextJob.visual_parse_result_path, setVisualParseResult),
       refreshJsonPath(nextJob.data_understanding_path, setDataUnderstanding),
+      refreshJsonPath(nextJob.dataset_profile_path, setProfile),
       refreshJsonPath(nextJob.analysis_plan_path, setAnalysisPlan),
       refreshAnalysisResult(nextJob.final_result_path),
-      refreshExplanation(nextJob.explanation_path)
+      refreshExplanation(nextJob.explanation_path),
+      refreshJsonPath(nextJob.hypothesis_plan_path, setHypothesisPlan),
+      refreshJsonPath(nextJob.prediction_plan_path, setPredictionPlan),
+      refreshPredictionResult(nextJob.final_prediction_result_path),
+      refreshPredictionExplanation(nextJob.prediction_explanation_path)
     ]);
   }
 
   async function refreshExecutionLog(jobId: string) {
     try {
-      setExecutionLog(await fetchExecutionLog(jobId));
+      setExecutionLog(await fetchWorkflowLog(jobId));
     } catch {
       // The log file appears shortly after the background workflow writes progress.
     }
@@ -462,16 +527,16 @@ export default function App() {
           <section className="panel">
             <div className="panel-header">
               <h2>任务配置</h2>
-              <span>CSV / XLSX / XLS</span>
+              <span>CSV / XLSX / XLS / 图片</span>
             </div>
             <label className="upload-zone">
               <input
                 type="file"
-                accept=".csv,.xlsx,.xls"
+                accept=".csv,.xlsx,.xls,.png,.jpg,.jpeg,.webp"
                 onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
               />
-              <strong>{selectedFile ? selectedFile.name : "选择数据文件"}</strong>
-              <span>上传后由多 Agent 完成理解、规划、代码生成、验证和解释。</span>
+              <strong>{selectedFile ? selectedFile.name : "选择数据文件或图片"}</strong>
+              <span>支持表格或图片截图；图片会先由视觉解析 Agent 抽取结构化数据。</span>
             </label>
 
             <label className="form-label" htmlFor="goal-input">
@@ -518,7 +583,16 @@ export default function App() {
                   <dd>{uploadInfo.filename}</dd>
                 </div>
               ) : null}
+              {uploadInfo?.asset_type ? (
+                <div>
+                  <dt>输入类型</dt>
+                  <dd>{uploadInfo.asset_type === "image" ? "图片解析" : "表格数据"}</dd>
+                </div>
+              ) : null}
             </dl>
+            {uploadInfo?.preview_url ? (
+              <img className="image-preview" alt="上传图片预览" src={uploadInfo.preview_url} />
+            ) : null}
           </section>
 
           {profile ? (
@@ -543,7 +617,6 @@ export default function App() {
             {[
               ["setup", "任务配置"],
               ["knowledge", "知识库"],
-              ["prediction", "情景预测"],
               ["process", "Agent 过程"],
               ["charts", "图表结果"],
               ["insights", "结论报告"],
@@ -579,26 +652,20 @@ export default function App() {
             />
           ) : null}
 
-          {activePage === "prediction" ? (
-            <PredictionPage
-              file={predictionFile}
-              goal={predictionGoal}
-              status={predictionStatus}
-              message={predictionMessage}
-              job={predictionJob}
-              log={predictionLog}
+          {activePage === "process" ? (
+            <ProcessPage
+              job={job}
+              steps={steps}
+              controllerPlan={controllerPlan}
+              ragRetrieval={ragRetrieval}
+              visualParseResult={visualParseResult}
+              dataUnderstanding={dataUnderstanding}
+              analysisPlan={analysisPlan}
               hypothesisPlan={hypothesisPlan}
               predictionPlan={predictionPlan}
-              predictionResult={predictionResult}
-              explanation={predictionExplanation}
-              onFileChange={setPredictionFile}
-              onGoalChange={setPredictionGoal}
-              onRun={handleRunPrediction}
+              isPredictionWorkflow={isPredictionWorkflow}
+              events={events}
             />
-          ) : null}
-
-          {activePage === "process" ? (
-            <ProcessPage job={job} steps={steps} controllerPlan={controllerPlan} ragRetrieval={ragRetrieval} dataUnderstanding={dataUnderstanding} analysisPlan={analysisPlan} events={events} />
           ) : null}
 
           {activePage === "charts" ? (
@@ -606,7 +673,10 @@ export default function App() {
           ) : null}
 
           {activePage === "insights" ? (
-            <InsightsPage explanation={explanation} report={report} />
+            <InsightsPage
+              explanation={isPredictionWorkflow ? toExplanationResult(predictionExplanation) : explanation}
+              report={isPredictionWorkflow ? null : report}
+            />
           ) : null}
 
           {activePage === "logs" ? (
@@ -636,7 +706,7 @@ function SetupPage({
       <div className="setup-grid">
         <article className="info-card">
           <strong>1. 上传数据</strong>
-          <p>支持 CSV、XLSX、XLS。上传后系统会生成数据画像，供各 Agent 使用。</p>
+          <p>支持 CSV、XLSX、XLS 和图片截图。图片会先抽取为结构化数据，再进入 Agent 工作流。</p>
         </article>
         <article className="info-card">
           <strong>2. 输入目标</strong>
@@ -793,8 +863,8 @@ function PredictionPage({
   goal: string;
   status: string;
   message: string;
-  job: PredictionJobResponse | null;
-  log: PredictionLogResponse | null;
+  job: WorkflowJobResponse | null;
+  log: WorkflowLogResponse | null;
   hypothesisPlan: AnyRecord | null;
   predictionPlan: AnyRecord | null;
   predictionResult: PredictionResult | null;
@@ -805,7 +875,18 @@ function PredictionPage({
 }) {
   const events = log?.events?.length ? log.events : job?.events ?? [];
   const chartPaths = predictionResult?.charts ?? [];
-  const steps = buildPredictionSteps({ job, log, hypothesisPlan, predictionPlan, predictionResult, explanation, events });
+  const steps = buildPredictionSteps({
+    job,
+    log,
+    controllerPlan: null,
+    ragRetrieval: null,
+    visualParseResult: null,
+    hypothesisPlan,
+    predictionPlan,
+    predictionResult,
+    explanation,
+    events
+  });
 
   return (
     <section className="page-section">
@@ -948,16 +1029,24 @@ function ProcessPage({
   steps,
   controllerPlan,
   ragRetrieval,
+  visualParseResult,
   dataUnderstanding,
   analysisPlan,
+  hypothesisPlan,
+  predictionPlan,
+  isPredictionWorkflow,
   events
 }: {
-  job: AutoRepairAnalysisJobResponse | null;
+  job: WorkflowJobResponse | null;
   steps: StepView[];
   controllerPlan: AnyRecord | null;
   ragRetrieval: AnyRecord | null;
+  visualParseResult: VisualParseResult | null;
   dataUnderstanding: AnyRecord | null;
   analysisPlan: AnyRecord | null;
+  hypothesisPlan: AnyRecord | null;
+  predictionPlan: AnyRecord | null;
+  isPredictionWorkflow: boolean;
   events: ExecutionLogEvent[];
 }) {
   return (
@@ -980,8 +1069,18 @@ function ProcessPage({
       <div className="agent-output-grid">
         <JsonSummary title="主控 Agent 输出" value={controllerPlan} />
         <JsonSummary title="RAG 命中上下文" value={ragRetrieval} />
-        <JsonSummary title="数据理解 Agent 输出" value={dataUnderstanding} />
-        <JsonSummary title="分析 Agent 输出" value={analysisPlan} />
+        <JsonSummary title="视觉解析 Agent 输出" value={visualParseResult as AnyRecord | null} />
+        {isPredictionWorkflow ? (
+          <>
+            <JsonSummary title="假设解析 Agent 输出" value={hypothesisPlan} />
+            <JsonSummary title="预测计划 Agent 输出" value={predictionPlan} />
+          </>
+        ) : (
+          <>
+            <JsonSummary title="数据理解 Agent 输出" value={dataUnderstanding} />
+            <JsonSummary title="分析 Agent 输出" value={analysisPlan} />
+          </>
+        )}
       </div>
       <RecentEvents events={events} />
     </section>
@@ -1001,7 +1100,7 @@ function ChartsPage({
         <h2>最终图表</h2>
         <span>{chartPaths.length} 个图表</span>
       </div>
-      {analysisResult && chartPaths.length ? (
+      {chartPaths.length ? (
         <div className="chart-grid">
           {chartPaths.map((chartPath, index) => (
             <figure className="chart-card" key={chartPath}>
@@ -1057,7 +1156,7 @@ function LogsPage({
   latestExecution,
   latestValidation
 }: {
-  job: AutoRepairAnalysisJobResponse | null;
+  job: WorkflowJobResponse | null;
   events: ExecutionLogEvent[];
   latestExecution: ExecutionAttemptLog | undefined;
   latestValidation: ValidationAttemptLog | undefined;
@@ -1176,12 +1275,13 @@ function EmptyState({ title, text, compact = false }: { title: string; text: str
 }
 
 function buildAgentSteps(input: {
-  job: AutoRepairAnalysisJobResponse | null;
+  job: WorkflowJobResponse | null;
   controllerPlan: AnyRecord | null;
   ragRetrieval: AnyRecord | null;
+  visualParseResult: VisualParseResult | null;
   dataUnderstanding: AnyRecord | null;
   analysisPlan: AnyRecord | null;
-  executionLog: ExecutionLog | null;
+  executionLog: WorkflowLogResponse | null;
   explanation: ExplanationResult;
   events: ExecutionLogEvent[];
 }): StepView[] {
@@ -1193,6 +1293,13 @@ function buildAgentSteps(input: {
   const validation = lastItem(input.executionLog?.validation_results);
 
   const definitions = [
+    {
+      key: "visual",
+      title: "视觉解析 Agent 正在抽取图片数据",
+      stageNames: ["visual_parsing"],
+      done: Boolean(input.visualParseResult || input.job?.visual_parse_result_path || input.job?.asset_type !== "image"),
+      summary: visualSummary(input.visualParseResult, input.job)
+    },
     {
       key: "rag",
       title: "RAG 正在检索业务知识库",
@@ -1275,8 +1382,11 @@ function buildAgentSteps(input: {
 }
 
 function buildPredictionSteps(input: {
-  job: PredictionJobResponse | null;
-  log: PredictionLogResponse | null;
+  job: WorkflowJobResponse | null;
+  log: WorkflowLogResponse | null;
+  controllerPlan: AnyRecord | null;
+  ragRetrieval: AnyRecord | null;
+  visualParseResult: VisualParseResult | null;
   hypothesisPlan: AnyRecord | null;
   predictionPlan: AnyRecord | null;
   predictionResult: PredictionResult | null;
@@ -1289,6 +1399,27 @@ function buildPredictionSteps(input: {
   const execution = lastItem(input.log?.execution_results);
   const validation = lastItem(input.log?.validation_results);
   const definitions = [
+    {
+      key: "visual",
+      title: "视觉解析 Agent 正在抽取图片数据",
+      stageNames: ["visual_parsing"],
+      done: Boolean(input.visualParseResult || input.job?.visual_parse_result_path || input.job?.asset_type !== "image"),
+      summary: visualSummary(input.visualParseResult, input.job)
+    },
+    {
+      key: "rag",
+      title: "RAG 正在检索业务知识库",
+      stageNames: ["rag_retrieval"],
+      done: Boolean(input.ragRetrieval || input.job?.rag_retrieval_path),
+      summary: ragSummary(input.ragRetrieval)
+    },
+    {
+      key: "controller",
+      title: "主控 Agent 正在判断工作流",
+      stageNames: ["controller"],
+      done: Boolean(input.controllerPlan || input.job?.controller_plan_path),
+      summary: controllerSummary(input.controllerPlan)
+    },
     {
       key: "hypothesis",
       title: "假设解析 Agent 正在解析问题",
@@ -1375,6 +1506,21 @@ function ragSummary(result: AnyRecord | null): string {
   return results.length ? `命中 ${results.length} 条知识片段。${message}` : message;
 }
 
+function visualSummary(result: VisualParseResult | null, job: WorkflowJobResponse | null): string {
+  if (job?.asset_type !== "image") {
+    return "当前输入是表格数据，无需视觉解析。";
+  }
+  if (!result) {
+    return "等待豆包视觉模型从图片中抽取表格或图表数据。";
+  }
+  const columnCount = result.columns?.length ?? 0;
+  const rowCount = result.rows?.length ?? 0;
+  const confidence = Number.isFinite(result.confidence) ? `${Math.round(result.confidence * 100)}%` : "-";
+  return result.success
+    ? `已抽取 ${columnCount} 列、${rowCount} 行，置信度 ${confidence}。`
+    : result.warnings?.[0] || "图片未能抽取出可靠结构化数据。";
+}
+
 function understandingSummary(result: AnyRecord | null): string {
   if (!result) {
     return "等待字段语义识别。";
@@ -1407,6 +1553,17 @@ function getChartPaths(result: AnalysisResult | null): string[] {
   return result.charts.map((chart) => String(chart));
 }
 
+function toExplanationResult(predictionExplanation: PredictionExplanationResult): ExplanationResult {
+  return {
+    summary: predictionExplanation.summary,
+    key_findings: predictionExplanation.key_findings,
+    chart_explanations: [],
+    recommendations: predictionExplanation.recommendations,
+    limitations: predictionExplanation.limitations,
+    ppt_outline: predictionExplanation.ppt_outline
+  };
+}
+
 function chartTitle(path: string, index: number): string {
   const filename = path.replace(/\\/g, "/").split("/").pop();
   return filename || `图表 ${index + 1}`;
@@ -1422,7 +1579,7 @@ function statusFromJob(value: string): "idle" | "uploading" | "running" | "succe
   return "running";
 }
 
-function messageFromJob(job: AutoRepairAnalysisJobResponse): string {
+function messageFromJob(job: WorkflowJobResponse): string {
   if (job.status === "success") {
     return "分析完成。";
   }
@@ -1432,7 +1589,7 @@ function messageFromJob(job: AutoRepairAnalysisJobResponse): string {
   return `${stageLabel(job.current_stage ?? "running")}，状态实时刷新中。`;
 }
 
-function predictionMessageFromJob(job: PredictionJobResponse): string {
+function predictionMessageFromJob(job: WorkflowJobResponse): string {
   if (job.status === "success") {
     return "情景预测完成。";
   }

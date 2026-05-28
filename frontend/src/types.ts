@@ -3,6 +3,8 @@ export interface DatasetUploadResponse {
   filename: string;
   file_type: string;
   file_path: string;
+  asset_type?: "tabular" | "image";
+  preview_url?: string | null;
 }
 
 export interface MissingValueSummary {
@@ -47,6 +49,7 @@ export interface HealthStatus {
   status: string;
   llm_mode: string;
   deepseek_configured: boolean;
+  doubao_configured?: boolean;
   message: string;
 }
 
@@ -310,4 +313,71 @@ export interface PredictionLogResponse {
   max_retries: number;
   artifacts: Record<string, unknown>;
   events: ExecutionLogEvent[];
+}
+
+export interface WorkflowJobResponse {
+  job_id: string;
+  status: string;
+  current_stage?: string | null;
+  workflow_type?: string | null;
+  task_type?: string | null;
+  asset_type?: string | null;
+  attempts: AutoRepairAttemptResult[];
+  job_dir: string;
+  controller_plan_path?: string | null;
+  rag_retrieval_path?: string | null;
+  dataset_profile_path?: string | null;
+  visual_parse_result_path?: string | null;
+  visual_extracted_dataset_path?: string | null;
+  visual_extraction_confidence?: number | null;
+  data_understanding_path?: string | null;
+  analysis_plan_path?: string | null;
+  explanation_path?: string | null;
+  hypothesis_plan_path?: string | null;
+  prediction_plan_path?: string | null;
+  prediction_explanation_path?: string | null;
+  final_result_path: string | null;
+  final_prediction_result_path: string | null;
+  final_report_data_path: string | null;
+  final_validation_result_path: string | null;
+  effective_max_retries?: number | null;
+  events?: ExecutionLogEvent[];
+  error?: Record<string, unknown> | null;
+}
+
+export interface WorkflowLogResponse {
+  job_id: string;
+  dataset_id?: string | null;
+  status: string;
+  workflow_type: string;
+  task_type?: string | null;
+  asset_type?: string | null;
+  user_goal: string;
+  analysis_plan?: Record<string, unknown> | null;
+  prediction_plan?: Record<string, unknown> | null;
+  generated_python_code_paths: string[];
+  executor_code_path?: string | null;
+  execution_results: ExecutionAttemptLog[];
+  validation_results: ValidationAttemptLog[];
+  retry_count: number;
+  max_retries: number;
+  artifacts: Record<string, unknown>;
+  events: ExecutionLogEvent[];
+}
+
+export interface VisualParseResult {
+  success: boolean;
+  image_type: string;
+  tables: Array<Record<string, unknown>>;
+  chart_data: Array<unknown>;
+  selected_table: {
+    columns?: string[];
+    rows?: Array<Record<string, unknown>>;
+    confidence?: number;
+  };
+  columns: string[];
+  rows: Array<Record<string, unknown>>;
+  confidence: number;
+  warnings: string[];
+  limitations: string[];
 }

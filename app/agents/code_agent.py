@@ -30,6 +30,7 @@ Hard requirements:
 - The code must create at least one PNG chart under OUTPUT_DIR / "charts".
 - The code must support CSV, XLSX, and XLS input files.
 - The code must handle Chinese column names by treating all column names as strings and preserving UTF-8 JSON output.
+- Do not write repair context, previous execution logs, validation logs, stderr, artifact lists, duration_ms, or size_bytes into analysis_result.json or report_data.json.
 - Use matplotlib Agg backend before importing pyplot.
 - Never read or write outside INPUT_FILE and OUTPUT_DIR.
 """
@@ -236,7 +237,6 @@ def write_error_result(error):
         "error_type": type(error).__name__,
         "error_message": str(error),
         "charts": [],
-        "repair_context": REPAIR_CONTEXT,
     }}
     safe_write_json(OUTPUT_DIR / "analysis_result.json", payload)
     safe_write_json(OUTPUT_DIR / "report_data.json", payload)
@@ -332,7 +332,6 @@ def main():
             }},
             "summary": summary_records,
             "charts": charts,
-            "repair_context": REPAIR_CONTEXT,
         }}
         report_data = {{
             "success": True,
