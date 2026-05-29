@@ -98,11 +98,6 @@ outputs/
 *.jpeg
 *.webp
 
-# Data files generated or uploaded locally
-*.csv
-*.xls
-*.xlsx
-
 # If you need to commit sample datasets, uncomment and adjust:
 # !test_data/
 # !test_data/**/*.csv
