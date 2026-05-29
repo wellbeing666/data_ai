@@ -1,0 +1,365 @@
+{
+  "analysis_manufacturing_quality_test.csv": {
+    "category": "普通数据分析 / CSV / 制造质量",
+    "recommended_goal": "分析这批制造质检数据，按生产线、工序、班次比较不良率，找出高风险组合并生成图表。",
+    "expected": {
+      "row_count": 384,
+      "line_avg_defect_rate": {
+        "C线": 0.0443,
+        "D线": 0.0381,
+        "B线": 0.0344,
+        "A线": 0.0301
+      },
+      "process_avg_defect_rate": {
+        "终检": 0.0429,
+        "涂装": 0.0416,
+        "焊接": 0.0334,
+        "冲压": 0.0289
+      },
+      "shift_avg_defect_rate": {
+        "夜班": 0.0425,
+        "中班": 0.0359,
+        "白班": 0.0317
+      },
+      "top_high_risk_combinations": [
+        {
+          "生产线": "C线",
+          "工序": "终检",
+          "班次": "夜班",
+          "不良率": 0.056
+        },
+        {
+          "生产线": "C线",
+          "工序": "涂装",
+          "班次": "夜班",
+          "不良率": 0.0559
+        },
+        {
+          "生产线": "C线",
+          "工序": "终检",
+          "班次": "中班",
+          "不良率": 0.0501
+        },
+        {
+          "生产线": "D线",
+          "工序": "终检",
+          "班次": "夜班",
+          "不良率": 0.0498
+        },
+        {
+          "生产线": "D线",
+          "工序": "涂装",
+          "班次": "夜班",
+          "不良率": 0.0492
+        }
+      ],
+      "missing_values": {
+        "设备停机分钟": 1,
+        "环境湿度": 1,
+        "检验员": 1
+      }
+    },
+    "acceptance_checks": [
+      "workflow_type 应为 auto_repair 或 task_type 为 general_data_analysis",
+      "报告应识别 C线平均不良率最高，其次 D线",
+      "报告应识别 终检、涂装工序高于焊接、冲压",
+      "报告应提示 设备停机分钟、环境湿度、检验员存在缺失值",
+      "图表应至少包含缺失值图或分组不良率对比图"
+    ]
+  },
+  "analysis_employee_attendance_test.xlsx": {
+    "category": "普通数据分析 / Excel / 人员运营",
+    "recommended_goal": "按部门分析出勤率、平均加班小时、任务完成率和离职风险，并生成图表。",
+    "expected": {
+      "row_count": 48,
+      "department_avg": {
+        "出勤率": {
+          "仓储物流": 0.918,
+          "现场运维": 0.935,
+          "客服中心": 0.942,
+          "质检中心": 0.956,
+          "研发部": 0.964,
+          "财务共享": 0.972
+        },
+        "平均加班小时": {
+          "客服中心": 35.4,
+          "现场运维": 30.4,
+          "研发部": 25.4,
+          "仓储物流": 22.4,
+          "质检中心": 18.4,
+          "财务共享": 13.4
+        },
+        "任务完成率": {
+          "研发部": 0.96,
+          "财务共享": 0.934,
+          "质检中心": 0.923,
+          "仓储物流": 0.904,
+          "现场运维": 0.896,
+          "客服中心": 0.869
+        },
+        "离职风险分": {
+          "客服中心": 0.452,
+          "现场运维": 0.31,
+          "仓储物流": 0.217,
+          "质检中心": 0.062,
+          "研发部": 0.05,
+          "财务共享": 0.05
+        }
+      },
+      "highest_turnover_risk_department": "客服中心",
+      "lowest_attendance_department": "仓储物流",
+      "highest_completion_department": "研发部",
+      "missing_values": {
+        "培训小时": 1,
+        "绩效评分": 1
+      }
+    },
+    "acceptance_checks": [
+      "系统应读取第一个工作表：员工运营数据",
+      "报告应识别 客服中心 平均加班小时最高且离职风险分最高",
+      "报告应识别 仓储物流 出勤率最低",
+      "报告应识别 研发部 任务完成率最高",
+      "报告应提示 培训小时、绩效评分存在缺失"
+    ]
+  },
+  "scenario_support_staffing_response_time_test.csv": {
+    "category": "情景预测 / CSV / 客服排班",
+    "recommended_goal": "如果客服人数增加 20%，各渠道平均响应时长预计如何变化？",
+    "expected": {
+      "row_count": 72,
+      "target": "平均响应时长_秒",
+      "intervention": "客服人数 +20%",
+      "model_reference": "LinearRegression using 客服人数、工单量、夜间占比、复杂工单占比; missing 客服人数 filled with median.",
+      "baseline_mean": 805.056,
+      "predicted_mean": 757.285,
+      "overall_absolute_change": -47.771,
+      "model_coefficient_for_staff": -28.2853,
+      "channel_impacts": [
+        {
+          "渠道": "电话热线",
+          "baseline_mean": 777.367,
+          "predicted_mean": 707.66,
+          "absolute_change": -69.707,
+          "percent_change": -0.0897,
+          "direction": "降低"
+        },
+        {
+          "渠道": "小程序工单",
+          "baseline_mean": 824.522,
+          "predicted_mean": 775.274,
+          "absolute_change": -49.248,
+          "percent_change": -0.0597,
+          "direction": "降低"
+        },
+        {
+          "渠道": "在线客服",
+          "baseline_mean": 794.267,
+          "predicted_mean": 745.109,
+          "absolute_change": -49.158,
+          "percent_change": -0.0619,
+          "direction": "降低"
+        },
+        {
+          "渠道": "邮件工单",
+          "baseline_mean": 824.067,
+          "predicted_mean": 801.097,
+          "absolute_change": -22.97,
+          "percent_change": -0.0279,
+          "direction": "降低"
+        }
+      ],
+      "missing_values": {
+        "客服人数": 1
+      }
+    },
+    "acceptance_checks": [
+      "controller_plan.task_type 应为 what_if_prediction",
+      "hypothesis_plan.intervention.matched_column 应为 客服人数",
+      "prediction_result.target_metric 应为 平均响应时长_秒",
+      "prediction_result.entity_dimension 应为 渠道",
+      "top_impacted_entities 中各渠道 direction 应主要为 降低",
+      "电话热线 应是绝对下降幅度最大的渠道",
+      "解释中应强调预测不是确定因果"
+    ]
+  },
+  "scenario_canteen_window_wait_time_test.csv": {
+    "category": "情景预测 / CSV / 绝对增量干预",
+    "recommended_goal": "如果开放窗口数增加 2 个，各时段平均排队时间可能下降多少？",
+    "expected": {
+      "row_count": 84,
+      "target": "平均排队时间_分钟",
+      "intervention": "开放窗口数 +2 个（绝对增量）",
+      "business_reference": "数据按每增加 1 个窗口约减少 1.8 分钟排队时间生成；正确处理绝对增量时，+2 窗口应使平均排队时间约降低 3.6 分钟。",
+      "baseline_mean": 10.731,
+      "predicted_mean_correct_absolute": 7.391,
+      "overall_absolute_change_correct": -3.34,
+      "time_slot_impacts_correct_absolute": [
+        {
+          "时段": "午餐",
+          "baseline_mean": 19.158,
+          "predicted_mean": 15.558,
+          "absolute_change": -3.6,
+          "percent_change": -0.1879,
+          "direction": "降低"
+        },
+        {
+          "时段": "晚餐",
+          "baseline_mean": 14.868,
+          "predicted_mean": 11.268,
+          "absolute_change": -3.6,
+          "percent_change": -0.2421,
+          "direction": "降低"
+        },
+        {
+          "时段": "早餐",
+          "baseline_mean": 4.939,
+          "predicted_mean": 1.697,
+          "absolute_change": -3.242,
+          "percent_change": -0.6564,
+          "direction": "降低"
+        },
+        {
+          "时段": "夜宵",
+          "baseline_mean": 3.96,
+          "predicted_mean": 1.042,
+          "absolute_change": -2.917,
+          "percent_change": -0.7367,
+          "direction": "降低"
+        }
+      ],
+      "missing_values": {
+        "开放窗口数": 1
+      },
+      "bug_probe": "重点观察系统是否把“增加 2 个窗口”误解释为 2% 的相对变化。"
+    },
+    "acceptance_checks": [
+      "controller_plan.task_type 应为 what_if_prediction",
+      "hypothesis_plan.intervention.change_type 应为 absolute",
+      "hypothesis_plan.intervention.matched_column 应为 开放窗口数",
+      "prediction_result.target_metric 应为 平均排队时间_分钟",
+      "prediction_result.entity_dimension 应优先为 时段",
+      "正确业务预期是平均排队时间约下降 3.3 到 3.6 分钟；如果仅下降约 0.1 分钟，说明可能把 +2 个误当成 +2%"
+    ]
+  },
+  "image_inventory_risk_table_test.png": {
+    "category": "图片识别 / 表格截图 / 库存风险",
+    "recommended_goal": "请从这张库存看板截图中识别表格，找出缺货风险最高的物料，并生成图表。",
+    "expected": {
+      "expected_columns": [
+        "物料编码",
+        "物料名称",
+        "仓库",
+        "当前库存",
+        "安全库存",
+        "日均消耗",
+        "供应周期天",
+        "风险等级"
+      ],
+      "row_count": 7,
+      "top_stockout_risk_materials": [
+        {
+          "物料编码": "M-1006",
+          "物料名称": "电池模组",
+          "风险等级": "高",
+          "库存覆盖天数": 4.75,
+          "安全库存缺口": -115
+        },
+        {
+          "物料编码": "M-1002",
+          "物料名称": "关键芯片",
+          "风险等级": "高",
+          "库存覆盖天数": 3.27,
+          "安全库存缺口": -95
+        },
+        {
+          "物料编码": "M-1004",
+          "物料名称": "密封圈",
+          "风险等级": "高",
+          "库存覆盖天数": 2.73,
+          "安全库存缺口": -60
+        }
+      ],
+      "lowest_coverage": [
+        {
+          "物料编码": "M-1004",
+          "物料名称": "密封圈",
+          "库存覆盖天数": 2.73
+        },
+        {
+          "物料编码": "M-1002",
+          "物料名称": "关键芯片",
+          "库存覆盖天数": 3.27
+        },
+        {
+          "物料编码": "M-1006",
+          "物料名称": "电池模组",
+          "库存覆盖天数": 4.75
+        }
+      ]
+    },
+    "expected_csv": "visual_inventory_risk_expected.csv",
+    "acceptance_checks": [
+      "asset_type 应为 image",
+      "应先生成 visual_parse_result.json 和 visual_extracted.csv",
+      "视觉结构化数据至少应包含 物料编码、物料名称、当前库存、安全库存、日均消耗、供应周期天、风险等级",
+      "高风险物料应包含 电池模组、关键芯片、密封圈",
+      "最低库存覆盖天数应为 密封圈、关键芯片、电池模组"
+    ]
+  },
+  "image_energy_usage_chart_test.png": {
+    "category": "图片识别 / 图表截图 / 能耗趋势",
+    "recommended_goal": "识别图表中的月度用电量和电费数据，分析峰值月份、环比变化和总体趋势。",
+    "expected": {
+      "expected_columns": [
+        "月份",
+        "用电量_kWh",
+        "电费_元"
+      ],
+      "row_count": 8,
+      "peak_month": "8月",
+      "peak_usage_kwh": 19200,
+      "total_usage_kwh": 124950,
+      "largest_month_over_month_increase": {
+        "月份": "4月",
+        "increase_kwh": 2400
+      },
+      "trend": "总体上升，2月低点后逐步增长，8月达到峰值。"
+    },
+    "expected_csv": "visual_energy_chart_expected.csv",
+    "acceptance_checks": [
+      "视觉解析应从图表截图中抽取 月份、用电量_kWh、电费_元 或含义等价字段",
+      "峰值月份应为 8月，用电量约 19200 kWh",
+      "总用电量应约为 124950 kWh",
+      "最大环比增长发生在 4月，约 +2400 kWh",
+      "结论应识别整体上升趋势"
+    ]
+  },
+  "image_unstructured_note_negative_test.png": {
+    "category": "图片识别 / 负向测试 / 非结构化图片",
+    "recommended_goal": "请识别这张图片中的数据并分析。",
+    "expected": {
+      "expected_behavior": "视觉解析应失败或给出低置信度警告，不应生成可靠的 visual_extracted.csv。",
+      "reason": "图片中没有至少 2 列、1 行的结构化表格或图表数据。",
+      "expected_workflow_task_type": "visual_parsing_failed"
+    },
+    "acceptance_checks": [
+      "visual_parse_result.success 应为 false，或置信度较低并带有 warnings",
+      "统一工作流应返回 visual_parsing_failed，或提示图片中未能抽取出至少 2 列、1 行的可靠结构化数据",
+      "不应生成看似可靠的数据分析结论"
+    ]
+  },
+  "knowledge_quality_support_rules.md": {
+    "category": "RAG 知识库 / 业务口径",
+    "recommended_usage": "先在知识库页面上传，再运行制造质量、客服排班或食堂窗口测试。",
+    "expected": {
+      "retrieval_keywords": [
+        "不良率",
+        "平均响应时长",
+        "开放窗口数",
+        "绝对增量",
+        "不是确定因果"
+      ],
+      "expected_effect": "Controller、Data Understanding、Analysis、Explanation 或 Prediction Explanation 的提示上下文中应包含相关业务口径。"
+    }
+  }
+}
