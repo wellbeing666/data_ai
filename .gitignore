@@ -1,23 +1,127 @@
+# =========================
+# Environment / secrets
+# =========================
+.env
+.env.*
+!.env.example
+
+# API keys / local config
+*.local
+*.secret
+
+# =========================
 # Python
+# =========================
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
 .venv/
 venv/
-.env
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Node
-node_modules/
-dist/
+# Packaging / build
 build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
 
-# Data / generated files
+# =========================
+# FastAPI / backend runtime
+# =========================
+*.log
+logs/
+tmp/
+temp/
+
+# Local generated storage
 storage/uploads/
 storage/jobs/
 storage/knowledge/
-*.xlsx
-*.xls
-*.csv
 
-# IDE
+# Keep storage folder structure if you add placeholders
+!storage/.gitkeep
+!storage/uploads/.gitkeep
+!storage/jobs/.gitkeep
+!storage/knowledge/.gitkeep
+
+# =========================
+# Node / React / Vite frontend
+# =========================
+node_modules/
+frontend/node_modules/
+
+# Vite / frontend build output
+frontend/dist/
+frontend/build/
+frontend/.vite/
+frontend/.cache/
+
+# TypeScript build info
+*.tsbuildinfo
+frontend/*.tsbuildinfo
+
+# npm / package manager logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Optional package-manager stores
+.pnpm-store/
+
+# =========================
+# Playwright / browser test output
+# =========================
+test-results/
+playwright-report/
+blob-report/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+
+# =========================
+# Generated analysis artifacts
+# =========================
+charts/
+reports/
+outputs/
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Data files generated or uploaded locally
+*.csv
+*.xls
+*.xlsx
+
+# If you need to commit sample datasets, uncomment and adjust:
+# !test_data/
+# !test_data/**/*.csv
+# !test_data/**/*.xls
+# !test_data/**/*.xlsx
+
+# =========================
+# OS / IDE
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# =========================
+# Misc
+# =========================
+.cache/
