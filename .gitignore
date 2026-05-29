@@ -115,6 +115,9 @@ desktop.ini
 .idea/
 *.swp
 *.swo
+output.txt
+allFiles_git.py
+allFiles_git.cmd
 
 # =========================
 # Misc

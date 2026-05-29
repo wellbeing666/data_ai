@@ -300,6 +300,7 @@ def get_workflow_job_log(job_id: str) -> dict[str, Any]:
         **artifacts,
         "visual_parse_result": status_data.get("visual_parse_result_path"),
         "visual_extracted_dataset": status_data.get("visual_extracted_dataset_path"),
+        "charts": status_data.get("chart_paths") or [],
     }
     if log_data["workflow_type"] == PREDICTION_TASK_TYPE:
         log_data.setdefault("prediction_plan", _read_json_if_exists(Path(str(status_data.get("prediction_plan_path") or ""))))
@@ -404,6 +405,7 @@ def _normalize_workflow_status(
             "final_result_path": _existing_or_none(data.get("final_result_path"), job_dir / "analysis_result.json"),
             "final_prediction_result_path": _existing_or_none(data.get("final_prediction_result_path"), job_dir / "prediction_result.json"),
             "final_report_data_path": _existing_or_none(data.get("final_report_data_path"), job_dir / "report_data.json"),
+            "chart_paths": _collect_chart_paths(job_dir, str(workflow_type or data.get("workflow_type") or "")),
             "final_validation_result_path": _existing_or_none(
                 data.get("final_validation_result_path"),
                 job_dir / ("prediction_validation_result.json" if workflow_type == PREDICTION_TASK_TYPE else "validation_result.json"),
@@ -433,6 +435,7 @@ def _normalize_workflow_status(
         "final_result_path": data.get("final_result_path"),
         "final_prediction_result_path": data.get("final_prediction_result_path"),
         "final_report_data_path": data.get("final_report_data_path"),
+        "chart_paths": _string_list(data.get("chart_paths")),
         "final_validation_result_path": data.get("final_validation_result_path"),
         "effective_max_retries": data.get("effective_max_retries"),
         "events": _event_list(data.get("events")),
@@ -459,6 +462,83 @@ def _get_job_dir(job_id: str) -> Path:
     if not job_dir.exists() or not job_dir.is_dir():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow job not found.")
     return job_dir
+
+
+
+def _collect_chart_paths(job_dir: Path, workflow_type: str) -> list[str]:
+    if not job_dir.exists():
+        return []
+
+    result_filename = "prediction_result.json" if workflow_type == PREDICTION_TASK_TYPE else "analysis_result.json"
+    result_data = _read_json_if_exists(job_dir / result_filename) or {}
+    paths = _extract_chart_paths(result_data.get("charts"), job_dir)
+    if not paths:
+        charts_dir = job_dir / "charts"
+        paths = [str(path) for path in sorted(charts_dir.glob("*.png")) if path.is_file() and path.stat().st_size > 0] if charts_dir.exists() else []
+    return _deduplicate_strings(paths)
+
+
+def _extract_chart_paths(value: Any, job_dir: Path) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    paths: list[str] = []
+    for item in value:
+        raw_path: Any = item
+        if isinstance(item, dict):
+            raw_path = (
+                item.get("path")
+                or item.get("file_path")
+                or item.get("chart_path")
+                or item.get("url")
+                or item.get("file")
+                or item.get("filename")
+            )
+        normalized = _normalize_chart_path(raw_path, job_dir)
+        if normalized:
+            paths.append(normalized)
+    return _deduplicate_strings(paths)
+
+
+def _normalize_chart_path(value: Any, job_dir: Path) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    normalized = value.replace("\\", "/").strip()
+    if not normalized:
+        return None
+    if normalized.startswith("http://") or normalized.startswith("https://"):
+        return normalized
+
+    local_path = Path(normalized)
+    if normalized.startswith("/storage/"):
+        local_path = Path(normalized.lstrip("/"))
+    elif normalized.startswith("storage/"):
+        local_path = Path(normalized)
+    elif normalized.startswith("charts/"):
+        local_path = job_dir / normalized
+    elif "/" not in normalized:
+        local_path = job_dir / "charts" / normalized
+
+    if local_path.is_absolute() or str(local_path).startswith("storage"):
+        return str(local_path)
+    return str(local_path)
+
+
+def _deduplicate_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item is not None]
 
 
 def _existing_or_none(value: Any, fallback_path: Path) -> str | None:
@@ -532,3 +612,4 @@ def _event_list(value: Any) -> list[dict[str, Any]]:
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+

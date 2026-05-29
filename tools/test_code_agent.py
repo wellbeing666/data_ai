@@ -142,6 +142,26 @@ def test_rewrites_wrong_runtime_constants():
     assert r"C:\wrong\job" not in script
 
 
+
+def test_injects_chinese_matplotlib_font_setup_for_llm_script():
+    chinese_script = VALID_SCRIPT.replace(
+        'plt.plot([1, 2], [1, 2])',
+        'plt.title("按OverallQual分组SalePrice分布")\n    plt.xlabel("总体质量")\n    plt.ylabel("房价")\n    plt.plot([1, 2], [1, 2])',
+    )
+    llm = FakeLLMClient(content=chinese_script)
+    script = CodeAgent(llm_client=llm).generate_script(
+        input_file=INPUT_FILE,
+        output_dir=OUTPUT_DIR,
+        analysis_plan=ANALYSIS_PLAN,
+        dataset_profile=DATASET_PROFILE,
+        attempt=1,
+    )
+
+    assert "font.sans-serif" in script
+    assert "axes.unicode_minus" in script
+    assert "from matplotlib import font_manager" in script
+    assert "_configure_generated_chart_fonts()" in script
+
 def test_disallowed_import_falls_back_to_rule_based_script():
     bad_script = VALID_SCRIPT.replace("import json", "import requests")
     llm = FakeLLMClient(content=bad_script)
@@ -221,8 +241,10 @@ if __name__ == "__main__":
     test_strips_markdown_fence()
     test_injects_missing_runtime_constants()
     test_rewrites_wrong_runtime_constants()
+    test_injects_chinese_matplotlib_font_setup_for_llm_script()
     test_disallowed_import_falls_back_to_rule_based_script()
     test_llm_generation_error_before_attempt_four_does_not_fallback()
     test_rule_based_script_does_not_write_repair_context_to_outputs()
     test_general_fallback_does_not_use_grade_template_for_house_price_task()
     print("CodeAgent tests passed.")
+

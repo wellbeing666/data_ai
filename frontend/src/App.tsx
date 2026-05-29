@@ -247,7 +247,9 @@ export default function App() {
   const isFallbackMode = !health?.deepseek_configured || health.llm_mode !== "deepseek";
   const isPredictionWorkflow = job?.workflow_type === "what_if_prediction" || job?.task_type === "what_if_prediction";
   const events = mergeWorkflowEvents(job?.events, executionLog?.events);
-  const chartPaths = isPredictionWorkflow ? getChartPaths(predictionResult, job) : getChartPaths(analysisResult, job);
+  const chartPaths = isPredictionWorkflow
+    ? getChartPaths(predictionResult, job)
+    : getChartPaths(analysisResult, job, report?.chart_paths);
 
   const steps = useMemo(
     () => {
@@ -2662,14 +2664,20 @@ function predictionPlanSummary(plan: AnyRecord): string {
 
 function getChartPaths(
   result: Pick<AnalysisResult, "charts"> | Pick<PredictionResult, "charts"> | null,
-  job?: WorkflowJobResponse | null
+  job?: WorkflowJobResponse | null,
+  fallbackCharts: unknown[] = []
 ): string[] {
-  if (!result || !Array.isArray(result.charts)) {
-    return [];
-  }
-  return result.charts
+  const candidates = [
+    ...(result && Array.isArray(result.charts) ? result.charts : []),
+    ...(Array.isArray(job?.chart_paths) ? job.chart_paths : []),
+    ...(Array.isArray(fallbackCharts) ? fallbackCharts : [])
+  ];
+
+  const normalized = candidates
     .map((chart) => normalizeChartPath(chart, job))
     .filter((path): path is string => Boolean(path));
+
+  return Array.from(new Set(normalized));
 }
 
 function normalizeChartPath(chart: unknown, job?: WorkflowJobResponse | null): string | null {
@@ -3024,3 +3032,4 @@ function lastItem<T>(items: T[] | undefined): T | undefined {
   }
   return items[items.length - 1];
 }
+

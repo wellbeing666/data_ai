@@ -46,6 +46,7 @@ class WorkflowJobResponse(BaseModel):
     final_result_path: str | None = None
     final_prediction_result_path: str | None = None
     final_report_data_path: str | None = None
+    chart_paths: list[str] = Field(default_factory=list)
     final_validation_result_path: str | None = None
     effective_max_retries: int | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
@@ -70,3 +71,4 @@ class WorkflowLogResponse(BaseModel):
     max_retries: int = 0
     artifacts: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list)
+

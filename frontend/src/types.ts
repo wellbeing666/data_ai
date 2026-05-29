@@ -251,6 +251,7 @@ export interface PredictionJobResponse {
   attempts: PredictionAttemptResult[];
   final_prediction_result_path: string | null;
   final_report_data_path: string | null;
+  chart_paths?: string[];
   final_validation_result_path: string | null;
   job_dir: string;
   dataset_profile_path?: string | null;
@@ -381,3 +382,4 @@ export interface VisualParseResult {
   warnings: string[];
   limitations: string[];
 }
+

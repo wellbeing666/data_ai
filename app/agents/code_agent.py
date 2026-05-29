@@ -38,6 +38,7 @@ Hard requirements:
 - The code must handle Chinese column names by treating all column names as strings and preserving UTF-8 JSON output.
 - Do not write repair context, previous execution logs, validation logs, stderr, artifact lists, duration_ms, or size_bytes into analysis_result.json or report_data.json.
 - Use matplotlib Agg backend before importing pyplot.
+- Configure matplotlib Chinese fonts before creating charts so Chinese labels render correctly. Use font_manager when available and set plt.rcParams["font.sans-serif"] plus plt.rcParams["axes.unicode_minus"] = False.
 - Use Chinese visible chart text for chart titles, axis labels, legends, and annotations.
 - If the requested advanced analysis is risky or a previous attempt failed, produce a simpler but valid task-aligned analysis instead of crashing.
 - Prefer robust pandas operations: coerce numeric columns, drop invalid rows for calculations, cap chart categories to Top 20, and always save at least one PNG chart.
@@ -96,6 +97,11 @@ If this is attempt 2 or later, fix the previous error using previous_stderr,
 previous_validation_result, and previous_repair_suggestions. Do not repeat unsafe
 operations or missing-artifact mistakes from earlier attempts.
 
+Chinese chart requirements:
+- Configure matplotlib Chinese fonts before any figure is created.
+- Use Chinese visible text in chart titles, axis labels, legends, and annotations when the analysis goal is Chinese.
+- Do not rely on the default DejaVu Sans font for Chinese text.
+
 Reliability requirements:
 - Keep analysis_result.task_type exactly equal to analysis_plan.task_type.
 - If a complex method fails, fall back inside the generated script to a basic profile / grouped summary that still writes analysis_result.json, report_data.json, and charts/*.png.
@@ -152,6 +158,7 @@ class CodeAgent:
                 input_file=input_file,
                 output_dir=output_dir,
             )
+            script = _enforce_matplotlib_chinese_font_setup(script)
             _validate_generated_script(script, input_file=input_file, output_dir=output_dir)
             return script
         except Exception as exc:
@@ -678,6 +685,112 @@ if __name__ == "__main__":
 '''
 
 
+
+MATPLOTLIB_CHINESE_FONT_SETUP = """
+def _configure_generated_chart_fonts():
+    candidate_fonts = [
+        "Microsoft YaHei",
+        "SimHei",
+        "SimSun",
+        "KaiTi",
+        "FangSong",
+        "Microsoft JhengHei",
+        "PingFang SC",
+        "Hiragino Sans GB",
+        "Heiti SC",
+        "Songti SC",
+        "Noto Sans CJK SC",
+        "Noto Sans CJK JP",
+        "Noto Sans CJK KR",
+        "Source Han Sans SC",
+        "Source Han Sans CN",
+        "WenQuanYi Micro Hei",
+        "WenQuanYi Zen Hei",
+        "Arial Unicode MS",
+    ]
+    available_fonts = []
+    for font_name in candidate_fonts:
+        try:
+            font_manager.findfont(font_name, fallback_to_default=False)
+            available_fonts.append(font_name)
+        except Exception:
+            pass
+    font_families = []
+    for font_name in available_fonts + candidate_fonts + ["DejaVu Sans"]:
+        if font_name not in font_families:
+            font_families.append(font_name)
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = font_families
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+_configure_generated_chart_fonts()
+""".strip()
+
+
+CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def _contains_cjk(text: str) -> bool:
+    return CJK_PATTERN.search(text) is not None
+
+
+def _enforce_matplotlib_chinese_font_setup(script: str) -> str:
+    if not _contains_cjk(script):
+        return script
+    if "_configure_generated_chart_fonts" in script and "font.sans-serif" in script:
+        return script
+
+    script = _ensure_matplotlib_chinese_font_imports(script)
+    lines = script.splitlines()
+    insert_at = _font_setup_insert_index(lines)
+    block = MATPLOTLIB_CHINESE_FONT_SETUP.splitlines()
+    if insert_at > 0 and lines[insert_at - 1].strip():
+        block.insert(0, "")
+    if insert_at < len(lines) and lines[insert_at].strip():
+        block.append("")
+    lines[insert_at:insert_at] = block
+    return "\n".join(lines).strip()
+
+
+def _ensure_matplotlib_chinese_font_imports(script: str) -> str:
+    lines = script.splitlines()
+    import_lines = []
+    has_matplotlib_import = re.search(r"^\s*import\s+matplotlib\b", script, flags=re.MULTILINE) is not None
+    has_pyplot_import = re.search(r"^\s*import\s+matplotlib\.pyplot\s+as\s+plt\b", script, flags=re.MULTILINE) is not None
+    has_font_manager_import = re.search(
+        r"^\s*(from\s+matplotlib\s+import\s+.*\bfont_manager\b|import\s+matplotlib\.font_manager\b)",
+        script,
+        flags=re.MULTILINE,
+    ) is not None
+
+    if not has_matplotlib_import:
+        import_lines.append("import matplotlib")
+    if "matplotlib.use(" not in script:
+        import_lines.append('matplotlib.use("Agg")')
+    if not has_font_manager_import:
+        import_lines.append("from matplotlib import font_manager")
+    if not has_pyplot_import:
+        import_lines.append("import matplotlib.pyplot as plt")
+
+    if not import_lines:
+        return script
+
+    insert_at = _runtime_constant_insert_index(lines)
+    if insert_at > 0 and lines[insert_at - 1].strip():
+        import_lines.insert(0, "")
+    if insert_at < len(lines) and lines[insert_at].strip():
+        import_lines.append("")
+    lines[insert_at:insert_at] = import_lines
+    return "\n".join(lines)
+
+
+def _font_setup_insert_index(lines: list[str]) -> int:
+    for index, line in enumerate(lines):
+        if re.match(r"^(def|class)\s+", line):
+            return index
+    return len(lines)
+
 def _extract_required_column(
     analysis_plan: dict[str, Any],
     semantic_name: str,
@@ -812,6 +925,18 @@ def _validate_generated_script(script: str, input_file: str, output_dir: str) ->
             + "; ".join(missing_paths)
         )
 
+    if _contains_cjk(script):
+        missing_font_fragments = [
+            fragment
+            for fragment in ("font.sans-serif", "axes.unicode_minus")
+            if fragment not in script
+        ]
+        if missing_font_fragments:
+            raise ValueError(
+                "Generated script must configure Chinese matplotlib fonts: "
+                + ", ".join(missing_font_fragments)
+            )
+
 
 def _validate_import_root(module_name: str) -> None:
     root = module_name.split(".", 1)[0]
@@ -924,3 +1049,4 @@ def _find_column(columns: list[str], keywords: tuple[str, ...]) -> str | None:
 def _json_string_literal(data: dict[str, Any]) -> str:
     json_text = json.dumps(data, ensure_ascii=False)
     return repr(json_text)
+

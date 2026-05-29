@@ -50,7 +50,7 @@ def test_forbidden_absolute_open_and_home():
 from pathlib import Path
 import pandas as pd
 open("/etc/passwd")
-open("C:\Windows\win.ini")
+open("C:\\Windows\\win.ini")
 pd.read_csv("/etc/passwd")
 Path.home()
 Path("/etc/passwd").read_text()
