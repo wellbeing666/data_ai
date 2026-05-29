@@ -6,6 +6,8 @@ from typing import Any
 from app.services.llm_client import LLMClient, get_llm_client
 
 
+LLM_ONLY_ATTEMPTS = 3
+
 ALLOWED_IMPORT_ROOTS = {
     "pandas",
     "numpy",
@@ -13,9 +15,11 @@ ALLOWED_IMPORT_ROOTS = {
     "seaborn",
     "duckdb",
     "json",
+    "math",
     "os",
     "pathlib",
     "sklearn",
+    "warnings",
 }
 
 SYSTEM_PROMPT = """You are the Prediction Code Agent for a what-if simulation workflow.
@@ -23,7 +27,7 @@ SYSTEM_PROMPT = """You are the Prediction Code Agent for a what-if simulation wo
 Return only executable Python code. Do not output markdown, code fences, or explanation.
 
 Hard requirements:
-- Use only these libraries: pandas, numpy, matplotlib, seaborn, duckdb, json, os, pathlib, sklearn.
+- Use only these libraries: pandas, numpy, matplotlib, seaborn, duckdb, json, math, os, pathlib, sklearn, warnings.
 - The code must read INPUT_FILE.
 - The code must write all outputs under OUTPUT_DIR.
 - The code must create OUTPUT_DIR / "prediction_result.json".
@@ -32,6 +36,13 @@ Hard requirements:
 - The code must support CSV, XLSX, and XLS input files.
 - If sklearn is unavailable or fields are insufficient, use a rule-based simulation fallback.
 - Predictions are estimates, not causal proof.
+- Configure matplotlib before creating charts so Chinese labels render correctly:
+  plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei", "Arial Unicode MS", "DejaVu Sans"]
+  plt.rcParams["axes.unicode_minus"] = False
+- All visible chart text must be Chinese, including chart titles, axis labels, legends, annotations, and fallback labels.
+- Translate common chart labels: Baseline=基准值, Predicted=预测值, Entity=对象, Value=指标值, Change=变化值, Predicted absolute change=预测绝对变化.
+- Do not import any library that is not explicitly listed above.
+- The generated code must contain literal assignments for the exact INPUT_FILE and OUTPUT_DIR constants provided in the user prompt. Do not compute, omit, rename, or replace these paths.
 - Never read or write outside INPUT_FILE and OUTPUT_DIR.
 """
 
@@ -60,6 +71,12 @@ INPUT_FILE = Path(r{input_file!r})
 OUTPUT_DIR = Path(r{output_dir!r})
 CHARTS_DIR = OUTPUT_DIR / "charts"
 
+You must copy the INPUT_FILE and OUTPUT_DIR assignments above into the script exactly.
+The generated source must contain these exact path strings:
+- {input_file}
+- {output_dir}
+Do not derive these paths from cwd, environment variables, command-line arguments, or relative paths.
+
 Dataset profile JSON:
 {dataset_profile}
 
@@ -71,6 +88,17 @@ Prediction plan JSON:
 
 Repair context JSON:
 {context}
+
+Chinese chart requirements:
+- Configure matplotlib Chinese font before any figure is created.
+- Use Chinese visible text in every chart title, axis label, legend, and annotation.
+- Do not use English chart titles such as "Top predicted changes" or "Baseline vs predicted".
+
+Reliability requirements:
+- If model training fails or fields are insufficient, fall back inside the script to a simple rule-based simulation.
+- Treat validation feedback as mandatory. If validation reported missing artifacts, the repaired script must write prediction_result.json, report_data.json, and at least one PNG chart before exiting.
+- Prefer robust pandas operations, numeric coercion, Top 20 chart categories, and cautious limitations instead of crashing.
+- Use only the allowed imports from the system prompt.
 
 Return only Python code. The script must define main() and call it under if __name__ == "__main__".
 """.format(
@@ -120,9 +148,18 @@ class PredictionCodeAgent:
                 temperature=0.1,
             )
             script = _extract_python_code(script)
-            _validate_generated_script(script)
+            script = _enforce_runtime_constants(
+                script,
+                input_file=input_file,
+                output_dir=output_dir,
+            )
+            _validate_generated_script(script, input_file=input_file, output_dir=output_dir)
             return script
-        except Exception:
+        except Exception as exc:
+            if attempt <= LLM_ONLY_ATTEMPTS:
+                raise PredictionCodeGenerationError(
+                    f"LLM prediction code generation failed on attempt {attempt}: {exc}"
+                ) from exc
             return self.rule_based_agent.generate_script(
                 input_file=input_file,
                 output_dir=output_dir,
@@ -130,6 +167,10 @@ class PredictionCodeAgent:
                 hypothesis_plan=hypothesis_plan,
                 prediction_plan=prediction_plan,
             )
+
+
+class PredictionCodeGenerationError(RuntimeError):
+    pass
 
 
 class RuleBasedPredictionCodeAgent:
@@ -149,6 +190,7 @@ import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
+from matplotlib import font_manager
 import matplotlib.pyplot as plt
 
 try:
@@ -173,6 +215,27 @@ def load_data(path):
     if suffix in {{".xlsx", ".xls"}}:
         return pd.read_excel(path)
     raise ValueError("Unsupported input file type")
+
+
+def configure_matplotlib():
+    candidate_fonts = [
+        "Microsoft YaHei",
+        "SimHei",
+        "SimSun",
+        "Noto Sans CJK SC",
+        "Source Han Sans SC",
+        "WenQuanYi Micro Hei",
+        "Arial Unicode MS",
+    ]
+    available_fonts = []
+    for font_name in candidate_fonts:
+        try:
+            font_manager.findfont(font_name, fallback_to_default=False)
+            available_fonts.append(font_name)
+        except Exception:
+            pass
+    plt.rcParams["font.sans-serif"] = available_fonts + candidate_fonts + ["DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
 
 
 def safe_number(value, default=0.0):
@@ -270,7 +333,7 @@ def aggregate_impacts(df, target, entity, baseline, predicted):
         grouped = pd.DataFrame([{{"entity": "整体", "_baseline": baseline.mean(), "_predicted": predicted.mean()}}])
     grouped["absolute_change"] = grouped["_predicted"] - grouped["_baseline"]
     grouped["percent_change"] = np.where(grouped["_baseline"].abs() > 1e-9, grouped["absolute_change"] / grouped["_baseline"], 0)
-    grouped["direction"] = np.where(grouped["absolute_change"] >= 0, "increase", "decrease")
+    grouped["direction"] = np.where(grouped["absolute_change"] >= 0, "增加", "降低")
     grouped = grouped.replace([np.inf, -np.inf], np.nan).fillna(0)
     grouped["_rank"] = grouped["absolute_change"].abs()
     grouped = grouped.sort_values("_rank", ascending=False).head(10)
@@ -324,6 +387,7 @@ def build_result(df, target, entity, baseline, predicted, method, features, impa
 
 def create_charts(impacted, target):
     CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+    configure_matplotlib()
     chart_paths = []
     if impacted.empty:
         return chart_paths
@@ -333,9 +397,9 @@ def create_charts(impacted, target):
     plt.figure(figsize=(10, 5))
     plt.barh(plot_data["entity"], plot_data["absolute_change"], color="#0f766e")
     plt.gca().invert_yaxis()
-    plt.title("Top predicted changes")
-    plt.xlabel("Predicted absolute change")
-    plt.ylabel("Entity")
+    plt.title("预测变化最大的对象")
+    plt.xlabel("预测绝对变化")
+    plt.ylabel("对象")
     plt.tight_layout()
     path = CHARTS_DIR / "top_predicted_changes.png"
     plt.savefig(path, dpi=160)
@@ -345,11 +409,11 @@ def create_charts(impacted, target):
     plt.figure(figsize=(10, 5))
     x = np.arange(len(plot_data))
     width = 0.38
-    plt.bar(x - width / 2, plot_data["_baseline"], width, label="Baseline")
-    plt.bar(x + width / 2, plot_data["_predicted"], width, label="Predicted")
+    plt.bar(x - width / 2, plot_data["_baseline"], width, label="基准值")
+    plt.bar(x + width / 2, plot_data["_predicted"], width, label="预测值")
     plt.xticks(x, plot_data["entity"], rotation=30, ha="right")
-    plt.title("Baseline vs predicted")
-    plt.ylabel(target or "value")
+    plt.title("基准值与预测值对比")
+    plt.ylabel(target or "指标值")
     plt.legend()
     plt.tight_layout()
     path = CHARTS_DIR / "baseline_vs_predicted.png"
@@ -405,7 +469,86 @@ def _extract_python_code(content: str) -> str:
     return match.group(1).strip() if match else stripped
 
 
-def _validate_generated_script(script: str) -> None:
+def _enforce_runtime_constants(script: str, input_file: str, output_dir: str) -> str:
+    script = _ensure_path_import(script.strip())
+    lines = script.splitlines()
+    constants = _runtime_constant_lines(input_file=input_file, output_dir=output_dir)
+    updated_lines: list[str] = []
+    seen: set[str] = set()
+
+    for line in lines:
+        match = re.match(r"^\s*(INPUT_FILE|OUTPUT_DIR|CHARTS_DIR)\s*=", line)
+        if not match:
+            updated_lines.append(line)
+            continue
+
+        name = match.group(1)
+        if name in seen:
+            continue
+        updated_lines.append(constants[name])
+        seen.add(name)
+
+    missing = [name for name in ("INPUT_FILE", "OUTPUT_DIR", "CHARTS_DIR") if name not in seen]
+    if missing:
+        insert_at = _runtime_constant_insert_index(updated_lines)
+        block = [constants[name] for name in missing]
+        if insert_at > 0 and updated_lines[insert_at - 1].strip():
+            block.insert(0, "")
+        if insert_at < len(updated_lines) and updated_lines[insert_at].strip():
+            block.append("")
+        updated_lines[insert_at:insert_at] = block
+
+    return "\n".join(updated_lines).strip()
+
+
+def _ensure_path_import(script: str) -> str:
+    if re.search(r"^\s*from\s+pathlib\s+import\s+.*\bPath\b", script, flags=re.MULTILINE):
+        return script
+
+    lines = script.splitlines()
+    insert_at = 0
+    if lines and lines[0].startswith("#!"):
+        insert_at = 1
+    if len(lines) > insert_at and re.search(r"coding[:=]\s*[-\w.]+", lines[insert_at]):
+        insert_at += 1
+    while len(lines) > insert_at and lines[insert_at].startswith("from __future__ import "):
+        insert_at += 1
+
+    lines.insert(insert_at, "from pathlib import Path")
+    return "\n".join(lines)
+
+
+def _runtime_constant_lines(input_file: str, output_dir: str) -> dict[str, str]:
+    return {
+        "INPUT_FILE": f'INPUT_FILE = Path(r"{_escape_raw_double_quoted_path(input_file)}")',
+        "OUTPUT_DIR": f'OUTPUT_DIR = Path(r"{_escape_raw_double_quoted_path(output_dir)}")',
+        "CHARTS_DIR": 'CHARTS_DIR = OUTPUT_DIR / "charts"',
+    }
+
+
+def _escape_raw_double_quoted_path(value: str) -> str:
+    return value.replace('"', '\\"')
+
+
+def _runtime_constant_insert_index(lines: list[str]) -> int:
+    last_import_end: int | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("import ") or stripped.startswith("from "):
+            last_import_end = index + 1
+            continue
+        if last_import_end is not None and stripped == "":
+            last_import_end = index + 1
+            continue
+        if last_import_end is not None:
+            break
+    return last_import_end or 0
+
+
+def _validate_generated_script(script: str, input_file: str, output_dir: str) -> None:
+    if not script.strip():
+        raise ValueError("Generated prediction script is empty.")
+
     tree = ast.parse(script)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -413,9 +556,107 @@ def _validate_generated_script(script: str) -> None:
                 _validate_import_root(alias.name)
         if isinstance(node, ast.ImportFrom) and node.module:
             _validate_import_root(node.module)
+    missing_fragments = [
+        fragment
+        for fragment in ("font.sans-serif", "axes.unicode_minus")
+        if fragment not in script
+    ]
+    if missing_fragments:
+        raise ValueError(
+            "Prediction script must configure Chinese matplotlib fonts: "
+            + ", ".join(missing_fragments)
+        )
+    required_fragments = [
+        "INPUT_FILE",
+        "OUTPUT_DIR",
+        "prediction_result.json",
+        "report_data.json",
+        "charts",
+    ]
+    missing_required = [fragment for fragment in required_fragments if fragment not in script]
+    if missing_required:
+        raise ValueError(
+            "Prediction script is missing required fragments: "
+            + ", ".join(missing_required)
+        )
+    missing_paths = []
+    if input_file not in script:
+        missing_paths.append(f'INPUT_FILE = Path(r"{input_file}")')
+    if output_dir not in script:
+        missing_paths.append(f'OUTPUT_DIR = Path(r"{output_dir}")')
+    if missing_paths:
+        raise ValueError(
+            "Prediction script is missing the required runtime path constants: "
+            + "; ".join(missing_paths)
+        )
+    english_chart_text = _find_english_visible_chart_text(tree)
+    if english_chart_text:
+        raise ValueError(
+            "Prediction chart visible text must be Chinese: "
+            + ", ".join(sorted(english_chart_text))
+        )
 
 
 def _validate_import_root(module_name: str) -> None:
     root = module_name.split(".", maxsplit=1)[0]
     if root not in ALLOWED_IMPORT_ROOTS:
         raise ValueError(f"Prediction script imports disallowed module: {module_name}")
+
+
+def _find_english_visible_chart_text(tree: ast.AST) -> set[str]:
+    visible_chart_calls = {
+        "title",
+        "xlabel",
+        "ylabel",
+        "suptitle",
+        "figtext",
+        "text",
+        "set_title",
+        "set_xlabel",
+        "set_ylabel",
+    }
+    label_argument_calls = {
+        "bar",
+        "barh",
+        "plot",
+        "scatter",
+        "lineplot",
+        "barplot",
+        "histplot",
+        "boxplot",
+    }
+    offending: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _call_name(node.func)
+        short_name = call_name.rsplit(".", 1)[-1]
+        if short_name in visible_chart_calls:
+            for arg in node.args[:1]:
+                _collect_english_literal(arg, offending)
+        if short_name in label_argument_calls:
+            for keyword in node.keywords:
+                if keyword.arg == "label":
+                    _collect_english_literal(keyword.value, offending)
+    return offending
+
+
+def _collect_english_literal(node: ast.AST, offending: set[str]) -> None:
+    if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+        return
+    text = node.value.strip()
+    if not text:
+        return
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return
+    if re.search(r"[A-Za-z]{3,}", text):
+        offending.add(text)
+
+
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _call_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return ""

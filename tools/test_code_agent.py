@@ -6,7 +6,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from app.agents.code_agent import CodeAgent  # noqa: E402
+from app.agents.code_agent import CodeAgent, CodeGenerationError  # noqa: E402
 
 
 INPUT_FILE = r"C:\workspace\data.xlsx"
@@ -102,9 +102,13 @@ def test_strips_markdown_fence():
     assert "```" not in script
 
 
-def test_disallowed_import_falls_back_to_rule_based_script():
-    bad_script = VALID_SCRIPT.replace("import json", "import requests")
-    llm = FakeLLMClient(content=bad_script)
+def test_injects_missing_runtime_constants():
+    llm_script = "\n".join(
+        line
+        for line in VALID_SCRIPT.splitlines()
+        if not line.startswith(("INPUT_FILE =", "OUTPUT_DIR =", "CHARTS_DIR ="))
+    )
+    llm = FakeLLMClient(content=llm_script)
     script = CodeAgent(llm_client=llm).generate_script(
         input_file=INPUT_FILE,
         output_dir=OUTPUT_DIR,
@@ -112,9 +116,61 @@ def test_disallowed_import_falls_back_to_rule_based_script():
         dataset_profile=DATASET_PROFILE,
         attempt=1,
     )
+
+    assert f'INPUT_FILE = Path(r"{INPUT_FILE}")' in script
+    assert f'OUTPUT_DIR = Path(r"{OUTPUT_DIR}")' in script
+    assert 'CHARTS_DIR = OUTPUT_DIR / "charts"' in script
+
+
+def test_rewrites_wrong_runtime_constants():
+    wrong_script = VALID_SCRIPT.replace(INPUT_FILE, r"C:\wrong\input.csv").replace(
+        OUTPUT_DIR,
+        r"C:\wrong\job",
+    )
+    llm = FakeLLMClient(content=wrong_script)
+    script = CodeAgent(llm_client=llm).generate_script(
+        input_file=INPUT_FILE,
+        output_dir=OUTPUT_DIR,
+        analysis_plan=ANALYSIS_PLAN,
+        dataset_profile=DATASET_PROFILE,
+        attempt=1,
+    )
+
+    assert f'INPUT_FILE = Path(r"{INPUT_FILE}")' in script
+    assert f'OUTPUT_DIR = Path(r"{OUTPUT_DIR}")' in script
+    assert r"C:\wrong\input.csv" not in script
+    assert r"C:\wrong\job" not in script
+
+
+def test_disallowed_import_falls_back_to_rule_based_script():
+    bad_script = VALID_SCRIPT.replace("import json", "import requests")
+    llm = FakeLLMClient(content=bad_script)
+    script = CodeAgent(llm_client=llm).generate_script(
+        input_file=INPUT_FILE,
+        output_dir=OUTPUT_DIR,
+        analysis_plan={**ANALYSIS_PLAN, "task_type": "grade_analysis"},
+        dataset_profile=DATASET_PROFILE,
+        attempt=4,
+    )
     assert "Current rule-based CodeAgent" not in script
     assert "CLASS_COLUMN = 'class'" in script
     assert "SCORE_COLUMN = 'score'" in script
+
+
+def test_llm_generation_error_before_attempt_four_does_not_fallback():
+    bad_script = VALID_SCRIPT.replace("import json", "import requests")
+    llm = FakeLLMClient(content=bad_script)
+    try:
+        CodeAgent(llm_client=llm).generate_script(
+            input_file=INPUT_FILE,
+            output_dir=OUTPUT_DIR,
+            analysis_plan={**ANALYSIS_PLAN, "task_type": "grade_analysis"},
+            dataset_profile=DATASET_PROFILE,
+            attempt=1,
+        )
+    except CodeGenerationError:
+        return
+    raise AssertionError("Expected CodeGenerationError before rule fallback is allowed.")
 
 
 def test_rule_based_script_does_not_write_repair_context_to_outputs():
@@ -122,9 +178,9 @@ def test_rule_based_script_does_not_write_repair_context_to_outputs():
     script = CodeAgent(llm_client=llm).generate_script(
         input_file=INPUT_FILE,
         output_dir=OUTPUT_DIR,
-        analysis_plan=ANALYSIS_PLAN,
+        analysis_plan={**ANALYSIS_PLAN, "task_type": "grade_analysis"},
         dataset_profile=DATASET_PROFILE,
-        attempt=2,
+        attempt=4,
         previous_execution_result={"duration_ms": 1234},
         previous_validation_result={"should_retry": True},
     )
@@ -132,9 +188,41 @@ def test_rule_based_script_does_not_write_repair_context_to_outputs():
     assert "REPAIR_CONTEXT" in script
 
 
+def test_general_fallback_does_not_use_grade_template_for_house_price_task():
+    llm = FakeLLMClient(error=RuntimeError("llm unavailable"))
+    script = CodeAgent(llm_client=llm).generate_script(
+        input_file=INPUT_FILE,
+        output_dir=OUTPUT_DIR,
+        analysis_plan={
+            "task_type": "general_data_analysis",
+            "analysis_goal": "哪些因素和房价关系最明显？",
+            "grouping_dimensions": ["Neighborhood"],
+            "metrics": ["SalePrice"],
+            "chart_plan": [],
+        },
+        dataset_profile={
+            "columns": ["Neighborhood", "SalePrice", "OverallQual"],
+            "numeric_summary": {"SalePrice": {}, "OverallQual": {}},
+        },
+        attempt=4,
+        previous_execution_result={"success": False},
+        previous_validation_result={"should_retry": True},
+    )
+
+    assert 'TASK_TYPE = \'general_data_analysis\'' in script
+    assert "class_average_score" not in script
+    assert "班级平均分" not in script
+    assert "grade_analysis" not in script
+    assert "group_metric_mean_top20.png" in script
+
+
 if __name__ == "__main__":
     test_uses_llm_python_script()
     test_strips_markdown_fence()
+    test_injects_missing_runtime_constants()
+    test_rewrites_wrong_runtime_constants()
     test_disallowed_import_falls_back_to_rule_based_script()
+    test_llm_generation_error_before_attempt_four_does_not_fallback()
     test_rule_based_script_does_not_write_repair_context_to_outputs()
+    test_general_fallback_does_not_use_grade_template_for_house_price_task()
     print("CodeAgent tests passed.")

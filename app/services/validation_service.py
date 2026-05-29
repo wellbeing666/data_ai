@@ -95,11 +95,18 @@ def validate_job_outputs(job_id: str) -> dict[str, Any]:
         issues,
         repair_suggestions,
     )
+    controller_plan = _load_optional_json(job_dir / "controller_plan.json")
 
     _validate_execution_result(execution_result, issues, repair_suggestions)
     _validate_chart_artifacts(job_dir, issues, repair_suggestions)
 
     if analysis_result is not None:
+        _validate_task_consistency(
+            controller_plan=controller_plan,
+            analysis_result=analysis_result,
+            issues=issues,
+            repair_suggestions=repair_suggestions,
+        )
         _validate_metric_values(
             data=analysis_result,
             source_name="analysis_result.json",
@@ -193,6 +200,24 @@ def _load_required_json(
         return None
 
 
+def _load_optional_json(path: Path) -> Any | None:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
+def _deep_get(data: dict[str, Any], keys: list[str]) -> Any:
+    value: Any = data
+    for key in keys:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
 def _validate_execution_result(
     execution_result: Any | None,
     issues: list[dict[str, str | None]],
@@ -225,6 +250,23 @@ def _validate_execution_result(
         )
 
     if execution_result.get("success") is not True or execution_result.get("exit_code") != 0:
+        error = execution_result.get("error")
+        error_type = error.get("type") if isinstance(error, dict) else ""
+        if error_type == "EnvironmentInterrupted":
+            _add_issue(
+                issues,
+                issue_type="environment_interrupted",
+                severity="critical",
+                message="Sandbox execution was interrupted by the runtime environment.",
+                location="execution_result.json",
+            )
+            _add_suggestion(
+                repair_suggestions,
+                "Please retry the same script because the failure was caused by the runtime environment.",
+                target_agent="sandbox",
+            )
+            return
+
         _add_issue(
             issues,
             issue_type="execution_failed",
@@ -236,6 +278,58 @@ def _validate_execution_result(
             repair_suggestions,
             "Please inspect stderr, fix the runtime error, and regenerate the Python script.",
         )
+
+
+def _validate_task_consistency(
+    controller_plan: Any | None,
+    analysis_result: Any,
+    issues: list[dict[str, str | None]],
+    repair_suggestions: list[dict[str, str]],
+) -> None:
+    if not isinstance(controller_plan, dict) or not isinstance(analysis_result, dict):
+        return
+
+    expected_task_type = str(controller_plan.get("task_type") or "")
+    actual_task_type = str(
+        analysis_result.get("task_type")
+        or analysis_result.get("analysis_type")
+        or _deep_get(analysis_result, ["analysis_plan", "task_type"])
+        or ""
+    )
+    if not expected_task_type:
+        return
+    if not actual_task_type:
+        _add_issue(
+            issues,
+            issue_type="missing_task_type",
+            severity="critical",
+            message="analysis_result.json must include task_type matching controller_plan.json.",
+            location="analysis_result.json",
+        )
+        _add_suggestion(
+            repair_suggestions,
+            "Please include the controller-selected task_type in analysis_result.json.",
+        )
+        return
+    if expected_task_type == actual_task_type:
+        return
+    if expected_task_type == "what_if_prediction":
+        return
+
+    _add_issue(
+        issues,
+        issue_type="task_type_mismatch",
+        severity="critical",
+        message=(
+            "analysis_result.json task_type does not match controller_plan.json: "
+            f"expected {expected_task_type}, got {actual_task_type}."
+        ),
+        location="analysis_result.json",
+    )
+    _add_suggestion(
+        repair_suggestions,
+        "Please regenerate the script for the controller-selected task type and do not reuse an unrelated analysis template.",
+    )
 
 
 def _validate_chart_artifacts(
@@ -271,6 +365,9 @@ def _validate_metric_values(
         if _is_skipped_metric_path(path):
             continue
         if not _looks_like_metric_key(key):
+            continue
+
+        if _is_optional_statistic_value(key, value):
             continue
 
         if value is None or value == "":
@@ -388,6 +485,32 @@ def _looks_like_metric_key(key: str) -> bool:
     if normalized_key in METRIC_KEYWORDS:
         return True
     return bool(set(_metric_key_tokens(normalized_key)) & METRIC_TOKENS)
+
+
+def _is_optional_statistic_value(key: str, value: Any) -> bool:
+    if not _is_optional_statistic_key(key):
+        return False
+    if value is None or value == "":
+        return True
+    if isinstance(value, float) and math.isnan(value):
+        return True
+    if isinstance(value, str) and value.strip().lower() in {"nan", "none", "null", "n/a", "not_calculated"}:
+        return True
+    return False
+
+
+def _is_optional_statistic_key(key: str) -> bool:
+    normalized_key = key.lower().replace("-", "_")
+    tokens = _metric_key_tokens(normalized_key)
+    token_text = "_".join(tokens)
+    return token_text in {
+        "p_value",
+        "p_value_approx",
+        "pvalue",
+        "pvalue_approx",
+        "q_value",
+        "q_value_approx",
+    }
 
 
 def _metric_key_tokens(key: str) -> list[str]:

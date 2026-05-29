@@ -233,7 +233,7 @@ export default function App() {
       return;
     }
 
-    const chartPaths = getChartPaths(analysisResult);
+    const chartPaths = getChartPaths(analysisResult, job);
     generateReport(job.final_result_path, chartPaths)
       .then((reportData) => {
         setReport(reportData);
@@ -247,7 +247,7 @@ export default function App() {
   const isFallbackMode = !health?.deepseek_configured || health.llm_mode !== "deepseek";
   const isPredictionWorkflow = job?.workflow_type === "what_if_prediction" || job?.task_type === "what_if_prediction";
   const events = mergeWorkflowEvents(job?.events, executionLog?.events);
-  const chartPaths = isPredictionWorkflow ? predictionResult?.charts ?? [] : getChartPaths(analysisResult);
+  const chartPaths = isPredictionWorkflow ? getChartPaths(predictionResult, job) : getChartPaths(analysisResult, job);
 
   const steps = useMemo(
     () => {
@@ -914,7 +914,7 @@ function PredictionPage({
   onRun: () => void;
 }) {
   const events = log?.events?.length ? log.events : job?.events ?? [];
-  const chartPaths = predictionResult?.charts ?? [];
+  const chartPaths = getChartPaths(predictionResult, job);
   const steps = buildPredictionSteps({
     job,
     log,
@@ -2660,11 +2660,61 @@ function predictionPlanSummary(plan: AnyRecord): string {
   return `目标 ${target}；对象 ${entity}；候选模型 ${models}`;
 }
 
-function getChartPaths(result: AnalysisResult | null): string[] {
+function getChartPaths(
+  result: Pick<AnalysisResult, "charts"> | Pick<PredictionResult, "charts"> | null,
+  job?: WorkflowJobResponse | null
+): string[] {
   if (!result || !Array.isArray(result.charts)) {
     return [];
   }
-  return result.charts.map((chart) => String(chart));
+  return result.charts
+    .map((chart) => normalizeChartPath(chart, job))
+    .filter((path): path is string => Boolean(path));
+}
+
+function normalizeChartPath(chart: unknown, job?: WorkflowJobResponse | null): string | null {
+  if (typeof chart === "string") {
+    return normalizeChartPathString(chart, job);
+  }
+  if (!isRecord(chart)) {
+    return null;
+  }
+
+  const rawPath =
+    stringValue(chart.path, "") ||
+    stringValue(chart.file_path, "") ||
+    stringValue(chart.chart_path, "") ||
+    stringValue(chart.url, "") ||
+    stringValue(chart.file, "") ||
+    stringValue(chart.filename, "");
+
+  return rawPath ? normalizeChartPathString(rawPath, job) : null;
+}
+
+function normalizeChartPathString(path: string, job?: WorkflowJobResponse | null): string {
+  const normalized = path.replace(/\\/g, "/").trim();
+  if (!normalized) {
+    return "";
+  }
+  if (
+    normalized.startsWith("/") ||
+    normalized.startsWith("http://") ||
+    normalized.startsWith("https://") ||
+    normalized.includes("storage/")
+  ) {
+    return normalized;
+  }
+  if (normalized.startsWith("charts/")) {
+    return job?.job_dir ? `${job.job_dir.replace(/\\/g, "/")}/${normalized}` : normalized;
+  }
+  if (!normalized.includes("/") && job?.job_dir) {
+    return `${job.job_dir.replace(/\\/g, "/")}/charts/${normalized}`;
+  }
+  return normalized;
+}
+
+function isRecord(value: unknown): value is AnyRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function toExplanationResult(predictionExplanation: PredictionExplanationResult): ExplanationResult {

@@ -9,7 +9,7 @@ from fastapi import HTTPException, status
 
 from app.agents.hypothesis_agent import create_hypothesis_plan
 from app.agents.prediction_agent import create_prediction_plan
-from app.agents.prediction_code_agent import PredictionCodeAgent
+from app.agents.prediction_code_agent import PredictionCodeAgent, PredictionCodeGenerationError
 from app.agents.prediction_explanation_agent import create_prediction_explanation
 from app.sandbox.code_safety import validate_script_static_safety
 from app.sandbox.local_executor import LocalSubprocessSandboxExecutor
@@ -197,17 +197,6 @@ def run_prediction_job(
         events.append(create_event("code_generation", "running", f"预测 Code Agent 正在生成第 {attempt} 次脚本。", attempt=attempt))
         write_stage_snapshot("code_generation")
         script_path = job_dir / f"generated_prediction_script_attempt_{attempt}.py"
-        script_code = code_agent.generate_script(
-            input_file=str(input_file),
-            output_dir=str(job_dir),
-            dataset_profile=dataset_profile,
-            hypothesis_plan=hypothesis_plan,
-            prediction_plan=prediction_plan,
-            attempt=attempt,
-            previous_execution_result=previous_execution_result,
-            previous_validation_result=previous_validation_result,
-        )
-        script_path.write_text(script_code, encoding="utf-8")
         _clear_attempt_outputs(job_dir)
         safety_attempt_path = job_dir / f"prediction_code_safety_result_attempt_{attempt}.json"
         execution_attempt_path = job_dir / f"prediction_execution_result_attempt_{attempt}.json"
@@ -223,6 +212,50 @@ def run_prediction_job(
             "severity": "unknown",
         }
         attempts.append(attempt_result)
+        write_stage_snapshot("code_generation")
+        try:
+            script_code = code_agent.generate_script(
+                input_file=str(input_file),
+                output_dir=str(job_dir),
+                dataset_profile=dataset_profile,
+                hypothesis_plan=hypothesis_plan,
+                prediction_plan=prediction_plan,
+                attempt=attempt,
+                previous_execution_result=previous_execution_result,
+                previous_validation_result=previous_validation_result,
+            )
+        except PredictionCodeGenerationError as exc:
+            script_path.write_text(_diagnostic_generation_failure_script(str(exc)), encoding="utf-8")
+            safety_result = {
+                "passed": False,
+                "issues": ["Prediction code generation failed before static safety validation."],
+            }
+            _write_json(safety_attempt_path, safety_result)
+            execution_result = _code_generation_failure(job_id, script_path, input_file, job_dir, str(exc))
+            _write_json(job_dir / "execution_result.json", execution_result)
+            shutil.copy2(job_dir / "execution_result.json", execution_attempt_path)
+            events.append(create_event("code_generation", "failed", f"预测 Code Agent 第 {attempt} 次生成未通过，将继续交给 LLM 修复。", attempt=attempt))
+            events.append(create_event("validation", "running", f"预测验证 Agent 正在整理第 {attempt} 次生成失败信息。", attempt=attempt))
+            write_stage_snapshot("validation")
+            validation_result = validate_prediction_outputs(job_id)
+            shutil.copy2(job_dir / "prediction_validation_result.json", validation_attempt_path)
+            attempt_result.update(
+                {
+                    "passed": False,
+                    "should_retry": bool(validation_result["should_retry"]),
+                    "severity": str(validation_result["severity"]),
+                    "safety_issues": safety_result["issues"],
+                }
+            )
+            previous_execution_result = execution_result
+            previous_validation_result = validation_result
+            if not validation_result["should_retry"]:
+                write_stage_snapshot("failed", "failed")
+                break
+            events.append(create_event("repair", "retrying", "预测代码生成失败信息已交给 LLM，下一轮继续修复而不是规则兜底。", attempt=attempt))
+            write_stage_snapshot("repair")
+            continue
+        script_path.write_text(script_code, encoding="utf-8")
         events.append(create_event("code_generation", "success", f"预测 Code Agent 已生成第 {attempt} 次脚本。", attempt=attempt))
         _write_progress(
             job_dir=job_dir,
@@ -247,6 +280,7 @@ def run_prediction_job(
         safety_result = {"passed": not bool(safety_issues), "issues": safety_issues}
         _write_json(safety_attempt_path, safety_result)
         events.append(create_event("code_safety", "success" if safety_result["passed"] else "failed", "静态安全检查通过。" if safety_result["passed"] else "静态安全检查失败，准备进入修复循环。", attempt=attempt))
+        write_stage_snapshot("code_safety")
         if safety_issues:
             execution_result = _static_safety_failure(job_id, script_path, input_file, job_dir, safety_issues)
             _write_json(job_dir / "execution_result.json", execution_result)
@@ -266,7 +300,10 @@ def run_prediction_job(
             previous_execution_result = execution_result
             previous_validation_result = validation_result
             if not validation_result["should_retry"]:
+                write_stage_snapshot("failed", "failed")
                 break
+            events.append(create_event("repair", "retrying", "预测安全检查失败，已将问题交给预测 Code Agent 修复。", attempt=attempt))
+            write_stage_snapshot("repair")
             continue
 
         events.append(create_event("sandbox", "running", f"沙箱正在执行第 {attempt} 次预测脚本。", attempt=attempt))
@@ -279,6 +316,7 @@ def run_prediction_job(
         )
         shutil.copy2(job_dir / "execution_result.json", execution_attempt_path)
         events.append(create_event("sandbox", "success" if execution_result.get("success") else "failed", "沙箱已完成预测脚本执行。", attempt=attempt))
+        write_stage_snapshot("sandbox")
 
         events.append(create_event("validation", "running", f"预测验证 Agent 正在检查第 {attempt} 次产物。", attempt=attempt))
         write_stage_snapshot("validation")
@@ -294,12 +332,15 @@ def run_prediction_job(
         previous_execution_result = execution_result
         previous_validation_result = validation_result
         events.append(create_event("validation", "success" if validation_result["passed"] else "failed", "预测验证 Agent 已完成产物检查。", attempt=attempt))
+        write_stage_snapshot("validation")
         if validation_result["passed"]:
             status_value = "success"
             break
         if not validation_result["should_retry"]:
+            write_stage_snapshot("failed", "failed")
             break
         events.append(create_event("repair", "retrying", "预测产物未通过，准备把错误和修复建议交给预测 Code Agent。", attempt=attempt))
+        write_stage_snapshot("repair")
 
     final_prediction_result_path = str(job_dir / "prediction_result.json") if (job_dir / "prediction_result.json").exists() else None
     final_report_data_path = str(job_dir / "report_data.json") if (job_dir / "report_data.json").exists() else None
@@ -469,6 +510,39 @@ def _clear_attempt_outputs(job_dir: Path) -> None:
     charts_dir = job_dir / "charts"
     if charts_dir.exists():
         shutil.rmtree(charts_dir)
+
+
+def _diagnostic_generation_failure_script(error_message: str) -> str:
+    return (
+        "raise RuntimeError("
+        + repr(f"Prediction code generation failed before sandbox execution: {error_message}")
+        + ")\n"
+    )
+
+
+def _code_generation_failure(
+    job_id: str,
+    script_path: Path,
+    input_file: Path,
+    output_dir: Path,
+    error_message: str,
+) -> dict[str, Any]:
+    return {
+        "job_id": job_id,
+        "success": False,
+        "timed_out": False,
+        "exit_code": None,
+        "stdout": "",
+        "stderr": error_message,
+        "script_path": str(script_path),
+        "input_file": str(input_file),
+        "output_dir": str(output_dir),
+        "error": {"type": "PredictionCodeGenerationError", "message": error_message},
+        "repair_context": {
+            "failed_stage": "code_generation",
+            "suggestion": "Regenerate a simpler valid prediction script that writes prediction_result.json, report_data.json, and at least one chart.",
+        },
+    }
 
 
 def _static_safety_failure(job_id: str, script_path: Path, input_file: Path, output_dir: Path, issues: list[str]) -> dict[str, Any]:

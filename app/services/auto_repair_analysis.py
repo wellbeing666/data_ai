@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import HTTPException, status
 
 from app.agents.analysis_agent import create_analysis_plan
-from app.agents.code_agent import CodeAgent
+from app.agents.code_agent import CodeAgent, CodeGenerationError
 from app.agents.controller_agent import create_controller_plan
 from app.agents.data_understanding_agent import create_data_understanding
 from app.agents.explanation_agent import create_explanation
@@ -299,16 +299,6 @@ def run_auto_repair_analysis_job(
         )
         write_stage_snapshot("code_generation")
         script_path = job_dir / f"generated_script_attempt_{attempt}.py"
-        script_code = code_agent.generate_script(
-            input_file=str(input_file),
-            output_dir=str(job_dir),
-            analysis_plan=analysis_plan,
-            dataset_profile=dataset_profile,
-            attempt=attempt,
-            previous_execution_result=previous_execution_result,
-            previous_validation_result=previous_validation_result,
-        )
-        script_path.write_text(script_code, encoding="utf-8")
         _clear_attempt_outputs(job_dir)
         safety_attempt_path = job_dir / f"code_safety_result_attempt_{attempt}.json"
         execution_attempt_path = job_dir / f"execution_result_attempt_{attempt}.json"
@@ -324,6 +314,102 @@ def run_auto_repair_analysis_job(
             "severity": "unknown",
         }
         attempts.append(attempt_result)
+        write_stage_snapshot("code_generation")
+        try:
+            script_code = code_agent.generate_script(
+                input_file=str(input_file),
+                output_dir=str(job_dir),
+                analysis_plan=analysis_plan,
+                dataset_profile=dataset_profile,
+                attempt=attempt,
+                previous_execution_result=previous_execution_result,
+                previous_validation_result=previous_validation_result,
+            )
+        except CodeGenerationError as exc:
+            script_path.write_text(_diagnostic_generation_failure_script(str(exc)), encoding="utf-8")
+            safety_result = {
+                "passed": False,
+                "issues": ["Code generation failed before static safety validation."],
+            }
+            _write_json(job_dir / "code_safety_result.json", safety_result)
+            shutil.copy2(job_dir / "code_safety_result.json", safety_attempt_path)
+            execution_result = _build_code_generation_failure_result(
+                job_id=job_id,
+                script_path=script_path,
+                input_file=input_file,
+                output_dir=job_dir,
+                error_message=str(exc),
+            )
+            _write_json(job_dir / "execution_result.json", execution_result)
+            shutil.copy2(job_dir / "execution_result.json", execution_attempt_path)
+            events.append(
+                create_event(
+                    "code_generation",
+                    "failed",
+                    f"代码 Agent 第 {attempt} 次生成未通过，将继续交给 LLM 修复。",
+                    attempt=attempt,
+                )
+            )
+            events.append(
+                create_event(
+                    "validation",
+                    "running",
+                    f"验证 Agent 正在整理第 {attempt} 次生成失败信息。",
+                    attempt=attempt,
+                )
+            )
+            write_stage_snapshot("validation")
+            validation_result = validate_job_outputs(job_id)
+            shutil.copy2(job_dir / "validation_result.json", validation_attempt_path)
+            should_retry = bool(validation_result["should_retry"])
+            attempt_result.update(
+                {
+                    "passed": False,
+                    "should_retry": should_retry,
+                    "severity": str(validation_result["severity"]),
+                    "safety_issues": safety_result["issues"],
+                }
+            )
+            previous_execution_result = execution_result
+            previous_validation_result = validation_result
+            status_value = "failed"
+            events.append(
+                create_event(
+                    "validation",
+                    "failed",
+                    f"验证 Agent 已记录第 {attempt} 次代码生成失败。",
+                    attempt=attempt,
+                )
+            )
+            _write_progress(
+                job_dir=job_dir,
+                job_id=job_id,
+                dataset_id=dataset_id,
+                user_goal=user_goal,
+                status_value="running" if should_retry else "failed",
+                current_stage="repair" if should_retry else "failed",
+                max_retries=effective_max_retries,
+                attempts=attempts,
+                events=events,
+                timeout_seconds=timeout_seconds,
+                controller_plan_path=str(job_dir / "controller_plan.json"),
+                dataset_profile_path=str(job_dir / "dataset_profile.json"),
+                data_understanding_path=str(job_dir / "data_understanding.json"),
+                analysis_plan_path=str(job_dir / "analysis_plan.json"),
+            )
+            if not should_retry:
+                break
+            events.append(
+                create_event(
+                    "repair",
+                    "retrying",
+                    "代码生成失败信息已交给 LLM，下一轮继续修复而不是规则兜底。",
+                    attempt=attempt,
+                )
+            )
+            write_stage_snapshot("repair")
+            continue
+        script_path.write_text(script_code, encoding="utf-8")
         events.append(
             create_event(
                 "code_generation",
@@ -377,6 +463,7 @@ def run_auto_repair_analysis_job(
                 attempt=attempt,
             )
         )
+        write_stage_snapshot("code_safety")
 
         if static_safety_issues:
             execution_result = _build_static_safety_failure_result(
@@ -447,6 +534,7 @@ def run_auto_repair_analysis_job(
                     attempt=attempt,
                 )
             )
+            write_stage_snapshot("repair")
             continue
 
         events.append(
@@ -473,6 +561,7 @@ def run_auto_repair_analysis_job(
                 attempt=attempt,
             )
         )
+        write_stage_snapshot("sandbox")
 
         events.append(
             create_event(
@@ -501,6 +590,7 @@ def run_auto_repair_analysis_job(
                 attempt=attempt,
             )
         )
+        write_stage_snapshot("validation")
 
         previous_execution_result = execution_result
         previous_validation_result = validation_result
@@ -893,6 +983,44 @@ def _clear_attempt_outputs(job_dir: Path) -> None:
     charts_dir = job_dir / "charts"
     if charts_dir.exists() and charts_dir.is_dir():
         shutil.rmtree(charts_dir)
+
+
+def _diagnostic_generation_failure_script(error_message: str) -> str:
+    return (
+        "raise RuntimeError("
+        + repr(f"Code generation failed before sandbox execution: {error_message}")
+        + ")\n"
+    )
+
+
+def _build_code_generation_failure_result(
+    job_id: str,
+    script_path: Path,
+    input_file: Path,
+    output_dir: Path,
+    error_message: str,
+) -> dict[str, Any]:
+    return {
+        "job_id": job_id,
+        "success": False,
+        "timed_out": False,
+        "exit_code": None,
+        "stdout": "",
+        "stderr": error_message,
+        "script_path": str(script_path),
+        "input_file": str(input_file),
+        "output_dir": str(output_dir),
+        "execution_result_path": str(output_dir / "execution_result.json"),
+        "artifacts": [],
+        "error": {
+            "type": "CodeGenerationError",
+            "message": error_message,
+        },
+        "repair_context": {
+            "failed_stage": "code_generation",
+            "suggestion": "Regenerate a simpler valid script that writes analysis_result.json, report_data.json, and at least one chart.",
+        },
+    }
 
 
 def _build_static_safety_failure_result(

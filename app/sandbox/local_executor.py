@@ -17,8 +17,13 @@ from app.sandbox.code_safety import validate_script_static_safety
 
 
 JOB_ROOT = Path("storage/jobs")
+RUNTIME_ROOT = Path("storage/runtime")
+MATPLOTLIB_CACHE_DIR = RUNTIME_ROOT / "matplotlib"
 RUNNER_PATH = Path(__file__).with_name("runner.py")
 EXECUTION_RESULT_FILENAME = "execution_result.json"
+WINDOWS_CONTROL_C_EXIT = 0xC000013A
+WINDOWS_CONTROL_C_EXIT_SIGNED = -1073741510
+ENVIRONMENT_RETRY_LIMIT = 1
 
 
 class LocalSubprocessSandboxExecutor(BaseSandboxExecutor):
@@ -131,64 +136,89 @@ def _run_subprocess(
     ]
     runtime_tmp_dir = job_dir / ".runtime_tmp"
     runtime_tmp_dir.mkdir(parents=True, exist_ok=True)
+    MATPLOTLIB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.update(
         {
-            "MPLCONFIGDIR": str(runtime_tmp_dir / "matplotlib"),
+            "MPLCONFIGDIR": str(MATPLOTLIB_CACHE_DIR.resolve()),
             "TMP": str(runtime_tmp_dir),
             "TEMP": str(runtime_tmp_dir),
             "TMPDIR": str(runtime_tmp_dir),
             "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
         }
     )
 
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=str(job_dir),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-            timeout=timeout_seconds,
-            check=False,
-        )
-        exit_code = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-    except subprocess.TimeoutExpired as exc:
-        timed_out = True
-        exit_code = None
-        stdout = _decode_timeout_output(exc.stdout)
-        stderr = _decode_timeout_output(exc.stderr)
-        if stderr:
-            stderr = f"{stderr}\nExecution timed out after {timeout_seconds} seconds."
-        else:
-            stderr = f"Execution timed out after {timeout_seconds} seconds."
-    except Exception as exc:
-        exit_code = None
-        stdout = ""
-        stderr = traceback.format_exc()
-        return _build_result(
-            job_id=job_id,
-            success=False,
-            timed_out=False,
-            exit_code=exit_code,
-            stdout=stdout,
-            stderr=stderr,
-            sandbox_script=sandbox_script,
-            source_input=source_input,
-            output_dir=output_dir,
-            execution_result_path=execution_result_path,
-            started_at=started_at,
-            finished_at=_utc_now(),
-            duration_ms=_elapsed_ms(start_time),
-            error={
-                "type": type(exc).__name__,
-                "message": str(exc),
-            },
-        )
+    environment_retries: list[dict[str, Any]] = []
+
+    while True:
+        attempt_started_at = _utc_now()
+        attempt_start_time = time.perf_counter()
+        timed_out = False
+
+        try:
+            completed = _run_command(
+                command=command,
+                job_dir=job_dir,
+                env=env,
+                timeout_seconds=timeout_seconds,
+            )
+            exit_code = completed.returncode
+            stdout = completed.stdout
+            stderr = completed.stderr
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            exit_code = None
+            stdout = _decode_timeout_output(exc.stdout)
+            stderr = _decode_timeout_output(exc.stderr)
+            if stderr:
+                stderr = f"{stderr}\nExecution timed out after {timeout_seconds} seconds."
+            else:
+                stderr = f"Execution timed out after {timeout_seconds} seconds."
+        except Exception as exc:
+            exit_code = None
+            stdout = ""
+            stderr = traceback.format_exc()
+            return _build_result(
+                job_id=job_id,
+                success=False,
+                timed_out=False,
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                sandbox_script=sandbox_script,
+                source_input=source_input,
+                output_dir=output_dir,
+                execution_result_path=execution_result_path,
+                started_at=started_at,
+                finished_at=_utc_now(),
+                duration_ms=_elapsed_ms(start_time),
+                error={
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                },
+                environment_retries=environment_retries,
+            )
+
+        if (
+            not timed_out
+            and _is_environment_interruption(exit_code, stderr)
+            and len(environment_retries) < ENVIRONMENT_RETRY_LIMIT
+        ):
+            environment_retries.append(
+                {
+                    "attempt": len(environment_retries) + 1,
+                    "exit_code": exit_code,
+                    "started_at": attempt_started_at,
+                    "finished_at": _utc_now(),
+                    "duration_ms": _elapsed_ms(attempt_start_time),
+                    "reason": "Environment interruption detected; retrying the same script once.",
+                    "stderr_tail": _tail_text(stderr),
+                }
+            )
+            continue
+
+        break
 
     success = exit_code == 0 and not timed_out
     return _build_result(
@@ -205,13 +235,74 @@ def _run_subprocess(
         started_at=started_at,
         finished_at=_utc_now(),
         duration_ms=_elapsed_ms(start_time),
-        error=None
-        if success
-        else {
-            "type": "ExecutionFailed",
-            "message": "Script execution failed or timed out.",
-        },
+        error=_build_execution_error(success, timed_out, exit_code, stderr),
+        environment_retries=environment_retries,
     )
+
+
+def _run_command(
+    command: list[str],
+    job_dir: Path,
+    env: dict[str, str],
+    timeout_seconds: int,
+) -> subprocess.CompletedProcess[str]:
+    kwargs: dict[str, Any] = {
+        "cwd": str(job_dir),
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "env": env,
+        "timeout": timeout_seconds,
+        "check": False,
+    }
+    creation_flags = _subprocess_creation_flags()
+    if creation_flags:
+        kwargs["creationflags"] = creation_flags
+
+    return subprocess.run(command, **kwargs)
+
+
+def _subprocess_creation_flags() -> int:
+    if os.name != "nt":
+        return 0
+    return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+
+def _is_environment_interruption(exit_code: int | None, stderr: str | None) -> bool:
+    if exit_code in {WINDOWS_CONTROL_C_EXIT, WINDOWS_CONTROL_C_EXIT_SIGNED}:
+        return True
+    return "KeyboardInterrupt" in (stderr or "")
+
+
+def _build_execution_error(
+    success: bool,
+    timed_out: bool,
+    exit_code: int | None,
+    stderr: str,
+) -> dict[str, str] | None:
+    if success:
+        return None
+    if timed_out:
+        return {
+            "type": "ExecutionTimedOut",
+            "message": "Script execution timed out.",
+        }
+    if _is_environment_interruption(exit_code, stderr):
+        return {
+            "type": "EnvironmentInterrupted",
+            "message": "Sandbox subprocess was interrupted by the runtime environment.",
+        }
+    return {
+        "type": "ExecutionFailed",
+        "message": "Script execution failed.",
+    }
+
+
+def _tail_text(value: str, max_chars: int = 2000) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[-max_chars:]
 
 
 def _build_rejected_result(
@@ -260,7 +351,9 @@ def _build_result(
     finished_at: str,
     duration_ms: int,
     error: dict[str, Any] | None,
+    environment_retries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    environment_retries = environment_retries or []
     return {
         "job_id": job_id,
         "success": success,
@@ -277,6 +370,8 @@ def _build_result(
         "duration_ms": duration_ms,
         "artifacts": _list_artifacts(output_dir, exclude={execution_result_path, sandbox_script}),
         "error": error,
+        "environment_retry_count": len(environment_retries),
+        "environment_retries": environment_retries,
     }
 
 

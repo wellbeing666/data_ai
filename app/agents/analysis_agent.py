@@ -7,6 +7,7 @@ from app.services.llm_client import LLMClient, get_llm_client
 CHART_TYPES = {"bar", "line", "scatter", "box", "pie", "heatmap"}
 
 RESULT_KEYS = [
+    "task_type",
     "analysis_goal",
     "methods",
     "grouping_dimensions",
@@ -29,6 +30,7 @@ If the data fields are insufficient for the requested analysis, explain that in 
 
 The JSON object must contain exactly these keys:
 {
+  "task_type": "grade_analysis|sales_decline_analysis|general_data_analysis",
   "analysis_goal": "...",
   "methods": [],
   "grouping_dimensions": [],
@@ -225,6 +227,7 @@ def create_rule_based_analysis_plan(
         chart_plan = _general_chart_plan(metrics, dimensions)
 
     return {
+        "task_type": task_type,
         "analysis_goal": user_goal,
         "methods": methods,
         "grouping_dimensions": dimensions,
@@ -254,6 +257,7 @@ def _normalize_result(
     task_type = str(controller_plan.get("task_type") or "")
 
     normalized = {
+        "task_type": task_type or "general_data_analysis",
         "analysis_goal": str(result.get("analysis_goal") or user_goal),
         "methods": _string_list(result.get("methods")) or fallback["methods"],
         "grouping_dimensions": _existing_names(

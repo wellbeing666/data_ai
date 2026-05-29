@@ -35,6 +35,15 @@ def generate_markdown_report(
         analysis_result=analysis_result,
         base_dir=result_dir,
     )
+    explanation = _load_optional_json(result_dir / "explanation.json")
+    if isinstance(explanation, dict) and _has_explanation_content(explanation):
+        markdown = _build_explanation_report(explanation, analysis_result, resolved_chart_paths, result_dir)
+        resolved_output_path.write_text(markdown, encoding="utf-8")
+        return {
+            "report_path": str(resolved_output_path),
+            "analysis_result_path": str(result_path),
+            "chart_paths": [str(path) for path in resolved_chart_paths],
+        }
 
     task_type = str(
         analysis_result.get("task_type")
@@ -73,6 +82,15 @@ def _load_json(path: Path) -> dict[str, Any]:
         )
 
     return data
+
+
+def _load_optional_json(path: Path) -> Any | None:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
 
 
 def _resolve_chart_paths(
@@ -262,6 +280,88 @@ def _build_general_report(
         "- 如果原始数据存在缺失、重复或字段含义不清，结论可靠性会受到影响。",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _build_explanation_report(
+    explanation: dict[str, Any],
+    analysis_result: dict[str, Any],
+    chart_paths: list[Path],
+    report_dir: Path,
+) -> str:
+    title = (
+        _deep_get(analysis_result, ["analysis_plan", "analysis_goal"])
+        or _deep_get(analysis_result, ["analysis_plan", "task_name"])
+        or explanation.get("title")
+        or "数据分析报告"
+    )
+    lines = [
+        f"# {title}",
+        "",
+        "## 摘要",
+        str(explanation.get("summary") or "暂无摘要。"),
+        "",
+        "## 关键发现",
+        *_build_explanation_items(explanation.get("key_findings")),
+        "",
+        "## 建议动作",
+        *_build_explanation_items(explanation.get("recommendations")),
+        "",
+        "## 图表说明",
+        *_build_chart_lines(chart_paths, report_dir),
+        "",
+        "## 限制说明",
+        *_build_explanation_items(explanation.get("limitations")),
+    ]
+    outline = _as_outline(explanation.get("ppt_outline"))
+    if outline:
+        lines.extend(["", "## PPT 大纲"])
+        for index, slide in enumerate(outline, start=1):
+            lines.append(f"### {index}. {slide.get('title', '未命名页面')}")
+            for bullet in _as_string_list(slide.get("bullets")):
+                lines.append(f"- {bullet}")
+            chart = str(slide.get("chart") or "")
+            if chart:
+                lines.append(f"- 关联图表：{Path(chart).name}")
+    return "\n".join(lines) + "\n"
+
+
+def _has_explanation_content(explanation: dict[str, Any]) -> bool:
+    return any(
+        explanation.get(key)
+        for key in ("summary", "key_findings", "recommendations", "limitations", "ppt_outline")
+    )
+
+
+def _build_explanation_items(value: Any) -> list[str]:
+    items = _as_string_list(value)
+    if not items:
+        return ["- 暂无。"]
+    return [f"- {item}" for item in items]
+
+
+def _as_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value:
+        if isinstance(item, dict):
+            title = item.get("title") or item.get("name") or item.get("finding")
+            description = item.get("description") or item.get("text") or item.get("insight")
+            if title and description:
+                result.append(f"{title}：{description}")
+            elif title:
+                result.append(str(title))
+            elif description:
+                result.append(str(description))
+        elif item is not None:
+            result.append(str(item))
+    return result
+
+
+def _as_outline(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 def _build_chart_lines(chart_paths: list[Path], report_dir: Path) -> list[str]:

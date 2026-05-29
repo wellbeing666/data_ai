@@ -8,6 +8,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from app.agents.hypothesis_agent import create_hypothesis_plan  # noqa: E402
 from app.agents.prediction_agent import create_prediction_plan  # noqa: E402
+from app.agents.prediction_code_agent import PredictionCodeAgent, RuleBasedPredictionCodeAgent  # noqa: E402
 
 
 class FailingLLM:
@@ -34,6 +35,48 @@ class HallucinatingLLM:
             "charts": ["bar"],
             "limitations": [],
         }
+
+
+class FakePredictionCodeLLM:
+    def __init__(self, content):
+        self.content = content
+
+    def chat(self, *args, **kwargs):
+        return self.content
+
+
+PREDICTION_INPUT_FILE = r"C:\workspace\data.csv"
+PREDICTION_OUTPUT_DIR = r"C:\workspace\storage\jobs\prediction1"
+
+VALID_PREDICTION_SCRIPT_WITHOUT_CONSTANTS = r'''import json
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+
+def main():
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
+    plt.rcParams["axes.unicode_minus"] = False
+    chart_path = CHARTS_DIR / "chart.png"
+    plt.figure()
+    plt.title("\u9884\u6d4b\u7ed3\u679c")
+    plt.xlabel("\u5bf9\u8c61")
+    plt.ylabel("\u6307\u6807\u503c")
+    plt.plot([1, 2], [1, 2])
+    plt.savefig(chart_path)
+    plt.close()
+    payload = {"task_type": "what_if_prediction", "charts": [str(chart_path)]}
+    (OUTPUT_DIR / "prediction_result.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    (OUTPUT_DIR / "report_data.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()
+'''
 
 
 def _dataset_profile():
@@ -101,8 +144,60 @@ def test_prediction_plan_filters_hallucinated_columns():
     assert plan["feature_columns"] == ["营销预算"]
 
 
+def test_rule_prediction_code_uses_chinese_chart_text_and_fonts():
+    script = RuleBasedPredictionCodeAgent().generate_script(
+        input_file="storage/uploads/demo/input.csv",
+        output_dir="storage/jobs/demo",
+        dataset_profile=_dataset_profile(),
+        hypothesis_plan={
+            "scenario_summary": "如果营销预算增加 20%，销量会怎样？",
+            "intervention": {"matched_column": "营销预算", "change_type": "relative", "change_value": 0.2},
+            "target_metric": {"matched_column": "销量"},
+            "entity_dimension": {"matched_column": "商品"},
+        },
+        prediction_plan={
+            "task_type": "what_if_prediction",
+            "prediction_goal": "如果营销预算增加 20%，销量会怎样？",
+            "target_metric": "销量",
+            "intervention": {"column": "营销预算", "change_type": "relative", "change_value": 0.2},
+            "entity_dimension": "商品",
+            "feature_columns": ["营销预算"],
+            "limitations": [],
+        },
+    )
+
+    assert "font.sans-serif" in script
+    assert "axes.unicode_minus" in script
+    assert "预测变化最大的对象" in script
+    assert "预测绝对变化" in script
+    assert "基准值与预测值对比" in script
+    assert "基准值" in script
+    assert "预测值" in script
+    assert "Top predicted changes" not in script
+    assert "Baseline vs predicted" not in script
+
+
+def test_prediction_code_injects_runtime_constants():
+    script = PredictionCodeAgent(
+        llm_client=FakePredictionCodeLLM(VALID_PREDICTION_SCRIPT_WITHOUT_CONSTANTS)
+    ).generate_script(
+        input_file=PREDICTION_INPUT_FILE,
+        output_dir=PREDICTION_OUTPUT_DIR,
+        dataset_profile=_dataset_profile(),
+        hypothesis_plan={"scenario_summary": "test"},
+        prediction_plan={"task_type": "what_if_prediction"},
+        attempt=1,
+    )
+
+    assert f'INPUT_FILE = Path(r"{PREDICTION_INPUT_FILE}")' in script
+    assert f'OUTPUT_DIR = Path(r"{PREDICTION_OUTPUT_DIR}")' in script
+    assert 'CHARTS_DIR = OUTPUT_DIR / "charts"' in script
+
+
 if __name__ == "__main__":
     test_rule_hypothesis_parses_chinese_what_if_goal()
     test_prediction_plan_falls_back_to_existing_columns_only()
     test_prediction_plan_filters_hallucinated_columns()
+    test_rule_prediction_code_uses_chinese_chart_text_and_fonts()
+    test_prediction_code_injects_runtime_constants()
     print("Prediction agent tests passed.")

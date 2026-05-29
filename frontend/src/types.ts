@@ -86,7 +86,7 @@ export interface AnalysisResult {
     }>;
   };
   summary?: GradeSummaryRow[] | string;
-  charts?: string[];
+  charts?: unknown[];
   thresholds?: {
     pass_score?: number;
     excellent_score?: number;
@@ -282,7 +282,7 @@ export interface PredictionResult {
   predicted_summary: Record<string, unknown>;
   model_info: Record<string, unknown>;
   limitations: string[];
-  charts: string[];
+  charts: unknown[];
   [key: string]: unknown;
 }
 

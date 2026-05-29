@@ -109,6 +109,9 @@ def write_auto_repair_execution_log(
                 "success": _get_value(execution_result, "success", False),
                 "timed_out": _get_value(execution_result, "timed_out", False),
                 "duration_ms": _get_value(execution_result, "duration_ms"),
+                "error": _get_value(execution_result, "error"),
+                "environment_retry_count": _get_value(execution_result, "environment_retry_count", 0),
+                "environment_retries": _get_value(execution_result, "environment_retries", []),
             }
         )
         events.append(
