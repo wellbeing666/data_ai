@@ -196,7 +196,7 @@ def run_prediction_job(
     for attempt in range(1, total_attempts + 1):
         events.append(create_event("code_generation", "running", f"预测 Code Agent 正在生成第 {attempt} 次脚本。", attempt=attempt))
         write_stage_snapshot("code_generation")
-        script_path = job_dir / f"generated_prediction_script_attempt_{attempt}.py"
+        script_path = job_dir / f"generated_prediction_script_attempt_{attempt}.py.txt"
         _clear_attempt_outputs(job_dir)
         safety_attempt_path = job_dir / f"prediction_code_safety_result_attempt_{attempt}.json"
         execution_attempt_path = job_dir / f"prediction_execution_result_attempt_{attempt}.json"
@@ -470,6 +470,7 @@ def _build_execution_log(status_data: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_status_payload(data: dict[str, Any]) -> dict[str, Any]:
     job_dir = Path(str(data.get("job_dir") or ""))
+    expose_final_outputs = str(data.get("status") or "pending") == "success"
     if job_dir.exists():
         data = {
             **data,
@@ -477,9 +478,9 @@ def _normalize_status_payload(data: dict[str, Any]) -> dict[str, Any]:
             "rag_retrieval_path": _existing_or_none(data.get("rag_retrieval_path"), job_dir / "rag_retrieval.json"),
             "hypothesis_plan_path": _existing_or_none(data.get("hypothesis_plan_path"), job_dir / "hypothesis_plan.json"),
             "prediction_plan_path": _existing_or_none(data.get("prediction_plan_path"), job_dir / "prediction_plan.json"),
-            "prediction_explanation_path": _existing_or_none(data.get("prediction_explanation_path"), job_dir / "prediction_explanation.json"),
-            "final_prediction_result_path": _existing_or_none(data.get("final_prediction_result_path"), job_dir / "prediction_result.json"),
-            "final_report_data_path": _existing_or_none(data.get("final_report_data_path"), job_dir / "report_data.json"),
+            "prediction_explanation_path": _existing_or_none(data.get("prediction_explanation_path"), job_dir / "prediction_explanation.json") if expose_final_outputs else None,
+            "final_prediction_result_path": _existing_or_none(data.get("final_prediction_result_path"), job_dir / "prediction_result.json") if expose_final_outputs else None,
+            "final_report_data_path": _existing_or_none(data.get("final_report_data_path"), job_dir / "report_data.json") if expose_final_outputs else None,
             "final_validation_result_path": _existing_or_none(data.get("final_validation_result_path"), job_dir / "prediction_validation_result.json"),
         }
     return {
@@ -595,3 +596,5 @@ def _existing_or_none(value: Any, fallback_path: Path) -> str | None:
     if isinstance(value, str) and value:
         return value
     return str(fallback_path) if fallback_path.exists() else None
+
+

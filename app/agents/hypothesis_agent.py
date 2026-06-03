@@ -108,7 +108,8 @@ def create_rule_based_hypothesis(
     columns = _columns(dataset_profile)
     lowered = user_goal.lower()
     change_value = _extract_change_value(user_goal)
-    change_type = "relative" if "%" in user_goal else "absolute"
+    unit = _extract_unit(user_goal)
+    change_type = "relative" if unit == "%" else "absolute"
     if "权重" in user_goal or "weight" in lowered:
         change_type = "weight_shift"
 
@@ -122,18 +123,18 @@ def create_rule_based_hypothesis(
         "intervention": {
             "raw_text": intervention_phrase or user_goal,
             "variable": intervention_phrase or "",
-            "matched_column": _best_column(intervention_phrase, columns),
+            "matched_column": _best_column(intervention_phrase or user_goal, columns, prefer_numeric=True, dataset_profile=dataset_profile),
             "change_type": change_type,
             "change_value": change_value,
-            "unit": "%" if "%" in user_goal else "",
+            "unit": unit,
         },
         "target_metric": {
             "raw_text": target_phrase,
-            "matched_column": _best_column(target_phrase, columns, prefer_numeric=True, dataset_profile=dataset_profile),
+            "matched_column": _best_column(target_phrase or user_goal, columns, prefer_numeric=True, dataset_profile=dataset_profile),
         },
         "entity_dimension": {
             "raw_text": entity_phrase,
-            "matched_column": _best_column(entity_phrase, columns),
+            "matched_column": _best_column(entity_phrase or user_goal, columns),
         },
         "time_horizon": "下个月" if "下个月" in user_goal else "",
         "assumptions": ["预测结果基于当前上传数据进行模拟估计，不代表确定因果。"],
@@ -156,9 +157,11 @@ def _normalize(result: Any, user_goal: str, dataset_profile: dict[str, Any]) -> 
     for key in ("intervention", "target_metric", "entity_dimension"):
         value = result.get(key) if isinstance(result.get(key), dict) else {}
         normalized[key] = {**fallback[key], **value}
-        matched = str(normalized[key].get("matched_column") or "")
-        if matched not in columns:
-            normalized[key]["matched_column"] = ""
+        matched = str(value.get("matched_column") or "")
+        normalized[key]["matched_column"] = matched if matched in columns else fallback[key].get("matched_column", "")
+        for field_name, field_value in fallback[key].items():
+            if normalized[key].get(field_name) in (None, ""):
+                normalized[key][field_name] = field_value
     normalized["scenario_type"] = "what_if_prediction"
     return normalized
 
@@ -173,7 +176,21 @@ def _extract_change_value(text: str) -> float:
         if match.group(1) in {"减少", "降低", "下降"}:
             value = -value
         return value
+    match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*(平方米|平米|㎡|m2|m\^2|平方英尺|sq\.?\s*ft|sqft)", text, flags=re.IGNORECASE)
+    if match:
+        return float(match.group(1))
     return 0.0
+
+
+def _extract_unit(text: str) -> str:
+    lowered = text.lower()
+    if "%" in text:
+        return "%"
+    if any(token in text for token in ("平方米", "平米", "㎡")) or any(token in lowered for token in ("m2", "m^2", "square meter")):
+        return "平方米"
+    if any(token in text for token in ("平方英尺",)) or any(token in lowered for token in ("sqft", "sq ft", "square foot", "square feet")):
+        return "平方英尺"
+    return ""
 
 
 def _extract_after_if(text: str) -> str:
@@ -185,12 +202,12 @@ def _extract_after_if(text: str) -> str:
 
 
 def _target_phrase(text: str) -> str:
-    candidates = ["销量", "销售额", "不及格率", "及格率", "优秀率", "成绩", "订单数", "转化率"]
+    candidates = ["总价", "房价", "售价", "价格", "SalePrice", "销量", "销售额", "不及格率", "及格率", "优秀率", "成绩", "订单数", "转化率"]
     return next((item for item in candidates if item in text), "")
 
 
 def _entity_phrase(text: str) -> str:
-    candidates = ["商品", "产品", "班级", "学生", "区域", "渠道", "品类", "客户"]
+    candidates = ["某套房", "房屋", "房子", "住宅", "房源", "商品", "产品", "班级", "学生", "区域", "渠道", "品类", "客户"]
     return next((item for item in candidates if item in text), "")
 
 
@@ -203,10 +220,25 @@ def _best_column(
     if not columns:
         return ""
     phrase = phrase or ""
+    phrase_lower = phrase.lower()
     for column in columns:
-        if column and (column in phrase or phrase in column):
+        column_lower = column.lower()
+        if column and (column in phrase or phrase in column or column_lower in phrase_lower or phrase_lower in column_lower):
             return column
     aliases = {
+        "面积": ["GrLivArea", "LivingArea", "TotalBsmtSF", "1stFlrSF", "2ndFlrSF", "LotArea", "GarageArea", "面积", "Area", "SF"],
+        "平方米": ["GrLivArea", "LivingArea", "TotalBsmtSF", "1stFlrSF", "2ndFlrSF", "LotArea", "GarageArea", "面积", "Area", "SF"],
+        "平米": ["GrLivArea", "LivingArea", "TotalBsmtSF", "1stFlrSF", "2ndFlrSF", "LotArea", "GarageArea", "面积", "Area", "SF"],
+        "某套房": ["Id", "房屋编号", "编号", "house_id", "ID", "id"],
+        "房屋": ["Id", "房屋编号", "编号", "house_id", "ID", "id"],
+        "房子": ["Id", "房屋编号", "编号", "house_id", "ID", "id"],
+        "住宅": ["Id", "房屋编号", "编号", "house_id", "ID", "id"],
+        "房源": ["Id", "房屋编号", "编号", "house_id", "ID", "id"],
+        "总价": ["SalePrice", "房价", "总价", "售价", "价格", "Price"],
+        "房价": ["SalePrice", "房价", "总价", "售价", "价格", "Price"],
+        "售价": ["SalePrice", "房价", "总价", "售价", "价格", "Price"],
+        "价格": ["SalePrice", "房价", "总价", "售价", "价格", "Price"],
+        "saleprice": ["SalePrice", "房价", "总价", "售价", "价格", "Price"],
         "商品": ["商品", "产品", "sku", "SKU"],
         "销量": ["销量", "销售量", "数量"],
         "销售额": ["销售额", "收入", "GMV", "金额"],
@@ -217,15 +249,25 @@ def _best_column(
         "不及格率": ["成绩", "分数", "总评"],
     }
     for keyword, names in aliases.items():
-        if keyword in phrase:
-            for column in columns:
-                if any(name.lower() in column.lower() for name in names):
-                    return column
+        if keyword.lower() in phrase_lower:
+            for preferred_name in names:
+                for column in columns:
+                    column_lower = column.lower()
+                    if preferred_name.lower() == column_lower or preferred_name.lower() in column_lower:
+                        return column
     if prefer_numeric and dataset_profile:
-        numeric = list(dataset_profile.get("numeric_summary", {}).keys())
+        numeric = [str(column) for column in dataset_profile.get("numeric_summary", {}).keys()]
+        non_identifier_numeric = [column for column in numeric if not _is_identifier_column(column)]
+        if non_identifier_numeric:
+            return non_identifier_numeric[0]
         if numeric:
-            return str(numeric[0])
+            return numeric[0]
     return ""
+
+
+def _is_identifier_column(column: str) -> bool:
+    text = str(column).strip().lower()
+    return text in {"id", "编号", "序号", "房屋编号", "house_id", "row_id"} or text.endswith("_id")
 
 
 def _columns(dataset_profile: dict[str, Any]) -> list[str]:

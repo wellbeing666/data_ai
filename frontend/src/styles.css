@@ -1,3 +1,4 @@
+
 :root {
   color: #1f2937;
   background: #eef2f6;
@@ -269,6 +270,13 @@ h3 {
   color: #475569;
   padding: 20px;
   text-align: center;
+  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.upload-zone.drag-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
 }
 
 .upload-zone input {
@@ -1372,5 +1380,127 @@ tr:last-child td {
 
   .metric-row div {
     flex: 1;
+  }
+}
+
+
+
+.chart-image-button {
+  display: block;
+  width: 100%;
+  cursor: zoom-in;
+  background: #ffffff;
+  padding: 0;
+}
+
+.chart-image-button:focus-visible,
+.chart-actions button:focus-visible,
+.chart-modal-actions button:focus-visible {
+  outline: 3px solid rgba(15, 118, 110, 0.25);
+  outline-offset: 2px;
+}
+
+.chart-actions {
+  display: flex;
+  gap: 8px;
+  border-top: 1px solid #e2e8f0;
+  background: #ffffff;
+  padding: 10px 12px 12px;
+}
+
+.chart-actions button,
+.chart-modal-actions button {
+  min-height: 34px;
+  cursor: pointer;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 0 12px;
+}
+
+.chart-actions .danger-button,
+.chart-modal-actions .danger-button,
+.danger-button {
+  border-color: #fecdd3;
+  background: #fff1f2;
+  color: #be123c;
+}
+
+.chart-message {
+  margin: 0;
+  border: 1px solid #a7f3d0;
+  border-radius: 8px;
+  background: #ecfdf5;
+  color: #047857;
+  padding: 10px 12px;
+}
+
+.chart-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.72);
+  padding: 28px;
+}
+
+.chart-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1180px, 96vw);
+  max-height: 92vh;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 24px 72px rgba(15, 23, 42, 0.35);
+  overflow: hidden;
+}
+
+.chart-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 14px 16px;
+}
+
+.chart-modal-head strong {
+  color: #111827;
+}
+
+.chart-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chart-modal-body {
+  overflow: auto;
+  background: #f8fafc;
+  padding: 16px;
+}
+
+.chart-modal-body img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: none;
+  object-fit: contain;
+  background: #ffffff;
+}
+
+@media (max-width: 720px) {
+  .chart-modal-backdrop {
+    padding: 12px;
+  }
+
+  .chart-modal-head {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

@@ -36,6 +36,13 @@ def validate_prediction_outputs(job_id: str) -> dict[str, Any]:
         _suggest(repair_suggestions, "Fix stderr and regenerate the prediction script.")
 
     if isinstance(prediction_result, dict):
+        normalized_prediction, changed = _normalize_prediction_result(prediction_result)
+        if changed:
+            prediction_result = normalized_prediction
+            _write_json(job_dir / "prediction_result.json", prediction_result)
+            if isinstance(report_data, dict):
+                report_data = _sync_report_data_with_prediction(report_data, prediction_result)
+                _write_json(job_dir / "report_data.json", report_data)
         _validate_prediction_result(prediction_result, issues, repair_suggestions)
     if not isinstance(report_data, dict):
         _issue(issues, "invalid_report_data", "high", "report_data.json must be a JSON object.", "report_data.json")
@@ -54,6 +61,80 @@ def validate_prediction_outputs(job_id: str) -> dict[str, Any]:
     _write_json(job_dir / VALIDATION_RESULT_FILENAME, result)
     _write_json(job_dir / "validation_result.json", result)
     return result
+
+
+def _normalize_prediction_result(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    normalized = dict(data)
+    changed = False
+
+    entities = normalized.get("top_impacted_entities")
+    if isinstance(entities, list):
+        normalized_entities = []
+        for index, item in enumerate(entities):
+            normalized_item = _normalize_entity_item(item, index)
+            normalized_entities.append(normalized_item)
+            if normalized_item != item:
+                changed = True
+        normalized["top_impacted_entities"] = normalized_entities
+
+    if not isinstance(normalized.get("model_info"), dict):
+        normalized["model_info"] = {"method": "unknown"}
+        changed = True
+    elif not normalized["model_info"].get("method"):
+        normalized["model_info"] = {**normalized["model_info"], "method": "unknown"}
+        changed = True
+
+    return normalized, changed
+
+
+def _normalize_entity_item(item: Any, index: int) -> dict[str, Any]:
+    if isinstance(item, dict):
+        normalized = dict(item)
+    else:
+        normalized = {"entity": f"对象{index + 1}"}
+
+    entity = str(normalized.get("entity") or f"对象{index + 1}")
+    baseline = _safe_float(normalized.get("baseline_value"), 0.0)
+    predicted = _safe_float(normalized.get("predicted_value"), baseline)
+    absolute_change = _safe_float(normalized.get("absolute_change"), predicted - baseline)
+    if "predicted_value" not in normalized and "absolute_change" in normalized:
+        predicted = baseline + absolute_change
+    if "absolute_change" not in normalized:
+        absolute_change = predicted - baseline
+    percent_change = _safe_float(
+        normalized.get("percent_change"),
+        absolute_change / baseline if abs(baseline) > 1e-9 else 0.0,
+    )
+    direction = str(normalized.get("direction") or ("增加" if absolute_change >= 0 else "降低"))
+    explanation = str(normalized.get("explanation") or "").strip()
+    if not explanation:
+        explanation = f"该对象在当前情景下预测值{direction}约 {abs(absolute_change):,.2f}，该结果来自模型模拟估计，需结合业务背景验证。"
+
+    normalized.update(
+        {
+            "entity": entity,
+            "baseline_value": baseline,
+            "predicted_value": predicted,
+            "absolute_change": absolute_change,
+            "percent_change": percent_change,
+            "direction": direction,
+            "explanation": explanation,
+        }
+    )
+    return normalized
+
+
+def _sync_report_data_with_prediction(report_data: dict[str, Any], prediction_result: dict[str, Any]) -> dict[str, Any]:
+    synced = dict(report_data)
+    if "top_impacted_entities" in prediction_result:
+        synced["top_impacted_entities"] = prediction_result["top_impacted_entities"]
+    if "model_info" in prediction_result:
+        synced["model_info"] = prediction_result["model_info"]
+    if "charts" in prediction_result:
+        synced["charts"] = prediction_result["charts"]
+    if "limitations" in prediction_result:
+        synced["limitations"] = prediction_result["limitations"]
+    return synced
 
 
 def _validate_prediction_result(
@@ -119,6 +200,15 @@ def _get_job_dir(job_id: str) -> Path:
     if not job_dir.exists() or not job_dir.is_dir():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
     return job_dir
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        if value in (None, ""):
+            return float(default)
+        return float(value)
+    except Exception:
+        return float(default)
 
 
 def _issue(

@@ -2,6 +2,7 @@ import type {
   AnalysisJobResponse,
   AnalysisResult,
   AutoRepairAnalysisJobResponse,
+  ChartDeleteResponse,
   DatasetProfile,
   DatasetUploadResponse,
   ExecutionLog,
@@ -177,6 +178,17 @@ export async function fetchWorkflowLog(jobId: string): Promise<WorkflowLogRespon
   return parseResponse<WorkflowLogResponse>(response);
 }
 
+export async function deleteWorkflowChart(
+  jobId: string,
+  chartPath: string
+): Promise<ChartDeleteResponse> {
+  const params = new URLSearchParams({ chart_path: chartPath });
+  const response = await fetch(`/api/workflows/jobs/${jobId}/charts?${params.toString()}`, {
+    method: "DELETE"
+  });
+  return parseResponse<ChartDeleteResponse>(response);
+}
+
 export async function fetchAnalysisResult(resultPath: string): Promise<AnalysisResult> {
   const response = await fetch(toStorageUrl(resultPath));
   return parseResponse<AnalysisResult>(response);
@@ -265,3 +277,4 @@ export function toStorageUrl(path: string): string {
   }
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
+

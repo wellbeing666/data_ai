@@ -1,3 +1,4 @@
+
 export interface DatasetUploadResponse {
   dataset_id: string;
   filename: string;
@@ -341,6 +342,7 @@ export interface WorkflowJobResponse {
   final_prediction_result_path: string | null;
   final_report_data_path: string | null;
   final_validation_result_path: string | null;
+  chart_paths?: string[];
   effective_max_retries?: number | null;
   events?: ExecutionLogEvent[];
   error?: Record<string, unknown> | null;
@@ -383,3 +385,11 @@ export interface VisualParseResult {
   limitations: string[];
 }
 
+
+
+
+export interface ChartDeleteResponse {
+  deleted: boolean;
+  chart_path: string;
+  chart_paths: string[];
+}

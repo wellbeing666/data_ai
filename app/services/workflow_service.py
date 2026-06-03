@@ -311,6 +311,30 @@ def get_workflow_job_log(job_id: str) -> dict[str, Any]:
     return log_data
 
 
+def delete_workflow_chart(job_id: str, chart_path: str) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    resolved_chart = _resolve_chart_file(job_dir, job_id, chart_path)
+    if not resolved_chart.exists() or not resolved_chart.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found.")
+
+    resolved_chart.unlink()
+    for filename in ("analysis_result.json", "prediction_result.json", "report_data.json"):
+        artifact_path = job_dir / filename
+        artifact_data = _read_json_if_exists(artifact_path)
+        if not artifact_data:
+            continue
+        updated_data, changed = _remove_deleted_chart_refs(artifact_data, resolved_chart, job_dir)
+        if changed:
+            _write_json(artifact_path, updated_data)
+
+    workflow_type = _workflow_type_for_job_dir(job_dir)
+    return {
+        "deleted": True,
+        "chart_path": _chart_storage_path(job_dir, resolved_chart),
+        "chart_paths": _collect_chart_paths(job_dir, workflow_type),
+    }
+
+
 def _write_workflow_status(
     *,
     job_dir: Path,
@@ -525,6 +549,104 @@ def _normalize_chart_path(value: Any, job_dir: Path) -> str | None:
     return str(local_path)
 
 
+def _workflow_type_for_job_dir(job_dir: Path) -> str:
+    if (job_dir / "prediction_result.json").exists() or (job_dir / "prediction_task_status.json").exists():
+        return PREDICTION_TASK_TYPE
+    status_data = _read_json_if_exists(job_dir / WORKFLOW_STATUS_FILENAME) or {}
+    workflow_type = str(status_data.get("workflow_type") or "")
+    return workflow_type or ANALYSIS_WORKFLOW_TYPE
+
+
+def _resolve_chart_file(job_dir: Path, job_id: str, chart_path: str) -> Path:
+    raw = str(chart_path or "").replace("\\", "/").strip()
+    if not raw:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="chart_path is required.")
+    if raw.startswith("http://") or raw.startswith("https://"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only local job charts can be deleted.")
+
+    storage_prefix = f"storage/jobs/{job_id}/"
+    url_storage_prefix = f"/storage/jobs/{job_id}/"
+    if raw.startswith(url_storage_prefix):
+        candidate = Path(raw.lstrip("/"))
+    elif raw.startswith(storage_prefix):
+        candidate = Path(raw)
+    elif f"/storage/jobs/{job_id}/" in raw:
+        suffix = raw.split(f"/storage/jobs/{job_id}/", 1)[1]
+        candidate = Path("storage") / "jobs" / job_id / suffix
+    elif raw.startswith("charts/"):
+        candidate = job_dir / raw
+    elif "/charts/" in raw:
+        candidate = job_dir / "charts" / raw.rsplit("/charts/", 1)[1]
+    elif "/" not in raw:
+        candidate = job_dir / "charts" / raw
+    else:
+        candidate = Path(raw)
+
+    if not candidate.is_absolute():
+        candidate = candidate.resolve()
+    charts_dir = (job_dir / "charts").resolve()
+    try:
+        candidate.relative_to(charts_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Chart path is outside this job.") from exc
+    return candidate
+
+
+def _chart_storage_path(job_dir: Path, chart_path: Path) -> str:
+    job_id = job_dir.name
+    try:
+        relative = chart_path.resolve().relative_to(job_dir.resolve()).as_posix()
+    except ValueError:
+        relative = f"charts/{chart_path.name}"
+    return f"storage/jobs/{job_id}/{relative}"
+
+
+def _remove_deleted_chart_refs(data: dict[str, Any], deleted_path: Path, job_dir: Path) -> tuple[dict[str, Any], bool]:
+    updated = dict(data)
+    changed = False
+    for key in ("charts", "chart_paths"):
+        if key not in updated:
+            continue
+        value = updated.get(key)
+        if not isinstance(value, list):
+            continue
+        filtered = []
+        for item in value:
+            raw_path = _chart_entry_path(item)
+            if raw_path and _same_chart_path(raw_path, deleted_path, job_dir):
+                changed = True
+                continue
+            filtered.append(item)
+        updated[key] = filtered
+    return updated, changed
+
+
+def _chart_entry_path(item: Any) -> str | None:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        for key in ("path", "file_path", "chart_path", "url", "file", "filename"):
+            value = item.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _same_chart_path(value: str, deleted_path: Path, job_dir: Path) -> bool:
+    normalized = _normalize_chart_path(value, job_dir)
+    if not normalized:
+        return False
+    if normalized.startswith("http://") or normalized.startswith("https://"):
+        return False
+    try:
+        candidate = Path(normalized)
+        if not candidate.is_absolute():
+            candidate = candidate.resolve()
+        return candidate == deleted_path.resolve()
+    except OSError:
+        return Path(str(normalized).replace("\\", "/")).name == deleted_path.name
+
+
 def _deduplicate_strings(values: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -612,4 +734,5 @@ def _event_list(value: Any) -> list[dict[str, Any]]:
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
 

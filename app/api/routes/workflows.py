@@ -1,8 +1,11 @@
-from fastapi import APIRouter, BackgroundTasks
+from typing import Any
+
+from fastapi import APIRouter, BackgroundTasks, Query
 
 from app.schemas.workflow import WorkflowJobRequest, WorkflowJobResponse, WorkflowLogResponse
 from app.services.workflow_service import (
     create_workflow_job_record,
+    delete_workflow_chart,
     get_workflow_job_log,
     get_workflow_job_status,
     run_workflow_job_background,
@@ -42,3 +45,11 @@ def read_workflow_job_status(job_id: str) -> WorkflowJobResponse:
 @router.get("/jobs/{job_id}/logs", response_model=WorkflowLogResponse)
 def read_workflow_job_logs(job_id: str) -> WorkflowLogResponse:
     return WorkflowLogResponse(**get_workflow_job_log(job_id))
+
+
+@router.delete("/jobs/{job_id}/charts")
+def remove_workflow_chart(
+    job_id: str,
+    chart_path: str = Query(..., min_length=1),
+) -> dict[str, Any]:
+    return delete_workflow_chart(job_id, chart_path)

@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+
+import { type DragEvent, useEffect, useMemo, useState } from "react";
 
 import {
   createAutoRepairAnalysisJobAsync,
   createPredictionJobAsync,
   createWorkflowJobAsync,
+  deleteWorkflowChart,
   fetchAnalysisResult,
   fetchAutoRepairAnalysisJobStatus,
   fetchDatasetProfile,
@@ -114,10 +116,17 @@ const emptyPredictionExplanation: PredictionExplanationResult = {
 };
 
 const terminalStatuses = new Set(["success", "failed"]);
+const analysisFileExtensions = new Set(["csv", "xlsx", "xls", "png", "jpg", "jpeg", "webp"]);
+
+function isSupportedAnalysisFile(file: File): boolean {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return analysisFileExtensions.has(extension);
+}
 
 export default function App() {
   const [activePage, setActivePage] = useState<PageKey>("setup");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isAnalysisFileDragActive, setIsAnalysisFileDragActive] = useState(false);
   const [userGoal, setUserGoal] = useState("把这批 Excel 成绩按班级统计并生成图表");
   const [uploadInfo, setUploadInfo] = useState<DatasetUploadResponse | null>(null);
   const [profile, setProfile] = useState<DatasetProfile | null>(null);
@@ -150,6 +159,9 @@ export default function App() {
   const [predictionPlan, setPredictionPlan] = useState<AnyRecord | null>(null);
   const [predictionStatus, setPredictionStatus] = useState<"idle" | "uploading" | "running" | "success" | "failed">("idle");
   const [predictionMessage, setPredictionMessage] = useState("");
+  const [hiddenChartPaths, setHiddenChartPaths] = useState<string[]>([]);
+  const [chartPreviewPath, setChartPreviewPath] = useState<string | null>(null);
+  const [chartMessage, setChartMessage] = useState("");
 
   useEffect(() => {
     fetchHealthStatus()
@@ -247,9 +259,11 @@ export default function App() {
   const isFallbackMode = !health?.deepseek_configured || health.llm_mode !== "deepseek";
   const isPredictionWorkflow = job?.workflow_type === "what_if_prediction" || job?.task_type === "what_if_prediction";
   const events = mergeWorkflowEvents(job?.events, executionLog?.events);
-  const chartPaths = isPredictionWorkflow
+  const hiddenChartPathSet = useMemo(() => new Set(hiddenChartPaths), [hiddenChartPaths]);
+  const chartPaths = (isPredictionWorkflow
     ? getChartPaths(predictionResult, job)
-    : getChartPaths(analysisResult, job, report?.chart_paths);
+    : getChartPaths(analysisResult, job, report?.chart_paths)
+  ).filter((chartPath) => !hiddenChartPathSet.has(chartPath));
 
   const steps = useMemo(
     () => {
@@ -368,6 +382,9 @@ export default function App() {
     setPredictionExplanation(emptyPredictionExplanation);
     setHypothesisPlan(null);
     setPredictionPlan(null);
+    setHiddenChartPaths([]);
+    setChartPreviewPath(null);
+    setChartMessage("");
 
     try {
       const uploaded = await uploadDataset(predictionFile);
@@ -428,6 +445,51 @@ export default function App() {
     }
   }
 
+  function handleAnalysisFileDragEnter(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+    setIsAnalysisFileDragActive(true);
+  }
+
+  function handleAnalysisFileDragOver(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+    setIsAnalysisFileDragActive(true);
+  }
+
+  function handleAnalysisFileDragLeave(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+
+    setIsAnalysisFileDragActive(false);
+  }
+
+  function handleAnalysisFileDrop(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsAnalysisFileDragActive(false);
+
+    const file = event.dataTransfer.files.item(0);
+    if (!file) {
+      return;
+    }
+
+    if (!isSupportedAnalysisFile(file)) {
+      setSelectedFile(null);
+      setMessage("仅支持 CSV、XLSX、XLS、PNG、JPG、JPEG、WEBP 文件。");
+      return;
+    }
+
+    setSelectedFile(file);
+  }
+
   async function handleRunAnalysis() {
     if (!selectedFile) {
       setMessage("请先选择 CSV / Excel 文件或图片。");
@@ -460,6 +522,9 @@ export default function App() {
     setPredictionPlan(null);
     setPredictionStatus("idle");
     setPredictionMessage("");
+    setHiddenChartPaths([]);
+    setChartPreviewPath(null);
+    setChartMessage("");
 
     try {
       const uploaded = await uploadDataset(selectedFile);
@@ -551,6 +616,27 @@ export default function App() {
     }
   }
 
+  async function handleDeleteChart(chartPath: string) {
+    setChartMessage("");
+    if (!job?.job_id) {
+      setHiddenChartPaths((current: string[]) => Array.from(new Set([...current, chartPath])));
+      setChartPreviewPath((current: string | null) => (current === chartPath ? null : current));
+      setChartMessage("图表已从当前页面移除。");
+      return;
+    }
+
+    try {
+      await deleteWorkflowChart(job.job_id, chartPath);
+      setHiddenChartPaths((current: string[]) => Array.from(new Set([...current, chartPath])));
+      setChartPreviewPath((current: string | null) => (current === chartPath ? null : current));
+      setChartMessage("图表已删除。");
+      const latest = await fetchWorkflowJobStatus(job.job_id);
+      await applyJobUpdate(latest);
+    } catch (error) {
+      setChartMessage(error instanceof Error ? error.message : "删除图表失败。");
+    }
+  }
+
   return (
     <main className="workspace-shell">
       <header className="topbar">
@@ -568,14 +654,20 @@ export default function App() {
               <h2>任务配置</h2>
               <span>CSV / XLSX / XLS / 图片</span>
             </div>
-            <label className="upload-zone">
+            <label
+              className={`upload-zone ${isAnalysisFileDragActive ? "drag-active" : ""}`}
+              onDragEnter={handleAnalysisFileDragEnter}
+              onDragOver={handleAnalysisFileDragOver}
+              onDragLeave={handleAnalysisFileDragLeave}
+              onDrop={handleAnalysisFileDrop}
+            >
               <input
                 type="file"
                 accept=".csv,.xlsx,.xls,.png,.jpg,.jpeg,.webp"
                 onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
               />
               <strong>{selectedFile ? selectedFile.name : "选择数据文件或图片"}</strong>
-              <span>支持表格或图片截图；图片会先由视觉解析 Agent 抽取结构化数据。</span>
+              <span>支持点击选择或拖拽上传表格、图片截图；图片会先由视觉解析 Agent 抽取结构化数据。</span>
             </label>
 
             <label className="form-label" htmlFor="goal-input">
@@ -710,7 +802,14 @@ export default function App() {
           ) : null}
 
           {activePage === "charts" ? (
-            <ChartsPage analysisResult={analysisResult} chartPaths={chartPaths} job={job} />
+            <ChartsPage
+              analysisResult={analysisResult}
+              chartPaths={chartPaths}
+              job={job}
+              message={chartMessage}
+              onOpenChart={setChartPreviewPath}
+              onDeleteChart={handleDeleteChart}
+            />
           ) : null}
 
           {activePage === "insights" ? (
@@ -726,6 +825,13 @@ export default function App() {
           ) : null}
         </section>
       </section>
+      {chartPreviewPath ? (
+        <ChartPreviewModal
+          chartPath={chartPreviewPath}
+          onClose={() => setChartPreviewPath(null)}
+          onDelete={() => handleDeleteChart(chartPreviewPath)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -1601,25 +1707,48 @@ function DataSourceNotice({ job }: { job: WorkflowJobResponse | null }) {
 function ChartsPage({
   analysisResult,
   chartPaths,
-  job
+  job,
+  message,
+  onOpenChart,
+  onDeleteChart
 }: {
   analysisResult: AnalysisResult | null;
   chartPaths: string[];
   job: WorkflowJobResponse | null;
+  message: string;
+  onOpenChart: (chartPath: string) => void;
+  onDeleteChart: (chartPath: string) => void;
 }) {
+  const resultChartCount = Array.isArray(analysisResult?.charts) ? analysisResult.charts.length : 0;
   return (
     <section className="page-section">
       <div className="section-heading">
         <h2>最终图表</h2>
-        <span>{chartPaths.length} 个图表</span>
+        <span>{chartPaths.length || resultChartCount} 个图表</span>
       </div>
       <DataSourceNotice job={job} />
+      {message ? <p className="chart-message">{message}</p> : null}
       {chartPaths.length ? (
         <div className="chart-grid">
           {chartPaths.map((chartPath, index) => (
             <figure className="chart-card" key={chartPath}>
-              <img alt={`分析图表 ${index + 1}`} src={toStorageUrl(chartPath)} />
+              <button
+                className="chart-image-button"
+                type="button"
+                onClick={() => onOpenChart(chartPath)}
+                aria-label={`放大查看${chartTitle(chartPath, index)}`}
+              >
+                <img alt={`分析图表 ${index + 1}`} src={toStorageUrl(chartPath)} />
+              </button>
               <figcaption>{chartTitle(chartPath, index)}</figcaption>
+              <div className="chart-actions">
+                <button type="button" onClick={() => onOpenChart(chartPath)}>
+                  放大查看
+                </button>
+                <button className="danger-button" type="button" onClick={() => onDeleteChart(chartPath)}>
+                  删除
+                </button>
+              </div>
             </figure>
           ))}
         </div>
@@ -1627,6 +1756,37 @@ function ChartsPage({
         <EmptyState title="暂无图表" text="分析脚本完成并通过验证后，图表会自动出现在这里。" />
       )}
     </section>
+  );
+}
+
+function ChartPreviewModal({
+  chartPath,
+  onClose,
+  onDelete
+}: {
+  chartPath: string;
+  onClose: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="chart-modal-backdrop" role="dialog" aria-modal="true" aria-label="图表预览">
+      <div className="chart-modal">
+        <div className="chart-modal-head">
+          <strong>{chartTitle(chartPath, 0)}</strong>
+          <div className="chart-modal-actions">
+            <button className="danger-button" type="button" onClick={onDelete}>
+              删除
+            </button>
+            <button type="button" onClick={onClose}>
+              关闭
+            </button>
+          </div>
+        </div>
+        <div className="chart-modal-body">
+          <img alt="放大图表" src={toStorageUrl(chartPath)} />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3032,4 +3192,6 @@ function lastItem<T>(items: T[] | undefined): T | undefined {
   }
   return items[items.length - 1];
 }
+
+
 

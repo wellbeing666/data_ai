@@ -298,7 +298,7 @@ def run_auto_repair_analysis_job(
             )
         )
         write_stage_snapshot("code_generation")
-        script_path = job_dir / f"generated_script_attempt_{attempt}.py"
+        script_path = job_dir / f"generated_script_attempt_{attempt}.py.txt"
         _clear_attempt_outputs(job_dir)
         safety_attempt_path = job_dir / f"code_safety_result_attempt_{attempt}.json"
         execution_attempt_path = job_dir / f"execution_result_attempt_{attempt}.json"
@@ -1053,3 +1053,4 @@ def _build_static_safety_failure_result(
             "safety_issues": issues,
         },
     }
+

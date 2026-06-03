@@ -17,8 +17,6 @@ from app.sandbox.code_safety import validate_script_static_safety
 
 
 JOB_ROOT = Path("storage/jobs")
-RUNTIME_ROOT = Path("storage/runtime")
-MATPLOTLIB_CACHE_DIR = RUNTIME_ROOT / "matplotlib"
 RUNNER_PATH = Path(__file__).with_name("runner.py")
 EXECUTION_RESULT_FILENAME = "execution_result.json"
 WINDOWS_CONTROL_C_EXIT = 0xC000013A
@@ -34,11 +32,11 @@ class LocalSubprocessSandboxExecutor(BaseSandboxExecutor):
         output_dir: str | None = None,
         timeout_seconds: int = 60,
     ) -> dict[str, Any]:
-        source_script = _resolve_existing_file(generated_script_path, "generated_script.py")
+        source_script = _resolve_existing_file(generated_script_path, "generated_script")
         source_input = _resolve_existing_file(input_file, "input_file")
         job_id, job_dir, resolved_output_dir = _prepare_job_dir(output_dir)
         execution_result_path = job_dir / EXECUTION_RESULT_FILENAME
-        sandbox_script = job_dir / "generated_script.py"
+        sandbox_script = job_dir / "generated_script_runtime.py.txt"
 
         shutil.copy2(source_script, sandbox_script)
 
@@ -135,15 +133,19 @@ def _run_subprocess(
         str(job_dir.resolve()),
     ]
     runtime_tmp_dir = job_dir / ".runtime_tmp"
+    matplotlib_cache_dir = runtime_tmp_dir / "matplotlib"
     runtime_tmp_dir.mkdir(parents=True, exist_ok=True)
-    MATPLOTLIB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    matplotlib_cache_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.update(
         {
-            "MPLCONFIGDIR": str(MATPLOTLIB_CACHE_DIR.resolve()),
+            "MPLCONFIGDIR": str(matplotlib_cache_dir.resolve()),
             "TMP": str(runtime_tmp_dir),
             "TEMP": str(runtime_tmp_dir),
             "TMPDIR": str(runtime_tmp_dir),
+            "HOME": str(runtime_tmp_dir),
+            "USERPROFILE": str(runtime_tmp_dir),
+            "XDG_CACHE_HOME": str(runtime_tmp_dir),
             "PYTHONIOENCODING": "utf-8",
             "PYTHONUTF8": "1",
         }
@@ -426,3 +428,5 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
