@@ -139,6 +139,15 @@ class PredictionCodeAgent:
         previous_execution_result: dict[str, Any] | None = None,
         previous_validation_result: dict[str, Any] | None = None,
     ) -> str:
+        if _is_unsupported_prediction_plan(prediction_plan):
+            return self.rule_based_agent.generate_unsupported_script(
+                input_file=input_file,
+                output_dir=output_dir,
+                dataset_profile=dataset_profile,
+                hypothesis_plan=hypothesis_plan,
+                prediction_plan=prediction_plan,
+            )
+
         if _requires_deterministic_unit_aware_script(dataset_profile, hypothesis_plan, prediction_plan):
             return self.rule_based_agent.generate_script(
                 input_file=input_file,
@@ -210,6 +219,178 @@ class RuleBasedPredictionCodeAgent:
         script = script.replace("__HYPOTHESIS_PLAN_JSON__", repr(json.dumps(hypothesis_plan, ensure_ascii=False)))
         script = script.replace("__PREDICTION_PLAN_JSON__", repr(json.dumps(prediction_plan, ensure_ascii=False)))
         return script.strip()
+
+    def generate_unsupported_script(
+        self,
+        input_file: str,
+        output_dir: str,
+        dataset_profile: dict[str, Any],
+        hypothesis_plan: dict[str, Any],
+        prediction_plan: dict[str, Any],
+    ) -> str:
+        script = UNSUPPORTED_PREDICTION_SCRIPT_TEMPLATE
+        script = script.replace("__INPUT_FILE__", _escape_raw_double_quoted_path(input_file))
+        script = script.replace("__OUTPUT_DIR__", _escape_raw_double_quoted_path(output_dir))
+        script = script.replace("__DATASET_PROFILE_JSON__", repr(json.dumps(dataset_profile, ensure_ascii=False)))
+        script = script.replace("__HYPOTHESIS_PLAN_JSON__", repr(json.dumps(hypothesis_plan, ensure_ascii=False)))
+        script = script.replace("__PREDICTION_PLAN_JSON__", repr(json.dumps(prediction_plan, ensure_ascii=False)))
+        return script.strip()
+
+
+UNSUPPORTED_PREDICTION_SCRIPT_TEMPLATE = r'''
+import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+INPUT_FILE = Path(r"__INPUT_FILE__")
+OUTPUT_DIR = Path(r"__OUTPUT_DIR__")
+CHARTS_DIR = OUTPUT_DIR / "charts"
+DATASET_PROFILE = json.loads(__DATASET_PROFILE_JSON__)
+HYPOTHESIS_PLAN = json.loads(__HYPOTHESIS_PLAN_JSON__)
+PREDICTION_PLAN = json.loads(__PREDICTION_PLAN_JSON__)
+
+
+def load_data(path):
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return pd.read_csv(path)
+    if suffix in {".xlsx", ".xls"}:
+        return pd.read_excel(path)
+    raise ValueError("Unsupported input file type")
+
+
+def clean_numeric(series):
+    return pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan)
+
+
+def choose_target(df):
+    planned = str(PREDICTION_PLAN.get("target_metric") or "")
+    if planned in df.columns:
+        return planned
+    matched = ""
+    target_metric = HYPOTHESIS_PLAN.get("target_metric") if isinstance(HYPOTHESIS_PLAN.get("target_metric"), dict) else {}
+    if isinstance(target_metric, dict):
+        matched = str(target_metric.get("matched_column") or "")
+    if matched in df.columns:
+        return matched
+    for name in ("SalePrice", "房价", "总价", "售价", "价格", "Price"):
+        if name in df.columns and clean_numeric(df[name]).notna().any():
+            return name
+    numeric_columns = [column for column in df.columns if clean_numeric(df[column]).notna().any()]
+    return numeric_columns[-1] if numeric_columns else ""
+
+
+def unique_list(values):
+    result = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def baseline_summary(df, target):
+    if not target or target not in df.columns:
+        return {"count": int(len(df)), "mean": None, "median": None}
+    series = clean_numeric(df[target]).dropna()
+    if series.empty:
+        return {"count": int(len(df)), "mean": None, "median": None}
+    return {
+        "count": int(series.shape[0]),
+        "mean": round(float(series.mean()), 6),
+        "median": round(float(series.median()), 6),
+        "min": round(float(series.min()), 6),
+        "max": round(float(series.max()), 6),
+    }
+
+
+def main():
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei", "Arial Unicode MS", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    df = load_data(INPUT_FILE)
+    df.columns = [str(column) for column in df.columns]
+    target = choose_target(df)
+    intervention = PREDICTION_PLAN.get("intervention") if isinstance(PREDICTION_PLAN.get("intervention"), dict) else {}
+    unsupported_reason = str(PREDICTION_PLAN.get("unsupported_reason") or "").strip()
+    if not unsupported_reason:
+        raw_variable = str(intervention.get("variable") or intervention.get("column") or HYPOTHESIS_PLAN.get("scenario_summary") or PREDICTION_PLAN.get("prediction_goal") or "")
+        unsupported_reason = f"当前数据集中没有与情景变量“{raw_variable}”对应的字段，无法计算该情景下的预测变化。"
+
+    limitations = unique_list([
+        unsupported_reason,
+        "系统未使用其他不相关字段替代该情景变量，因此不会输出误导性的预测数值。",
+        *list(PREDICTION_PLAN.get("limitations") or []),
+        *list(HYPOTHESIS_PLAN.get("limitations") or []),
+    ])
+    result = {
+        "task_type": "what_if_prediction",
+        "status": "unsupported",
+        "scenario_summary": HYPOTHESIS_PLAN.get("scenario_summary") or PREDICTION_PLAN.get("prediction_goal", ""),
+        "target_metric": target,
+        "intervention": {
+            **intervention,
+            "column": "",
+            "unsupported": True,
+        },
+        "entity_dimension": str(PREDICTION_PLAN.get("entity_dimension") or ""),
+        "top_impacted_entities": [],
+        "baseline_summary": baseline_summary(df, target),
+        "predicted_summary": {
+            "count": int(len(df)),
+            "mean": None,
+            "median": None,
+            "mean_absolute_change": None,
+            "median_absolute_change": None,
+            "min_absolute_change": None,
+            "max_absolute_change": None,
+        },
+        "model_info": {
+            "method": "unsupported_missing_required_column",
+            "target_column": target,
+            "intervention_column": "",
+            "reason": unsupported_reason,
+            "available_columns": [str(column) for column in df.columns],
+        },
+        "limitations": limitations,
+        "charts": [],
+        "unsupported_reason": unsupported_reason,
+    }
+    report_data = {
+        "summary": unsupported_reason,
+        "key_findings": [
+            {
+                "finding": unsupported_reason,
+                "evidence": "prediction_result.unsupported_reason",
+            },
+            {
+                "finding": "已停止情景模拟，避免把不相关字段的模型结果解释为用户指定变量的影响。",
+                "evidence": "prediction_result.model_info.method",
+            },
+        ],
+        "top_impacted_entities": [],
+        "model_info": result["model_info"],
+        "recommendations": [
+            "补充与情景变量对应的字段后重新运行情景预测。",
+            "补充字段后应确认变量单位，并与目标指标在同一对象粒度下对应。",
+        ],
+        "limitations": limitations,
+        "charts": [],
+    }
+    (OUTPUT_DIR / "prediction_result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    (OUTPUT_DIR / "report_data.json").write_text(json.dumps(report_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()
+'''
 
 
 RULE_BASED_PREDICTION_SCRIPT_TEMPLATE = r'''
@@ -428,6 +609,13 @@ def extract_requested_unit():
         return "平方米"
     if any(token in text for token in ["平方英尺", "sqft", "sq ft", "square foot", "square feet"]):
         return "平方英尺"
+    normalized_unit = unit.lower()
+    if unit in {"米", "公里", "千米"} or normalized_unit in {"m", "km"}:
+        return "公里" if unit in {"公里", "千米"} or normalized_unit == "km" else "米"
+    if any(token in text for token in ["公里", "千米", "km"]):
+        return "公里"
+    if any(token in text for token in ["米", "meter", "metre"]):
+        return "米"
     return unit
 
 
@@ -458,6 +646,20 @@ def area_column_uses_square_feet(column):
     if any(token in text for token in ["平方米", "平米", "㎡"]):
         return False
     return lowered in {"area", "livingarea", "grossarea"}
+
+
+def distance_column_uses_kilometers(column):
+    text = str(column or "")
+    lowered = text.lower()
+    return any(token in lowered for token in ["km", "kilometer", "kilometre"]) or any(token in text for token in ["公里", "千米"])
+
+
+def distance_column_uses_meters(column):
+    text = str(column or "")
+    lowered = text.lower()
+    if distance_column_uses_kilometers(column):
+        return False
+    return any(token in lowered for token in ["meter", "metre", "_m", "distance_m"]) or any(token in text for token in ["米", "距离"])
 
 
 def scenario_change_info(intervention_col):
@@ -492,6 +694,18 @@ def scenario_change_info(intervention_col):
         unit_conversion = "用户输入为平方米，数据面积字段按平方英尺口径换算，1 平方米 = 10.76391041671 平方英尺"
     elif requested_unit == "平方英尺":
         unit_conversion = "用户输入与数据面积字段同按平方英尺处理"
+    elif requested_unit == "米":
+        if distance_column_uses_kilometers(intervention_col):
+            data_unit_change = change_value / 1000.0
+            unit_conversion = "用户输入为米，数据距离字段按公里口径换算，1 公里 = 1000 米"
+        else:
+            unit_conversion = "用户输入按米处理；若数据字段使用其他距离单位，请先统一单位"
+    elif requested_unit == "公里":
+        if distance_column_uses_meters(intervention_col):
+            data_unit_change = change_value * 1000.0
+            unit_conversion = "用户输入为公里，数据距离字段按米口径换算，1 公里 = 1000 米"
+        else:
+            unit_conversion = "用户输入按公里处理；若数据字段使用其他距离单位，请先统一单位"
 
     return {
         "change_type": "absolute",
@@ -891,6 +1105,13 @@ if __name__ == "__main__":
 '''
 
 
+def _is_unsupported_prediction_plan(prediction_plan: dict[str, Any]) -> bool:
+    intervention = prediction_plan.get("intervention") if isinstance(prediction_plan.get("intervention"), dict) else {}
+    if prediction_plan.get("is_supported") is False:
+        return True
+    return not str(intervention.get("column") or "").strip()
+
+
 def _requires_deterministic_unit_aware_script(
     dataset_profile: dict[str, Any],
     hypothesis_plan: dict[str, Any],
@@ -906,8 +1127,9 @@ def _requires_deterministic_unit_aware_script(
     has_house_price_columns = "SalePrice" in columns and "GrLivArea" in columns
     mentions_square_meters = any(token in text for token in ("平方米", "平米", "㎡", "m2", "m^2", "square meter"))
     mentions_area = any(token in text for token in ("面积", "grlivarea", "area", "平方"))
+    mentions_distance = any(token in text for token in ("地铁", "距离", "米", "公里", "metro", "subway", "distance"))
     mentions_price = any(token in text for token in ("总价", "房价", "价格", "saleprice", "price"))
-    return has_house_price_columns and mentions_square_meters and mentions_area and mentions_price
+    return has_house_price_columns and mentions_price and ((mentions_square_meters and mentions_area) or mentions_distance)
 
 
 def _extract_python_code(content: str) -> str:
@@ -1107,3 +1329,4 @@ def _call_name(node: ast.AST) -> str:
         parent = _call_name(node.value)
         return f"{parent}.{node.attr}" if parent else node.attr
     return ""
+

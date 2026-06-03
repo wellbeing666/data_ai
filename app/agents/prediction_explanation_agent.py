@@ -60,6 +60,9 @@ class PredictionExplanationAgent:
         chart_paths: list[str],
         rag_context: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        if prediction_result.get("status") == "unsupported":
+            return create_template_prediction_explanation(user_goal, prediction_result, chart_paths)
+
         try:
             result = self.llm_client.chat_json(
                 messages=[
@@ -104,6 +107,26 @@ def create_template_prediction_explanation(
     top_entities = prediction_result.get("top_impacted_entities")
     top_entities = top_entities if isinstance(top_entities, list) else []
     target = prediction_result.get("target_metric") or "目标指标"
+    if prediction_result.get("status") == "unsupported":
+        reason = str(prediction_result.get("unsupported_reason") or "当前数据缺少完成该情景预测所需的字段。")
+        limitations = prediction_result.get("limitations")
+        limitations = limitations if isinstance(limitations, list) else [reason]
+        findings = [reason, "系统已停止情景模拟，避免把其他字段的模型结果解释为用户指定变量的影响。"]
+        return {
+            "summary": reason,
+            "key_findings": findings,
+            "top_impacted_entities": [],
+            "recommendations": [
+                "补充与情景变量对应的字段后重新运行预测。",
+                "补充字段时应确认单位、时间口径和对象粒度与目标指标一致。",
+            ],
+            "limitations": limitations,
+            "ppt_outline": [
+                {"title": "情景预测无法计算", "bullets": [reason], "chart": ""},
+                {"title": "所需数据", "bullets": ["需要上传包含情景变量的字段，再进行模型模拟。"], "chart": ""},
+            ],
+        }
+
     summary = (
         f"在“{user_goal}”这一假设下，系统基于当前数据估计 {target} 可能出现变化。"
         "该结果是模拟预测，不代表确定因果。"
@@ -152,3 +175,4 @@ def _normalize(result: Any, prediction_result: dict[str, Any]) -> dict[str, Any]
 
 def _strings(value: Any) -> list[str]:
     return [str(item) for item in value if item is not None] if isinstance(value, list) else []
+

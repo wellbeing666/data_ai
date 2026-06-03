@@ -9,6 +9,7 @@ SYSTEM_PROMPT = """You are the Prediction Planning Agent for a what-if simulatio
 Create a practical prediction/simulation plan from the user goal, dataset profile, and parsed hypothesis.
 Return only one valid JSON object. Do not output markdown or explanation.
 Use only fields that exist in dataset_profile.columns.
+If the intervention variable described by the user is not represented by any dataset column, keep intervention.column empty and explain the limitation. Do not substitute another numeric column.
 
 Required schema:
 {
@@ -56,6 +57,7 @@ Retrieved business knowledge JSON:
 
 Use only dataset_profile.columns for target_metric, intervention.column, entity_dimension, and feature_columns.
 If the request uses a unit such as 平方米, keep it in intervention.unit.
+If hypothesis_plan.intervention.matched_column is empty, do not choose a different numeric intervention column unless its name directly matches the user's intervention phrase.
 """.format(
         user_goal=user_goal,
         dataset_profile=json.dumps(dataset_profile, ensure_ascii=False, indent=2),
@@ -118,14 +120,18 @@ def create_rule_based_prediction_plan(
 ) -> dict[str, Any]:
     columns = _columns(dataset_profile)
     numeric = [str(column) for column in dataset_profile.get("numeric_summary", {}).keys()]
+    hypothesis_intervention = hypothesis_plan.get("intervention") if isinstance(hypothesis_plan.get("intervention"), dict) else {}
+
     target = _existing(hypothesis_plan.get("target_metric", {}).get("matched_column"), columns)
     if not target:
         target = _choose_target(user_goal, numeric, columns)
-    intervention_column = _existing(
-        hypothesis_plan.get("intervention", {}).get("matched_column"), columns
-    )
-    if not intervention_column or (_is_identifier_column(intervention_column) and _mentions_area_change(user_goal)):
+
+    intervention_column = _existing(hypothesis_intervention.get("matched_column"), columns)
+    if not intervention_column and not _has_explicit_unmatched_intervention(hypothesis_intervention, user_goal):
         intervention_column = _choose_intervention(user_goal, numeric, columns, target)
+    if intervention_column and (_is_identifier_column(intervention_column) or intervention_column == target):
+        intervention_column = ""
+
     entity = _existing(hypothesis_plan.get("entity_dimension", {}).get("matched_column"), columns)
     if not entity:
         entity = _choose_dimension(user_goal, dataset_profile, columns)
@@ -134,32 +140,43 @@ def create_rule_based_prediction_plan(
     if intervention_column and intervention_column not in feature_columns and intervention_column != target:
         feature_columns.insert(0, intervention_column)
 
+    unsupported_reason = ""
     limitations = []
     if not target:
-        limitations.append("No numeric target metric was identified; the script must use rule-based simulation.")
+        unsupported_reason = "当前数据集中未识别到可用于预测的目标指标字段。"
+        limitations.append("No numeric target metric was identified; prediction cannot be computed from the uploaded data.")
     if not intervention_column:
-        limitations.append("No matching intervention column was identified; use a scenario-level heuristic if needed.")
+        raw_intervention = str(hypothesis_intervention.get("raw_text") or hypothesis_intervention.get("variable") or user_goal)
+        reason = f"当前数据集中未找到与情景变量“{raw_intervention}”对应的字段，不能用其他数值字段替代模拟。"
+        unsupported_reason = unsupported_reason or reason
+        limitations.append(reason)
     if not entity:
-        limitations.append("No entity dimension was identified; rank the whole dataset or inferred categories when possible.")
+        limitations.append("No entity dimension was identified; only aggregate output can be shown when prediction is supported.")
 
-    hypothesis_intervention = hypothesis_plan.get("intervention") if isinstance(hypothesis_plan.get("intervention"), dict) else {}
+    is_supported = bool(target and intervention_column)
     return {
         "task_type": "what_if_prediction",
         "prediction_goal": user_goal,
         "target_metric": target,
         "intervention": {
-            "variable": str(hypothesis_intervention.get("variable") or ""),
+            "variable": str(hypothesis_intervention.get("variable") or hypothesis_intervention.get("raw_text") or ""),
             "column": intervention_column,
             "change_type": str(hypothesis_intervention.get("change_type") or "unknown"),
             "change_value": float(hypothesis_intervention.get("change_value") or 0.0),
             "unit": str(hypothesis_intervention.get("unit") or ""),
         },
         "entity_dimension": entity,
-        "feature_columns": feature_columns[:12],
-        "model_candidates": ["ridge_regression", "linear_regression", "rule_based_simulation"],
-        "fallback_strategy": "Use rule-based simulation when sklearn is unavailable, sample size is too small, or required fields are missing.",
-        "charts": ["change_summary_bar", "baseline_vs_predicted_scatter"],
+        "feature_columns": feature_columns[:12] if is_supported else [],
+        "model_candidates": ["ridge_regression", "linear_regression", "rule_based_simulation"] if is_supported else ["unsupported_missing_required_column"],
+        "fallback_strategy": (
+            "Use rule-based simulation when sklearn is unavailable, sample size is too small, or required fields are missing."
+            if is_supported
+            else "Do not run a predictive simulation when the requested intervention variable is absent from the dataset."
+        ),
+        "charts": ["change_summary_bar", "baseline_vs_predicted_scatter"] if is_supported else [],
         "limitations": limitations,
+        "is_supported": is_supported,
+        "unsupported_reason": unsupported_reason,
     }
 
 
@@ -174,6 +191,9 @@ def _normalize(
         return fallback
     columns = set(_columns(dataset_profile))
     intervention = result.get("intervention") if isinstance(result.get("intervention"), dict) else {}
+    candidate_intervention = _existing(intervention.get("column"), columns)
+    accepted_intervention = _accept_intervention_column(candidate_intervention, user_goal, hypothesis_plan, fallback)
+
     normalized = {
         **fallback,
         "prediction_goal": str(result.get("prediction_goal") or fallback["prediction_goal"]),
@@ -193,11 +213,22 @@ def _normalize(
     normalized["intervention"] = {
         **fallback["intervention"],
         "variable": str(intervention.get("variable") or fallback["intervention"]["variable"]),
-        "column": _existing(intervention.get("column"), columns) or fallback["intervention"]["column"],
+        "column": accepted_intervention,
         "change_type": str(intervention.get("change_type") or fallback["intervention"]["change_type"]),
         "change_value": _safe_float(intervention.get("change_value"), fallback["intervention"]["change_value"]),
         "unit": str(intervention.get("unit") or fallback["intervention"].get("unit") or ""),
     }
+    if not accepted_intervention:
+        normalized["feature_columns"] = []
+        normalized["charts"] = []
+        normalized["model_candidates"] = ["unsupported_missing_required_column"]
+    normalized["is_supported"] = bool(normalized["target_metric"] and normalized["intervention"]["column"])
+    if not normalized["is_supported"]:
+        normalized["unsupported_reason"] = fallback.get("unsupported_reason") or "当前数据不包含完成该情景预测所需的字段。"
+        if normalized["unsupported_reason"] not in normalized["limitations"]:
+            normalized["limitations"] = [*normalized["limitations"], normalized["unsupported_reason"]]
+    else:
+        normalized["unsupported_reason"] = ""
     normalized["task_type"] = "what_if_prediction"
     return normalized
 
@@ -235,6 +266,30 @@ def _choose_intervention(user_goal: str, numeric: list[str], columns: list[str],
         )
         if column and column != target:
             return column
+    if any(keyword in user_goal for keyword in ("地铁", "距离", "公交", "车站")) or any(keyword in lowered for keyword in ("subway", "metro", "distance", "station")):
+        column = _choose_existing_by_alias(
+            columns,
+            [
+                "DistanceToMetro",
+                "MetroDistance",
+                "SubwayDistance",
+                "DistanceToSubway",
+                "distance_to_metro",
+                "distance_to_subway",
+                "metro_distance",
+                "subway_distance",
+                "距离地铁",
+                "地铁距离",
+                "距地铁",
+                "地铁",
+                "subway",
+                "metro",
+            ],
+            numeric_required=True,
+            numeric_columns=numeric,
+        )
+        if column and column != target:
+            return column
     for column in numeric:
         if column != target and not _is_identifier_column(column):
             return column
@@ -258,6 +313,65 @@ def _choose_dimension(user_goal: str, dataset_profile: dict[str, Any], columns: 
         if _is_identifier_column(column):
             return column
     return ""
+
+
+def _accept_intervention_column(candidate: str, user_goal: str, hypothesis_plan: dict[str, Any], fallback: dict[str, Any]) -> str:
+    fallback_column = str(fallback.get("intervention", {}).get("column") or "")
+    if fallback_column:
+        if not candidate:
+            return fallback_column
+        if candidate == fallback_column or _column_matches_intervention(candidate, user_goal, hypothesis_plan):
+            return candidate
+        return fallback_column
+    if candidate and _column_matches_intervention(candidate, user_goal, hypothesis_plan):
+        return candidate
+    return ""
+
+
+def _column_matches_intervention(column: str, user_goal: str, hypothesis_plan: dict[str, Any]) -> bool:
+    intervention = hypothesis_plan.get("intervention") if isinstance(hypothesis_plan.get("intervention"), dict) else {}
+    text = " ".join(str(part or "") for part in (user_goal, intervention.get("raw_text"), intervention.get("variable"))).lower()
+    column_lower = str(column).lower()
+    if column_lower in text:
+        return True
+    alias_groups = [
+        (
+            ("地铁", "subway", "metro", "station"),
+            [
+                "distancetometro",
+                "metrodistance",
+                "subwaydistance",
+                "distancetosubway",
+                "distance_to_metro",
+                "distance_to_subway",
+                "metro_distance",
+                "subway_distance",
+                "距离地铁",
+                "地铁距离",
+                "距地铁",
+                "metro",
+                "subway",
+            ],
+        ),
+        (("面积", "平方米", "平米", "㎡", "area"), ["grlivarea", "livingarea", "totalbsmtsf", "lotarea", "garagearea", "area", "sf", "面积"]),
+        (("预算", "营销", "投放", "budget", "marketing"), ["预算", "营销", "投放", "budget", "marketing"]),
+        (("价格", "房价", "售价", "总价", "price"), ["price", "saleprice", "房价", "价格", "售价", "总价"]),
+    ]
+    for keywords, aliases in alias_groups:
+        if not any(keyword in text for keyword in keywords):
+            continue
+        if any(alias in column_lower for alias in aliases):
+            return True
+    return False
+
+
+def _has_explicit_unmatched_intervention(intervention: dict[str, Any], user_goal: str) -> bool:
+    if _existing(intervention.get("matched_column"), []):
+        return False
+    raw_text = str(intervention.get("raw_text") or intervention.get("variable") or "").strip()
+    if raw_text:
+        return True
+    return any(marker in user_goal for marker in ("如果", "假设", "当"))
 
 
 def _choose_existing_by_alias(

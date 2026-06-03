@@ -35,6 +35,7 @@ def validate_prediction_outputs(job_id: str) -> dict[str, Any]:
         _issue(issues, "execution_failed", "critical", "Prediction script did not execute successfully.", "execution_result.json")
         _suggest(repair_suggestions, "Fix stderr and regenerate the prediction script.")
 
+    is_unsupported_result = False
     if isinstance(prediction_result, dict):
         normalized_prediction, changed = _normalize_prediction_result(prediction_result)
         if changed:
@@ -43,11 +44,13 @@ def validate_prediction_outputs(job_id: str) -> dict[str, Any]:
             if isinstance(report_data, dict):
                 report_data = _sync_report_data_with_prediction(report_data, prediction_result)
                 _write_json(job_dir / "report_data.json", report_data)
+        is_unsupported_result = _is_unsupported_prediction_result(prediction_result)
         _validate_prediction_result(prediction_result, issues, repair_suggestions)
     if not isinstance(report_data, dict):
         _issue(issues, "invalid_report_data", "high", "report_data.json must be a JSON object.", "report_data.json")
 
-    _validate_charts(job_dir, issues, repair_suggestions)
+    if not is_unsupported_result:
+        _validate_charts(job_dir, issues, repair_suggestions)
 
     severity = _overall_severity(issues)
     should_retry = severity in {"critical", "high"}
@@ -142,6 +145,10 @@ def _validate_prediction_result(
     issues: list[dict[str, str | None]],
     repair_suggestions: list[dict[str, str]],
 ) -> None:
+    if _is_unsupported_prediction_result(data):
+        _validate_unsupported_prediction_result(data, issues, repair_suggestions)
+        return
+
     missing = sorted(REQUIRED_KEYS - set(data.keys()))
     if missing:
         _issue(issues, "missing_prediction_keys", "critical", f"Missing keys: {', '.join(missing)}", "prediction_result.json")
@@ -163,6 +170,37 @@ def _validate_prediction_result(
     model_info = data.get("model_info")
     if not isinstance(model_info, dict) or not model_info.get("method"):
         _issue(issues, "missing_model_info", "medium", "model_info.method should explain the model or fallback used.", "prediction_result.json")
+
+
+
+def _is_unsupported_prediction_result(data: dict[str, Any]) -> bool:
+    model_info = data.get("model_info") if isinstance(data.get("model_info"), dict) else {}
+    method = str(model_info.get("method") or "")
+    return data.get("status") == "unsupported" or method == "unsupported_missing_required_column"
+
+
+def _validate_unsupported_prediction_result(
+    data: dict[str, Any],
+    issues: list[dict[str, str | None]],
+    repair_suggestions: list[dict[str, str]],
+) -> None:
+    required = {"task_type", "status", "scenario_summary", "target_metric", "intervention", "baseline_summary", "predicted_summary", "model_info", "limitations", "charts", "unsupported_reason"}
+    missing = sorted(required - set(data.keys()))
+    if missing:
+        _issue(issues, "missing_unsupported_keys", "critical", f"Missing keys: {', '.join(missing)}", "prediction_result.json")
+        _suggest(repair_suggestions, "Write an unsupported prediction_result.json with unsupported_reason and baseline summary.")
+    if data.get("task_type") != "what_if_prediction":
+        _issue(issues, "invalid_task_type", "critical", "task_type must be what_if_prediction.", "prediction_result.json")
+    if data.get("status") != "unsupported":
+        _issue(issues, "invalid_unsupported_status", "high", "Unsupported prediction results must set status to unsupported.", "prediction_result.json")
+    if not str(data.get("unsupported_reason") or "").strip():
+        _issue(issues, "missing_unsupported_reason", "high", "unsupported_reason must explain which required field is absent.", "prediction_result.json")
+    intervention = data.get("intervention") if isinstance(data.get("intervention"), dict) else {}
+    if str(intervention.get("column") or "").strip():
+        _issue(issues, "unsupported_has_intervention_column", "high", "Unsupported result must not assign a substitute intervention column.", "prediction_result.json")
+    model_info = data.get("model_info") if isinstance(data.get("model_info"), dict) else {}
+    if model_info.get("method") != "unsupported_missing_required_column":
+        _issue(issues, "invalid_unsupported_model_method", "medium", "model_info.method should be unsupported_missing_required_column.", "prediction_result.json")
 
 
 def _validate_charts(
@@ -246,3 +284,4 @@ def _dedupe(suggestions: list[dict[str, str]]) -> list[dict[str, str]]:
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+

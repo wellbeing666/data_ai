@@ -116,25 +116,38 @@ def create_rule_based_hypothesis(
     intervention_phrase = _extract_after_if(user_goal)
     target_phrase = _target_phrase(user_goal)
     entity_phrase = _entity_phrase(user_goal)
+    intervention_text = intervention_phrase or user_goal
 
     return {
         "scenario_type": "what_if_prediction",
         "scenario_summary": user_goal,
         "intervention": {
-            "raw_text": intervention_phrase or user_goal,
-            "variable": intervention_phrase or "",
-            "matched_column": _best_column(intervention_phrase or user_goal, columns, prefer_numeric=True, dataset_profile=dataset_profile),
+            "raw_text": intervention_text,
+            "variable": _intervention_variable(intervention_text),
+            "matched_column": _best_column(
+                intervention_text,
+                columns,
+                prefer_numeric=True,
+                dataset_profile=dataset_profile,
+                allow_numeric_fallback=False,
+            ),
             "change_type": change_type,
             "change_value": change_value,
             "unit": unit,
         },
         "target_metric": {
             "raw_text": target_phrase,
-            "matched_column": _best_column(target_phrase or user_goal, columns, prefer_numeric=True, dataset_profile=dataset_profile),
+            "matched_column": _best_column(
+                target_phrase or user_goal,
+                columns,
+                prefer_numeric=True,
+                dataset_profile=dataset_profile,
+                allow_numeric_fallback=True,
+            ),
         },
         "entity_dimension": {
             "raw_text": entity_phrase,
-            "matched_column": _best_column(entity_phrase or user_goal, columns),
+            "matched_column": _best_column(entity_phrase, columns, allow_numeric_fallback=False),
         },
         "time_horizon": "下个月" if "下个月" in user_goal else "",
         "assumptions": ["预测结果基于当前上传数据进行模拟估计，不代表确定因果。"],
@@ -158,7 +171,15 @@ def _normalize(result: Any, user_goal: str, dataset_profile: dict[str, Any]) -> 
         value = result.get(key) if isinstance(result.get(key), dict) else {}
         normalized[key] = {**fallback[key], **value}
         matched = str(value.get("matched_column") or "")
-        normalized[key]["matched_column"] = matched if matched in columns else fallback[key].get("matched_column", "")
+        if key == "intervention":
+            reference_text = " ".join(
+                str(part or "")
+                for part in (value.get("raw_text"), value.get("variable"), fallback[key].get("raw_text"), user_goal)
+            )
+            model_match = matched if matched in columns and _column_matches_phrase(matched, reference_text) else ""
+            normalized[key]["matched_column"] = model_match or fallback[key].get("matched_column", "")
+        else:
+            normalized[key]["matched_column"] = matched if matched in columns else fallback[key].get("matched_column", "")
         for field_name, field_value in fallback[key].items():
             if normalized[key].get(field_name) in (None, ""):
                 normalized[key][field_name] = field_value
@@ -167,19 +188,48 @@ def _normalize(result: Any, user_goal: str, dataset_profile: dict[str, Any]) -> 
 
 
 def _extract_change_value(text: str) -> float:
+    distance_change = _extract_from_to_distance_change(text)
+    if distance_change is not None:
+        return distance_change
     match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*%", text)
     if match:
         return float(match.group(1)) / 100.0
-    match = re.search(r"(增加|提升|提高|减少|降低|下降)\s*([+-]?\d+(?:\.\d+)?)", text)
+    match = re.search(r"(增加|提升|提高|减少|降低|下降|缩短|拉近|延长|扩大)\s*([+-]?\d+(?:\.\d+)?)", text)
     if match:
         value = float(match.group(2))
-        if match.group(1) in {"减少", "降低", "下降"}:
+        if match.group(1) in {"减少", "降低", "下降", "缩短", "拉近"}:
             value = -value
         return value
-    match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*(平方米|平米|㎡|m2|m\^2|平方英尺|sq\.?\s*ft|sqft)", text, flags=re.IGNORECASE)
+    match = re.search(
+        r"([+-]?\d+(?:\.\d+)?)\s*(平方米|平米|㎡|m2|m\^2|平方英尺|sq\.?\s*ft|sqft|公里|千米|km|米|m)",
+        text,
+        flags=re.IGNORECASE,
+    )
     if match:
         return float(match.group(1))
     return 0.0
+
+
+def _extract_from_to_distance_change(text: str) -> float | None:
+    pattern = re.compile(
+        r"从\s*([+-]?\d+(?:\.\d+)?)\s*(公里|千米|km|米|m)?\s*"
+        r"(?:缩短到|缩短至|降低到|降低至|下降到|下降至|减少到|减少至|变为|变成|到|至)\s*"
+        r"([+-]?\d+(?:\.\d+)?)\s*(公里|千米|km|米|m)?",
+        flags=re.IGNORECASE,
+    )
+    match = pattern.search(text)
+    if not match:
+        return None
+    old_value = _distance_to_meters(float(match.group(1)), match.group(2) or match.group(4) or "")
+    new_value = _distance_to_meters(float(match.group(3)), match.group(4) or match.group(2) or "")
+    return new_value - old_value
+
+
+def _distance_to_meters(value: float, unit: str) -> float:
+    normalized = str(unit or "").lower()
+    if normalized in {"公里", "千米", "km"}:
+        return value * 1000.0
+    return value
 
 
 def _extract_unit(text: str) -> str:
@@ -190,6 +240,8 @@ def _extract_unit(text: str) -> str:
         return "平方米"
     if any(token in text for token in ("平方英尺",)) or any(token in lowered for token in ("sqft", "sq ft", "square foot", "square feet")):
         return "平方英尺"
+    if any(token in text for token in ("公里", "千米", "米")) or re.search(r"\b(km|m)\b", lowered):
+        return "米"
     return ""
 
 
@@ -211,21 +263,108 @@ def _entity_phrase(text: str) -> str:
     return next((item for item in candidates if item in text), "")
 
 
+def _intervention_variable(text: str) -> str:
+    candidates = [
+        "距离地铁",
+        "地铁距离",
+        "距地铁距离",
+        "距地铁",
+        "距离",
+        "营销预算",
+        "预算",
+        "面积",
+        "平时成绩权重",
+        "权重",
+    ]
+    lowered = text.lower()
+    for candidate in candidates:
+        if candidate in text:
+            return candidate
+    if "subway" in lowered or "metro" in lowered:
+        return "距离地铁"
+    return text
+
+
 def _best_column(
     phrase: str,
     columns: list[str],
     prefer_numeric: bool = False,
     dataset_profile: dict[str, Any] | None = None,
+    allow_numeric_fallback: bool = True,
 ) -> str:
     if not columns:
         return ""
     phrase = phrase or ""
+    if not phrase.strip():
+        return ""
     phrase_lower = phrase.lower()
     for column in columns:
         column_lower = column.lower()
         if column and (column in phrase or phrase in column or column_lower in phrase_lower or phrase_lower in column_lower):
             return column
-    aliases = {
+    aliases = _column_aliases()
+    for keyword, names in aliases.items():
+        if keyword.lower() in phrase_lower:
+            for preferred_name in names:
+                for column in columns:
+                    column_lower = column.lower()
+                    if preferred_name.lower() == column_lower or preferred_name.lower() in column_lower:
+                        return column
+    if prefer_numeric and allow_numeric_fallback and dataset_profile:
+        numeric = [str(column) for column in dataset_profile.get("numeric_summary", {}).keys()]
+        non_identifier_numeric = [column for column in numeric if not _is_identifier_column(column)]
+        if non_identifier_numeric:
+            return non_identifier_numeric[0]
+        if numeric:
+            return numeric[0]
+    return ""
+
+
+def _column_matches_phrase(column: str, phrase: str) -> bool:
+    if not column or not phrase:
+        return False
+    column_lower = str(column).lower()
+    phrase_lower = str(phrase).lower()
+    if column in phrase or column_lower in phrase_lower:
+        return True
+    aliases = _column_aliases()
+    for keyword, names in aliases.items():
+        if keyword.lower() not in phrase_lower:
+            continue
+        for preferred_name in names:
+            preferred_lower = preferred_name.lower()
+            if preferred_lower == column_lower or preferred_lower in column_lower or column_lower in preferred_lower:
+                return True
+    return False
+
+
+def _column_aliases() -> dict[str, list[str]]:
+    distance_aliases = [
+        "DistanceToMetro",
+        "MetroDistance",
+        "SubwayDistance",
+        "DistanceToSubway",
+        "NearestMetroDistance",
+        "NearestSubwayDistance",
+        "distance_to_metro",
+        "distance_to_subway",
+        "metro_distance",
+        "subway_distance",
+        "距离地铁",
+        "地铁距离",
+        "距地铁",
+        "距地铁距离",
+        "地铁",
+        "subway",
+        "metro",
+    ]
+    return {
+        "距离地铁": distance_aliases,
+        "地铁距离": distance_aliases,
+        "距地铁": distance_aliases,
+        "地铁": distance_aliases,
+        "subway": distance_aliases,
+        "metro": distance_aliases,
         "面积": ["GrLivArea", "LivingArea", "TotalBsmtSF", "1stFlrSF", "2ndFlrSF", "LotArea", "GarageArea", "面积", "Area", "SF"],
         "平方米": ["GrLivArea", "LivingArea", "TotalBsmtSF", "1stFlrSF", "2ndFlrSF", "LotArea", "GarageArea", "面积", "Area", "SF"],
         "平米": ["GrLivArea", "LivingArea", "TotalBsmtSF", "1stFlrSF", "2ndFlrSF", "LotArea", "GarageArea", "面积", "Area", "SF"],
@@ -248,21 +387,6 @@ def _best_column(
         "班级": ["班级", "班"],
         "不及格率": ["成绩", "分数", "总评"],
     }
-    for keyword, names in aliases.items():
-        if keyword.lower() in phrase_lower:
-            for preferred_name in names:
-                for column in columns:
-                    column_lower = column.lower()
-                    if preferred_name.lower() == column_lower or preferred_name.lower() in column_lower:
-                        return column
-    if prefer_numeric and dataset_profile:
-        numeric = [str(column) for column in dataset_profile.get("numeric_summary", {}).keys()]
-        non_identifier_numeric = [column for column in numeric if not _is_identifier_column(column)]
-        if non_identifier_numeric:
-            return non_identifier_numeric[0]
-        if numeric:
-            return numeric[0]
-    return ""
 
 
 def _is_identifier_column(column: str) -> bool:

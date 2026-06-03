@@ -267,6 +267,8 @@ export interface PredictionJobResponse {
 
 export interface PredictionResult {
   task_type: "what_if_prediction";
+  status?: "unsupported" | string;
+  unsupported_reason?: string;
   scenario_summary: string;
   target_metric: string;
   intervention: Record<string, unknown>;
@@ -393,3 +395,4 @@ export interface ChartDeleteResponse {
   chart_path: string;
   chart_paths: string[];
 }
+

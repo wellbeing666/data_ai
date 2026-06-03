@@ -1023,6 +1023,9 @@ function PredictionPage({
 }) {
   const events = log?.events?.length ? log.events : job?.events ?? [];
   const chartPaths = getChartPaths(predictionResult, job);
+  const unsupportedReason = predictionResult?.status === "unsupported"
+    ? stringValue(predictionResult.unsupported_reason, "当前数据缺少完成该情景预测所需的字段。")
+    : "";
   const steps = buildPredictionSteps({
     job,
     log,
@@ -1101,36 +1104,47 @@ function PredictionPage({
       </section>
 
       {predictionResult ? (
-        <section className="result-section">
-          <div className="section-heading">
-            <h2>预测影响 Top 对象</h2>
-            <span>{predictionResult.model_info?.method ? String(predictionResult.model_info.method) : "model"}</span>
-          </div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>对象</th>
-                  <th>基准值</th>
-                  <th>预测值</th>
-                  <th>变化</th>
-                  <th>变化率</th>
-                </tr>
-              </thead>
-              <tbody>
-                {predictionResult.top_impacted_entities.map((item) => (
-                  <tr key={`${item.entity}-${item.absolute_change}`}>
-                    <td>{item.entity}</td>
-                    <td>{formatNumber(item.baseline_value)}</td>
-                    <td>{formatNumber(item.predicted_value)}</td>
-                    <td>{formatNumber(item.absolute_change)}</td>
-                    <td>{formatPercent(item.percent_change)}</td>
+        unsupportedReason ? (
+          <section className="result-section">
+            <div className="section-heading">
+              <h2>情景预测无法计算</h2>
+              <span>{predictionResult.model_info?.method ? String(predictionResult.model_info.method) : "unsupported"}</span>
+            </div>
+            <p className="summary-text">{unsupportedReason}</p>
+            <ResultList title="限制说明" items={arrayValue(predictionResult.limitations).map(String)} />
+          </section>
+        ) : (
+          <section className="result-section">
+            <div className="section-heading">
+              <h2>预测影响 Top 对象</h2>
+              <span>{predictionResult.model_info?.method ? String(predictionResult.model_info.method) : "model"}</span>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>对象</th>
+                    <th>基准值</th>
+                    <th>预测值</th>
+                    <th>变化</th>
+                    <th>变化率</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
+                </thead>
+                <tbody>
+                  {predictionResult.top_impacted_entities.map((item) => (
+                    <tr key={`${item.entity}-${item.absolute_change}`}>
+                      <td>{item.entity}</td>
+                      <td>{formatNumber(item.baseline_value)}</td>
+                      <td>{formatNumber(item.predicted_value)}</td>
+                      <td>{formatNumber(item.absolute_change)}</td>
+                      <td>{formatPercent(item.percent_change)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )
       ) : null}
 
       {chartPaths.length ? (
@@ -3192,6 +3206,7 @@ function lastItem<T>(items: T[] | undefined): T | undefined {
   }
   return items[items.length - 1];
 }
+
 
 
 
