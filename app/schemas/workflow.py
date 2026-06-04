@@ -75,6 +75,11 @@ class WorkflowJobListResponse(BaseModel):
     jobs: list[WorkflowJobListItem] = Field(default_factory=list)
 
 
+class WorkflowJobDeleteResponse(BaseModel):
+    deleted: bool
+    job_id: str
+
+
 class WorkflowLogResponse(BaseModel):
     job_id: str
     dataset_id: str | None = None
@@ -93,3 +98,4 @@ class WorkflowLogResponse(BaseModel):
     max_retries: int = 0
     artifacts: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list)
+

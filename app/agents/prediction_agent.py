@@ -154,7 +154,7 @@ def create_rule_based_prediction_plan(
         limitations.append("未识别到可用于预测的数值型目标指标，无法基于当前上传数据计算预测。")
     if not intervention_column:
         raw_intervention = str(hypothesis_intervention.get("raw_text") or hypothesis_intervention.get("variable") or user_goal)
-        reason = f"当前数据集中未找到与情景变量“{raw_intervention}”对应的字段，不能用其他数值字段替代模拟。"
+        reason = f"当前数据集中未找到与情景变量“{raw_intervention}”对应的字段。"
         unsupported_reason = unsupported_reason or reason
         limitations.append(reason)
     if not entity:

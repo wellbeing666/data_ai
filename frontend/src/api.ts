@@ -14,6 +14,7 @@ import type {
   PredictionJobResponse,
   PredictionLogResponse,
   ReportGenerateResponse,
+  WorkflowJobDeleteResponse,
   WorkflowJobListResponse,
   WorkflowJobResponse,
   WorkflowLogResponse
@@ -169,8 +170,12 @@ export async function createWorkflowJobAsync(
   return parseResponse<WorkflowJobResponse>(response);
 }
 
-export async function fetchWorkflowJobs(limit = 30): Promise<WorkflowJobListResponse> {
+export async function fetchWorkflowJobs(limit = 30, query = ""): Promise<WorkflowJobListResponse> {
   const params = new URLSearchParams({ limit: String(limit) });
+  const trimmedQuery = query.trim();
+  if (trimmedQuery) {
+    params.set("query", trimmedQuery);
+  }
   const response = await fetch(`/api/workflows/jobs?${params.toString()}`);
   return parseResponse<WorkflowJobListResponse>(response);
 }
@@ -194,6 +199,13 @@ export async function deleteWorkflowChart(
     method: "DELETE"
   });
   return parseResponse<ChartDeleteResponse>(response);
+}
+
+export async function deleteWorkflowJob(jobId: string): Promise<WorkflowJobDeleteResponse> {
+  const response = await fetch(`/api/workflows/jobs/${jobId}`, {
+    method: "DELETE"
+  });
+  return parseResponse<WorkflowJobDeleteResponse>(response);
 }
 
 export async function fetchAnalysisResult(resultPath: string): Promise<AnalysisResult> {
@@ -284,3 +296,4 @@ export function toStorageUrl(path: string): string {
   }
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
+

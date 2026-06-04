@@ -1,4 +1,3 @@
-
 import { type DragEvent, useEffect, useMemo, useState } from "react";
 
 import {
@@ -6,6 +5,7 @@ import {
   createPredictionJobAsync,
   createWorkflowJobAsync,
   deleteWorkflowChart,
+  deleteWorkflowJob,
   fetchAnalysisResult,
   fetchAutoRepairAnalysisJobStatus,
   fetchDatasetProfile,
@@ -166,7 +166,9 @@ export default function App() {
   const [chartMessage, setChartMessage] = useState("");
   const [workflowHistory, setWorkflowHistory] = useState<WorkflowJobListItem[]>([]);
   const [historyMessage, setHistoryMessage] = useState("");
+  const [historySearchQuery, setHistorySearchQuery] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [deletingHistoryJobId, setDeletingHistoryJobId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchHealthStatus()
@@ -326,16 +328,76 @@ export default function App() {
     }
   }
 
-  async function refreshWorkflowHistory() {
+  async function refreshWorkflowHistory(query = historySearchQuery) {
     setLoadingHistory(true);
     try {
-      const response = await fetchWorkflowJobs(30);
+      const response = await fetchWorkflowJobs(30, query);
       setWorkflowHistory(response.jobs);
       setHistoryMessage("");
     } catch (error) {
       setHistoryMessage(error instanceof Error ? error.message : "读取历史分析列表失败。");
     } finally {
       setLoadingHistory(false);
+    }
+  }
+
+  function clearCurrentWorkflowView() {
+    setJob(null);
+    setExecutionLog(null);
+    setAnalysisResult(null);
+    setControllerPlan(null);
+    setRagRetrieval(null);
+    setDataUnderstanding(null);
+    setAnalysisPlan(null);
+    setVisualParseResult(null);
+    setExplanation(emptyExplanation);
+    setReport(null);
+    setReportGeneratedFor("");
+    setPredictionJob(null);
+    setPredictionLog(null);
+    setPredictionResult(null);
+    setPredictionExplanation(emptyPredictionExplanation);
+    setHypothesisPlan(null);
+    setPredictionPlan(null);
+    setHiddenChartPaths([]);
+    setChartPreviewPath(null);
+    setChartMessage("");
+  }
+
+  async function handleClearHistorySearch() {
+    setHistorySearchQuery("");
+    await refreshWorkflowHistory("");
+  }
+
+  async function handleDeleteHistoryJob(jobId: string) {
+    const historyItem = workflowHistory.find((item) => item.job_id === jobId) ?? null;
+    const displayName = historyItem?.user_goal || historyItem?.dataset_filename || jobId;
+    const confirmed = window.confirm(`确定删除“${displayName}”这条分析对话吗？删除后将无法在列表中复看该任务结果。`);
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingHistoryJobId(jobId);
+    setHistoryMessage("正在删除分析对话。");
+    try {
+      await deleteWorkflowJob(jobId);
+      setWorkflowHistory((current) => current.filter((item) => item.job_id !== jobId));
+      if (job?.job_id === jobId || predictionJob?.job_id === jobId) {
+        clearCurrentWorkflowView();
+        setStatus("idle");
+        setPredictionStatus("idle");
+        setMessage("");
+        setPredictionMessage("");
+        setUploadInfo(null);
+        setProfile(null);
+        setActivePage("setup");
+      }
+      setHistoryMessage("分析对话已删除。");
+      await refreshWorkflowHistory();
+    } catch (error) {
+      setHistoryMessage(error instanceof Error ? error.message : "删除分析对话失败。");
+    } finally {
+      setDeletingHistoryJobId(null);
     }
   }
 
@@ -815,11 +877,17 @@ export default function App() {
 
           <HistoryPanel
             items={workflowHistory}
-            activeJobId={job?.job_id ?? null}
+            activeJobId={job?.job_id ?? predictionJob?.job_id ?? null}
             loading={loadingHistory}
             message={historyMessage}
-            onRefresh={refreshWorkflowHistory}
+            searchQuery={historySearchQuery}
+            deletingJobId={deletingHistoryJobId}
+            onRefresh={() => refreshWorkflowHistory()}
+            onSearchQueryChange={setHistorySearchQuery}
+            onSearch={() => refreshWorkflowHistory()}
+            onClearSearch={handleClearHistorySearch}
             onOpen={handleOpenHistoryJob}
+            onDelete={handleDeleteHistoryJob}
           />
         </aside>
 
@@ -968,16 +1036,30 @@ function HistoryPanel({
   activeJobId,
   loading,
   message,
+  searchQuery,
+  deletingJobId,
   onRefresh,
-  onOpen
+  onSearchQueryChange,
+  onSearch,
+  onClearSearch,
+  onOpen,
+  onDelete
 }: {
   items: WorkflowJobListItem[];
   activeJobId: string | null;
   loading: boolean;
   message: string;
+  searchQuery: string;
+  deletingJobId: string | null;
   onRefresh: () => void;
+  onSearchQueryChange: (query: string) => void;
+  onSearch: () => void;
+  onClearSearch: () => void;
   onOpen: (jobId: string) => void;
+  onDelete: (jobId: string) => void;
 }) {
+  const hasSearchQuery = searchQuery.trim().length > 0;
+
   return (
     <section className="panel history-panel">
       <div className="panel-header">
@@ -986,29 +1068,59 @@ function HistoryPanel({
           {loading ? "刷新中" : "刷新"}
         </button>
       </div>
+      <form
+        className="history-search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSearch();
+        }}
+      >
+        <input
+          aria-label="查找分析对话"
+          type="search"
+          value={searchQuery}
+          placeholder="按目标、文件名、状态或任务编号查找"
+          disabled={loading}
+          onChange={(event) => onSearchQueryChange(event.target.value)}
+        />
+        <button className="history-search-button" type="submit" disabled={loading}>
+          查找
+        </button>
+        {hasSearchQuery ? (
+          <button className="text-button history-clear-button" type="button" disabled={loading} onClick={onClearSearch}>
+            清空
+          </button>
+        ) : null}
+      </form>
       {message ? <p className="history-message">{message}</p> : null}
       {items.length ? (
         <div className="history-list">
           {items.map((item) => {
             const active = item.job_id === activeJobId;
+            const deleting = deletingJobId === item.job_id;
             return (
-              <button
-                className={`history-item ${active ? "active" : ""}`}
-                key={item.job_id}
-                type="button"
-                onClick={() => onOpen(item.job_id)}
-              >
-                <span className="history-item-title">{workflowLabel(item.workflow_type || item.task_type)}</span>
-                <span className="history-item-goal">{item.user_goal || "未记录分析目标"}</span>
-                <span className="history-item-meta">
-                  {item.dataset_filename || item.dataset_id || "未知数据集"} · {statusLabel(item.status)} · {formatDateTime(item.updated_at || item.created_at || "")}
-                </span>
-              </button>
+              <article className={`history-item ${active ? "active" : ""}`} key={item.job_id}>
+                <button className="history-open-button" type="button" onClick={() => onOpen(item.job_id)}>
+                  <span className="history-item-title">{workflowLabel(item.workflow_type || item.task_type)}</span>
+                  <span className="history-item-goal">{item.user_goal || "未记录分析目标"}</span>
+                  <span className="history-item-meta">
+                    {item.dataset_filename || item.dataset_id || "未知数据集"} · {statusLabel(item.status)} · {formatDateTime(item.updated_at || item.created_at || "")}
+                  </span>
+                </button>
+                <button
+                  className="history-delete-button"
+                  type="button"
+                  disabled={loading || deleting}
+                  onClick={() => onDelete(item.job_id)}
+                >
+                  {deleting ? "删除中" : "删除"}
+                </button>
+              </article>
             );
           })}
         </div>
       ) : (
-        <p className="history-empty">暂无可复看的分析对话。</p>
+        <p className="history-empty">{hasSearchQuery ? "没有匹配的分析对话。" : "暂无可复看的分析对话。"}</p>
       )}
     </section>
   );
@@ -3448,3 +3560,4 @@ function lastItem<T>(items: T[] | undefined): T | undefined {
   }
   return items[items.length - 1];
 }
+

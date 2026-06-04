@@ -1,4 +1,3 @@
-
 export interface DatasetUploadResponse {
   dataset_id: string;
   filename: string;
@@ -372,6 +371,11 @@ export interface WorkflowJobListResponse {
   jobs: WorkflowJobListItem[];
 }
 
+export interface WorkflowJobDeleteResponse {
+  deleted: boolean;
+  job_id: string;
+}
+
 
 export interface WorkflowLogResponse {
   job_id: string;
@@ -418,3 +422,4 @@ export interface ChartDeleteResponse {
   chart_path: string;
   chart_paths: string[];
 }
+

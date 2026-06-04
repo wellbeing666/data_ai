@@ -1,4 +1,5 @@
 import json
+import shutil
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -243,8 +244,9 @@ def run_workflow_job(
     return _normalize_workflow_status(result, workflow_type=ANALYSIS_WORKFLOW_TYPE, task_type=task_type)
 
 
-def list_workflow_jobs(limit: int = 30) -> dict[str, Any]:
+def list_workflow_jobs(limit: int = 30, query: str | None = None) -> dict[str, Any]:
     safe_limit = max(1, min(int(limit), 100))
+    normalized_query = _normalize_search_query(query)
     if not JOB_ROOT.exists():
         return {"jobs": []}
 
@@ -260,26 +262,47 @@ def list_workflow_jobs(limit: int = 30) -> dict[str, Any]:
         normalized = _normalize_workflow_status(status_data, workflow_type=workflow_type, task_type=task_type)
         dataset_id = str(status_data.get("dataset_id") or normalized.get("dataset_id") or "")
         dataset_filename, file_type = _dataset_file_info(dataset_id)
-        jobs.append(
-            {
-                "job_id": str(normalized.get("job_id") or job_dir.name),
-                "dataset_id": dataset_id or None,
-                "dataset_filename": dataset_filename,
-                "file_type": file_type,
-                "user_goal": str(status_data.get("user_goal") or normalized.get("user_goal") or ""),
-                "status": str(normalized.get("status") or "pending"),
-                "current_stage": normalized.get("current_stage"),
-                "workflow_type": normalized.get("workflow_type"),
-                "task_type": normalized.get("task_type"),
-                "asset_type": normalized.get("asset_type"),
-                "chart_count": len(normalized.get("chart_paths") or []),
-                "created_at": _iso_from_timestamp(job_dir.stat().st_ctime),
-                "updated_at": _iso_from_timestamp(job_dir.stat().st_mtime),
-            }
-        )
+        job_item = {
+            "job_id": str(normalized.get("job_id") or job_dir.name),
+            "dataset_id": dataset_id or None,
+            "dataset_filename": dataset_filename,
+            "file_type": file_type,
+            "user_goal": str(status_data.get("user_goal") or normalized.get("user_goal") or ""),
+            "status": str(normalized.get("status") or "pending"),
+            "current_stage": normalized.get("current_stage"),
+            "workflow_type": normalized.get("workflow_type"),
+            "task_type": normalized.get("task_type"),
+            "asset_type": normalized.get("asset_type"),
+            "chart_count": len(normalized.get("chart_paths") or []),
+            "created_at": _iso_from_timestamp(job_dir.stat().st_ctime),
+            "updated_at": _iso_from_timestamp(job_dir.stat().st_mtime),
+        }
+        if normalized_query and not _workflow_job_matches_query(job_item, normalized_query):
+            continue
+        jobs.append(job_item)
         if len(jobs) >= safe_limit:
             break
     return {"jobs": jobs}
+
+
+def delete_workflow_job(job_id: str) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id)
+    status_data = _history_status_data(job_dir) or {}
+    status_value = str(status_data.get("status") or "")
+    if status_value not in {"success", "failed"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="运行中或排队中的分析对话不能删除，请等待任务结束后再删除。",
+        )
+
+    try:
+        shutil.rmtree(job_dir)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"删除分析对话失败：{exc}",
+        ) from exc
+    return {"deleted": True, "job_id": job_id}
 
 
 def get_workflow_job_status(job_id: str) -> dict[str, Any]:
@@ -517,6 +540,54 @@ def _history_status_data(job_dir: Path) -> dict[str, Any] | None:
         if data:
             return data
     return None
+
+
+
+
+def _normalize_search_query(query: str | None) -> str:
+    return " ".join(str(query or "").casefold().split())
+
+
+def _workflow_job_matches_query(job_item: dict[str, Any], query: str) -> bool:
+    searchable_values = [
+        job_item.get("job_id"),
+        job_item.get("dataset_id"),
+        job_item.get("dataset_filename"),
+        job_item.get("file_type"),
+        job_item.get("user_goal"),
+        job_item.get("status"),
+        _status_search_label(job_item.get("status")),
+        job_item.get("current_stage"),
+        job_item.get("workflow_type"),
+        _workflow_search_label(job_item.get("workflow_type"), job_item.get("task_type")),
+        job_item.get("task_type"),
+        job_item.get("asset_type"),
+        _asset_search_label(job_item.get("asset_type")),
+        job_item.get("created_at"),
+        job_item.get("updated_at"),
+    ]
+    haystack = " ".join(str(value).casefold() for value in searchable_values if value)
+    return all(token in haystack for token in query.split())
+
+
+def _status_search_label(value: Any) -> str:
+    labels = {
+        "pending": "排队 等待",
+        "running": "运行中 执行中",
+        "success": "成功 已完成",
+        "failed": "失败",
+    }
+    return labels.get(str(value or ""), "")
+
+
+def _workflow_search_label(workflow_type: Any, task_type: Any) -> str:
+    if str(workflow_type or task_type or "") == PREDICTION_TASK_TYPE:
+        return "情景预测 what-if 预测"
+    return "数据分析 普通分析"
+
+
+def _asset_search_label(value: Any) -> str:
+    return "图片 截图" if str(value or "") == IMAGE_ASSET_TYPE else "表格 数据"
 
 
 def _dataset_file_info(dataset_id: str) -> tuple[str | None, str | None]:
@@ -805,3 +876,4 @@ def _event_list(value: Any) -> list[dict[str, Any]]:
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+

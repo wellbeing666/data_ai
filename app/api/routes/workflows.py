@@ -2,10 +2,17 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Query
 
-from app.schemas.workflow import WorkflowJobListResponse, WorkflowJobRequest, WorkflowJobResponse, WorkflowLogResponse
+from app.schemas.workflow import (
+    WorkflowJobDeleteResponse,
+    WorkflowJobListResponse,
+    WorkflowJobRequest,
+    WorkflowJobResponse,
+    WorkflowLogResponse,
+)
 from app.services.workflow_service import (
     create_workflow_job_record,
     delete_workflow_chart,
+    delete_workflow_job,
     get_workflow_job_log,
     get_workflow_job_status,
     list_workflow_jobs,
@@ -41,8 +48,11 @@ def create_workflow_job_async(
 
 
 @router.get("/jobs", response_model=WorkflowJobListResponse)
-def read_workflow_job_list(limit: int = Query(default=30, ge=1, le=100)) -> WorkflowJobListResponse:
-    return WorkflowJobListResponse(**list_workflow_jobs(limit=limit))
+def read_workflow_job_list(
+    limit: int = Query(default=30, ge=1, le=100),
+    query: str | None = Query(default=None, max_length=100),
+) -> WorkflowJobListResponse:
+    return WorkflowJobListResponse(**list_workflow_jobs(limit=limit, query=query))
 
 
 @router.get("/jobs/{job_id}", response_model=WorkflowJobResponse)
@@ -55,9 +65,15 @@ def read_workflow_job_logs(job_id: str) -> WorkflowLogResponse:
     return WorkflowLogResponse(**get_workflow_job_log(job_id))
 
 
+@router.delete("/jobs/{job_id}", response_model=WorkflowJobDeleteResponse)
+def remove_workflow_job(job_id: str) -> WorkflowJobDeleteResponse:
+    return WorkflowJobDeleteResponse(**delete_workflow_job(job_id))
+
+
 @router.delete("/jobs/{job_id}/charts")
 def remove_workflow_chart(
     job_id: str,
     chart_path: str = Query(..., min_length=1),
 ) -> dict[str, Any]:
     return delete_workflow_chart(job_id, chart_path)
+
