@@ -117,6 +117,8 @@ export interface ReportGenerateResponse {
   report_path: string;
   analysis_result_path: string;
   chart_paths: string[];
+  pptx_path?: string | null;
+  pptx_preview_path?: string | null;
 }
 
 export interface AutoRepairAttemptResult {
@@ -251,9 +253,16 @@ export interface AnalysisRoadmap {
   user_goal: string;
   workflow_type: string;
   task_type: string;
+  graph_type?: string;
   summary: string;
   steps: AnalysisRoadmapStep[];
   mermaid_code?: string;
+  dot_code?: string;
+  dot_path?: string | null;
+  mermaid_path?: string | null;
+  render_script_path?: string | null;
+  rendered_image_path?: string | null;
+  rendered_image_url?: string | null;
 }
 
 export interface QualityReviewIssue {
@@ -441,6 +450,13 @@ export interface WorkflowJobResponse {
   dataset_profile_path?: string | null;
   analysis_roadmap_path?: string | null;
   quality_review_path?: string | null;
+  cleaning_report_path?: string | null;
+  evidence_chain_path?: string | null;
+  report_path?: string | null;
+  pptx_path?: string | null;
+  pptx_preview_path?: string | null;
+  job_control_path?: string | null;
+  control_state?: Record<string, unknown>;
   visual_parse_result_path?: string | null;
   visual_extracted_dataset_path?: string | null;
   visual_extraction_confidence?: number | null;
@@ -548,4 +564,143 @@ export interface ChartDeleteResponse {
 
 
 
+
+
+
+export interface CleaningStrategyOption {
+  strategy_id: string;
+  label: string;
+  description: string;
+  recommended: boolean;
+}
+
+export interface CleaningIssue {
+  issue_id: string;
+  issue_type: string;
+  column?: string | null;
+  message: string;
+  affected_count: number;
+  severity: string;
+  default_strategy_id: string;
+  strategies: CleaningStrategyOption[];
+  examples?: unknown[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface CleaningPreview {
+  columns: string[];
+  rows: Array<Record<string, unknown>>;
+}
+
+export interface CleaningPlanResponse {
+  dataset_id: string;
+  asset_type: string;
+  source_file?: string | null;
+  plan_path?: string | null;
+  created_at?: string | null;
+  row_count: number;
+  column_count: number;
+  columns: string[];
+  has_issues: boolean;
+  issues: CleaningIssue[];
+  recommended_strategy_ids: Record<string, string>;
+  preview: CleaningPreview;
+  message: string;
+}
+
+export interface CleaningAppliedStrategy {
+  issue_id: string;
+  issue_type?: string | null;
+  column?: string | null;
+  strategy_id: string;
+  strategy_label: string;
+  description: string;
+  rows_before: number;
+  rows_after: number;
+  columns_before: number;
+  columns_after: number;
+}
+
+export interface CleaningReportResponse {
+  dataset_id: string;
+  source_file?: string | null;
+  cleaned_dataset_path?: string | null;
+  cleaning_report_path?: string | null;
+  created_at?: string | null;
+  row_count_before: number;
+  row_count_after: number;
+  column_count_before: number;
+  column_count_after: number;
+  applied_strategies: CleaningAppliedStrategy[];
+  preview: CleaningPreview;
+  message: string;
+}
+
+export interface EvidenceItem {
+  number?: string;
+  source_file?: string;
+  json_path?: string;
+  value?: unknown;
+  row_context?: Record<string, unknown> | null;
+  calculation?: string;
+}
+
+export interface EvidenceFinding {
+  finding_id: string;
+  text: string;
+  numbers: Array<Record<string, unknown>>;
+  has_evidence: boolean;
+  risk_level: string;
+  evidence_items: EvidenceItem[];
+  charts: string[];
+  calculation_note: string;
+}
+
+export interface EvidenceChain {
+  evidence_version: string;
+  risk_level: string;
+  high_risk_count: number;
+  source_files: string[];
+  findings: EvidenceFinding[];
+  summary: string;
+}
+
+export interface WorkflowControlResponse {
+  job_id: string;
+  action: string;
+  accepted: boolean;
+  message: string;
+  status?: string | null;
+}
+
+export interface WorkflowPptxGenerateResponse {
+  job_id: string;
+  pptx_path?: string | null;
+  pptx_preview_path?: string | null;
+  message: string;
+  status?: string | null;
+}
+
+export interface WorkflowFollowUpResponse {
+  job_id: string;
+  question: string;
+  answer: string;
+  follow_up_path?: string | null;
+  created_at?: string | null;
+  used_artifacts: string[];
+}
+
+export interface PptPreviewSlide {
+  page: number;
+  title: string;
+  subtitle?: string;
+  section_label?: string;
+  bullets: string[];
+  chart?: string;
+}
+
+export interface PptPreview {
+  pptx_path?: string | null;
+  slides: PptPreviewSlide[];
+}
 

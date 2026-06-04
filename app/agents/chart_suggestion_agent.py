@@ -43,8 +43,21 @@ FIELD_LABELS = {
     "fullbath": "全卫数量（FullBath）",
     "lotarea": "地块面积（LotArea）",
     "sales": "销量",
+    "sale": "销量",
+    "volume": "销量",
     "revenue": "销售额",
+    "amount": "金额",
     "score": "成绩",
+    "category": "商品类别",
+    "categories": "商品类别",
+    "productcategory": "商品类别",
+    "channel": "渠道",
+    "regional": "地区",
+    "region": "地区",
+    "area": "地区",
+    "month": "月份",
+    "monthly": "月份",
+    "total": "总量",
 }
 
 DISCRETE_FIELDS = {"overallqual", "overallcond", "garagecars", "fullbath", "bedroomabvgr", "totrmsabvgrd"}
@@ -125,7 +138,7 @@ class ChartSuggestionAgent:
                 ],
                 temperature=0.2,
             )
-            return _normalize_suggestions(result, fallback)
+            return _normalize_suggestions(result, fallback, _infer_chart_type(chart_path))
         except Exception:
             return fallback
 
@@ -204,6 +217,18 @@ def create_rule_based_chart_refine_suggestions(
 
     if chart_type in {"bar", "barh"}:
         dimension = field_label if field else group_label or "当前分组"
+        if _is_monthly_chart(chart_path):
+            monthly_scope = "各月份" if _normalize_key(dimension) in {"month", "月份"} else f"{dimension}各月份"
+            comparison_text = "判断哪段下降最明显" if _normalize_key(dimension) in {"month", "月份"} else f"比较{dimension}下降幅度"
+            split_text = "按关键分组拆成小图或分组柱形图，减少多组柱形重叠。" if _normalize_key(dimension) in {"month", "月份"} else f"按{dimension}拆成小图或分组柱形图，减少多组柱形重叠。"
+            return _clean_suggestions(
+                [
+                    f"在柱形图上标注{monthly_scope}环比变化率，突出下降超过 5% 的月份。",
+                    "只保留实际月份，隐藏预测月份，并在标题中注明时间口径。",
+                    f"增加 1 月到 5 月累计降幅标签，便于{comparison_text}。",
+                    split_text,
+                ]
+            )
         return _clean_suggestions(
             [
                 f"按{target_label}均值从高到低重排{dimension}，并只保留前 10 组。",
@@ -243,7 +268,7 @@ def create_rule_based_chart_refine_suggestions(
     )
 
 
-def _normalize_suggestions(result: Any, fallback: list[str]) -> list[str]:
+def _normalize_suggestions(result: Any, fallback: list[str], chart_type: str) -> list[str]:
     raw_items: Any = []
     if isinstance(result, dict):
         raw_items = result.get("suggestions")
@@ -254,6 +279,8 @@ def _normalize_suggestions(result: Any, fallback: list[str]) -> list[str]:
         for item in raw_items:
             text = _finish_sentence(str(item or "").strip())
             if not text or text in GENERIC_SUGGESTIONS or len(text) < 12:
+                continue
+            if not _is_compatible_suggestion(text, chart_type):
                 continue
             suggestions.append(text)
     return _clean_suggestions([*suggestions, *fallback])
@@ -288,11 +315,13 @@ def _infer_chart_type(chart_path: str) -> str:
         return "heatmap"
     if "scatter" in lower:
         return "scatter"
-    if "line" in lower or "trend" in lower or "monthly" in lower:
-        return "line"
     if "barh" in lower:
         return "barh"
     if "bar" in lower or "top" in lower or "rank" in lower:
+        return "bar"
+    if "line" in lower or "trend" in lower:
+        return "line"
+    if "monthly" in lower or "month" in lower or "月" in str(chart_path or ""):
         return "bar"
     return "chart"
 
@@ -300,15 +329,25 @@ def _infer_chart_type(chart_path: str) -> str:
 def _extract_chart_field(chart_path: str) -> str:
     name = str(chart_path or "").replace("\\", "/").rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0]
+    lower = stem.lower()
+    if "category" in lower or "商品类别" in stem or "品类" in stem:
+        return "category"
+    if "channel" in lower or "渠道" in stem:
+        return "channel"
+    if "regional" in lower or "region" in lower or "地区" in stem:
+        return "region"
+    if lower.startswith("monthly_total") or "月度总" in stem:
+        return "month"
     match = re.search(r"scatter[_-]([^._-]+)", stem, flags=re.IGNORECASE)
     if match:
         return match.group(1)
     for prefix in ("bar_", "bar-", "line_", "line-", "box_", "box-"):
-        if stem.lower().startswith(prefix):
+        if lower.startswith(prefix):
             return stem[len(prefix) :]
     tokens = re.split(r"[_\-]", stem)
+    ignored = {"chart", "plot", "heatmap", "correlation", "refined", "sales", "sale", "monthly"}
     for token in reversed(tokens):
-        if token and token.lower() not in {"chart", "plot", "heatmap", "correlation", "refined"}:
+        if token and token.lower() not in ignored:
             return token
     return ""
 
@@ -341,6 +380,22 @@ def _choose_group_field(dataset_profile: dict[str, Any], exclude: set[str] | Non
         if _normalize_key(column) not in exclude:
             return str(column)
     return ""
+
+
+def _is_monthly_chart(chart_path: str) -> bool:
+    lower = str(chart_path or "").lower()
+    return "monthly" in lower or "month" in lower or "月" in str(chart_path or "")
+
+
+def _is_compatible_suggestion(text: str, chart_type: str) -> bool:
+    normalized = text.strip()
+    line_markers = ("当前线图", "当前折线图", "原折线图", "这张折线图", "该折线图", "线图改为", "线图改成", "折线图改为", "折线图改成")
+    bar_markers = ("当前柱状图", "当前柱形图", "这张柱状图", "这张柱形图")
+    if chart_type != "line" and any(marker in normalized for marker in line_markers):
+        return False
+    if chart_type not in {"bar", "barh"} and any(marker in normalized for marker in bar_markers):
+        return False
+    return True
 
 
 def _friendly_field_name(value: Any) -> str:
@@ -376,3 +431,4 @@ def _compact_payload(payload: Any, max_items: int = 8) -> Any:
 def _short_goal(user_goal: str) -> str:
     text = str(user_goal or "").strip()
     return text[:24] + ("..." if len(text) > 24 else "")
+

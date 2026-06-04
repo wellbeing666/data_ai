@@ -81,7 +81,7 @@ export const emptyPredictionExplanation: PredictionExplanationResult = {
   ppt_outline: []
 };
 
-export const terminalStatuses = new Set(["success", "failed"]);
+export const terminalStatuses = new Set(["success", "failed", "cancelled"]);
 const analysisFileExtensions = new Set(["csv", "xlsx", "xls", "png", "jpg", "jpeg", "webp"]);
 
 export function isSupportedAnalysisFile(file: File): boolean {
@@ -1071,7 +1071,7 @@ export function statusFromJob(value: string): "idle" | "uploading" | "running" |
   if (value === "success") {
     return "success";
   }
-  if (value === "failed") {
+  if (value === "failed" || value === "cancelled") {
     return "failed";
   }
   return "running";
@@ -1082,7 +1082,10 @@ export function messageFromJob(job: WorkflowJobResponse): string {
     return "分析完成。";
   }
   if (job.status === "failed") {
-    return job.error?.message ? String(job.error.message) : "分析失败，请查看执行日志。";
+    return job.error?.message ? String(job.error.message) : "分析未完成，请查看执行日志。";
+  }
+  if (job.status === "cancelled") {
+    return "分析任务已取消。";
   }
   return `${stageLabel(job.current_stage ?? "running")}，状态实时刷新中。`;
 }
@@ -1092,7 +1095,10 @@ export function predictionMessageFromJob(job: WorkflowJobResponse): string {
     return "情景预测完成。";
   }
   if (job.status === "failed") {
-    return job.error?.message ? String(job.error.message) : "情景预测失败，请查看日志。";
+    return job.error?.message ? String(job.error.message) : "情景预测未完成，请查看日志。";
+  }
+  if (job.status === "cancelled") {
+    return "情景预测任务已取消。";
   }
   return `${stageLabel(job.current_stage ?? "running")}，预测状态实时刷新中。`;
 }
@@ -1103,7 +1109,8 @@ export function statusLabel(value: string): string {
     uploading: "上传中",
     running: "Agent 运行中",
     success: "已完成",
-    failed: "失败"
+    failed: "未完成",
+    cancelled: "已取消"
   };
   return labels[value] ?? value;
 }
@@ -1397,6 +1404,7 @@ function lastItem<T>(items: T[] | undefined): T | undefined {
   }
   return items[items.length - 1];
 }
+
 
 
 

@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import traceback
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from app.agents.chart_config_agent import create_chart_config
 from app.agents.chart_suggestion_agent import create_chart_refine_suggestions
 from app.agents.controller_agent import create_controller_plan
 from app.agents.preflight_agent import create_preflight_assessment
-from app.agents.roadmap_agent import create_analysis_roadmap
+from app.agents.roadmap_agent import create_analysis_roadmap, render_analysis_roadmap
 from app.agents.vision_parsing_agent import VisionParsingAgent, write_visual_extracted_csv
 from app.sandbox.code_safety import validate_script_static_safety
 from app.sandbox.local_executor import LocalSubprocessSandboxExecutor
@@ -21,8 +22,11 @@ from app.services.auto_repair_analysis import run_auto_repair_analysis_job
 from app.services.dataset_profile import generate_dataset_profile
 from app.services.dataset_reader import find_uploaded_image_file, get_dataset_dir, get_uploaded_asset_type, load_uploaded_dataset
 from app.services.execution_log_service import create_event, get_execution_log, write_execution_log
+from app.services.job_control_service import JobCancelled, checkpoint_job_control, read_job_control, request_job_action, reset_runtime_control, write_job_control
+from app.services.llm_client import get_llm_client
 from app.services.prediction_workflow import run_prediction_job
 from app.services.rag_service import format_rag_context, get_rag_service
+from app.services.report_service import generate_pptx_report
 
 
 JOB_ROOT = Path("storage/jobs")
@@ -33,6 +37,26 @@ ANALYSIS_WORKFLOW_TYPE = "auto_repair"
 IMAGE_ASSET_TYPE = "image"
 ROADMAP_FILENAME = "analysis_roadmap.json"
 QUALITY_REVIEW_FILENAME = "quality_review.json"
+
+FOLLOW_UP_SYSTEM_PROMPT = """你是 AI 原生数据分析工作台的追问分析 Agent。
+
+用户会在一次分析任务完成后提出后续问题。你必须基于已生成的结构化产物回答，不要泛泛复述报告摘要。
+
+要求：
+1. 先直接回答问题，再给支撑依据。
+2. 优先使用 analysis_result、prediction_result、report_data、evidence_chain、explanation、quality_review 和 report.md 中的数据。
+3. 涉及下降原因、影响因素或预测时，只能表述为相关信号、可能原因或待验证线索，不能写成确定因果。
+4. 如果现有产物无法回答，明确说明缺少哪些数据或证据。
+5. 返回一个合法 JSON 对象，不要输出 Markdown 代码块。
+
+返回格式：
+{
+  "answer": "直接答案",
+  "supporting_points": ["依据 1", "依据 2"],
+  "evidence_refs": ["产物名或证据位置"],
+  "limitations": ["限制说明"]
+}
+"""
 
 
 def create_workflow_job_record(
@@ -46,6 +70,7 @@ def create_workflow_job_record(
     job_dir = (JOB_ROOT / job_id).resolve()
     job_dir.mkdir(parents=True, exist_ok=False)
     events = [create_event("queued", "pending", "统一分析任务已创建。")]
+    write_job_control(job_dir, {"cancel_requested": False, "pause_requested": False, "requested_action": "", "control_status": "pending"})
     asset_type = _safe_asset_type(dataset_id)
     return _write_workflow_status(
         job_dir=job_dir,
@@ -209,7 +234,7 @@ def refine_workflow_chart(
     refinements_dir = job_dir / "chart_refinements"
     refinements_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    refined_script_path = refinements_dir / f"refined_chart_{timestamp}.py"
+    refined_script_path = refinements_dir / f"refined_chart_{timestamp}.py.txt"
     refined_script_path.write_text(refined_script, encoding="utf-8")
 
     safety_issues = validate_script_static_safety(
@@ -273,19 +298,49 @@ def run_workflow_job_background(
     max_retries: int = 3,
     timeout_seconds: int = 90,
 ) -> None:
+    job_dir = (JOB_ROOT / job_id).resolve()
     try:
-        run_workflow_job(
+        result = run_workflow_job(
             job_id=job_id,
             dataset_id=dataset_id,
             user_goal=user_goal,
             max_retries=max_retries,
             timeout_seconds=timeout_seconds,
         )
+        final_status = str(result.get("status") or "")
+        if final_status == "success":
+            reset_runtime_control(job_dir, status="idle", message="任务已完成。")
+        elif final_status == "failed":
+            reset_runtime_control(job_dir, status="failed", message="任务未完成。")
+        elif final_status == "cancelled":
+            reset_runtime_control(job_dir, status="cancelled", message="任务已取消。")
+        else:
+            reset_runtime_control(job_dir, status="idle", message="任务已结束。")
+    except JobCancelled:
+        current_status = _read_json_if_exists(job_dir / WORKFLOW_STATUS_FILENAME) or {}
+        events = _event_list(current_status.get("events"))
+        events.append(create_event("cancelled", "cancelled", "统一分析任务已取消。"))
+        reset_runtime_control(job_dir, status="cancelled", message="任务已取消。")
+        _write_workflow_status(
+            job_dir=job_dir,
+            job_id=job_id,
+            dataset_id=dataset_id,
+            user_goal=user_goal,
+            status_value="cancelled",
+            current_stage="cancelled",
+            workflow_type=current_status.get("workflow_type"),
+            task_type=current_status.get("task_type"),
+            asset_type=current_status.get("asset_type") or _safe_asset_type(dataset_id),
+            attempts=_dict_list(current_status.get("attempts")),
+            events=events,
+            max_retries=_validate_max_retries(max_retries),
+            timeout_seconds=timeout_seconds,
+        )
     except Exception as exc:  # pragma: no cover - background safety net
-        job_dir = (JOB_ROOT / job_id).resolve()
         current_status = _read_json_if_exists(job_dir / WORKFLOW_STATUS_FILENAME) or {}
         events = _event_list(current_status.get("events"))
         events.append(create_event("failed", "failed", f"统一分析任务执行失败：{exc}"))
+        reset_runtime_control(job_dir, status="failed", message="任务未完成。")
         _write_workflow_status(
             job_dir=job_dir,
             job_id=job_id,
@@ -341,6 +396,8 @@ def run_workflow_job(
         max_retries=effective_max_retries,
         timeout_seconds=timeout_seconds,
     )
+    reset_runtime_control(job_dir, status="running", message="任务正在执行。")
+    checkpoint_job_control(job_dir)
 
     visual_parse_result_path = None
     visual_extracted_dataset_path = None
@@ -421,6 +478,8 @@ def run_workflow_job(
         controller_plan=controller_plan,
         workflow_type=workflow_type,
     )
+    render_result = render_analysis_roadmap(roadmap, job_dir)
+    roadmap = {**roadmap, **render_result}
     analysis_roadmap_path = str(job_dir / ROADMAP_FILENAME)
     _write_json(job_dir / ROADMAP_FILENAME, roadmap)
     events.append(create_event("roadmap", "success", "路线图 Agent 已生成可视化分析路线。"))
@@ -446,6 +505,7 @@ def run_workflow_job(
         visual_extracted_dataset_path=visual_extracted_dataset_path,
         visual_extraction_confidence=_float_or_none(visual_extraction_confidence),
     )
+    checkpoint_job_control(job_dir)
 
     if task_type == PREDICTION_TASK_TYPE:
         result = run_prediction_job(
@@ -512,7 +572,7 @@ def delete_workflow_job(job_id: str) -> dict[str, Any]:
     job_dir = _get_job_dir(job_id)
     status_data = _history_status_data(job_dir) or {}
     status_value = str(status_data.get("status") or "")
-    if status_value not in {"success", "failed"}:
+    if status_value not in {"success", "failed", "cancelled"}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="运行中或排队中的分析对话不能删除，请等待任务结束后再删除。",
@@ -534,7 +594,7 @@ def get_workflow_job_status(job_id: str) -> dict[str, Any]:
     prediction_status = _read_json_if_exists(job_dir / "prediction_task_status.json")
     analysis_status = _read_json_if_exists(job_dir / "task_status.json")
 
-    if _is_authoritative_workflow_failure(workflow_status, prediction_status, analysis_status):
+    if _is_authoritative_workflow_state(workflow_status, prediction_status, analysis_status):
         return _normalize_workflow_status(
             workflow_status or {},
             workflow_type=(workflow_status or {}).get("workflow_type") or _workflow_type_for_job_dir(job_dir),
@@ -556,13 +616,12 @@ def get_workflow_job_status(job_id: str) -> dict[str, Any]:
         )
 
     if workflow_status is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow status not found.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到当前分析任务。")
     return _normalize_workflow_status(
         workflow_status,
         workflow_type=workflow_status.get("workflow_type"),
         task_type=workflow_status.get("task_type"),
     )
-
 
 def get_workflow_job_log(job_id: str) -> dict[str, Any]:
     status_data = get_workflow_job_status(job_id)
@@ -600,6 +659,11 @@ def get_workflow_job_log(job_id: str) -> dict[str, Any]:
         "charts": status_data.get("chart_paths") or [],
         "analysis_roadmap": status_data.get("analysis_roadmap_path"),
         "quality_review": status_data.get("quality_review_path"),
+        "evidence_chain": status_data.get("evidence_chain_path"),
+        "cleaning_report": status_data.get("cleaning_report_path"),
+        "report": status_data.get("report_path"),
+        "pptx": status_data.get("pptx_path"),
+        "pptx_preview": status_data.get("pptx_preview_path"),
     }
     if log_data["workflow_type"] == PREDICTION_TASK_TYPE:
         log_data.setdefault("prediction_plan", _read_json_if_exists(Path(str(status_data.get("prediction_plan_path") or ""))))
@@ -634,6 +698,537 @@ def delete_workflow_chart(job_id: str, chart_path: str) -> dict[str, Any]:
     }
 
 
+
+def generate_workflow_pptx(job_id: str) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    status_data = get_workflow_job_status(job_id)
+    if status_data.get("status") != "success":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="请等待分析完成后再生成 PPTX。",
+        )
+    workflow_type = str(status_data.get("workflow_type") or _workflow_type_for_job_dir(job_dir))
+    result_key = "final_prediction_result_path" if workflow_type == PREDICTION_TASK_TYPE else "final_result_path"
+    fallback_name = "prediction_result.json" if workflow_type == PREDICTION_TASK_TYPE else "analysis_result.json"
+    result_path = Path(str(status_data.get(result_key) or job_dir / fallback_name))
+    if not result_path.exists():
+        result_path = job_dir / fallback_name
+    if not result_path.exists():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="当前任务缺少可用于生成 PPTX 的分析结果。")
+    chart_paths = _collect_chart_paths(job_dir, workflow_type)
+    _set_job_status(job_dir, status_value="success", current_stage="pptx", event=create_event("pptx", "running", "正在生成 PPTX。"))
+    result = generate_pptx_report(str(result_path), chart_paths)
+    artifacts = {
+        "pptx_path": result.get("pptx_path"),
+        "pptx_preview_path": result.get("pptx_preview_path"),
+    }
+    _set_job_status(
+        job_dir,
+        status_value="success",
+        current_stage="success",
+        event=create_event("pptx", "success", "PPTX 已生成。"),
+        artifacts=artifacts,
+    )
+    return {
+        "job_id": job_id,
+        "pptx_path": result.get("pptx_path"),
+        "pptx_preview_path": result.get("pptx_preview_path"),
+        "message": "PPTX 已生成。",
+        "status": "success",
+    }
+
+def control_workflow_job(job_id: str, action: str) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    normalized_action = str(action or "").strip()
+    allowed_actions = {
+        "cancel",
+        "pause",
+        "resume",
+        "rerun_all",
+        "rerun_failed",
+        "rerun_explanation",
+        "rerun_charts",
+        "rerun_quality",
+    }
+    if normalized_action not in allowed_actions:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不支持的任务控制操作。")
+
+    status_data = get_workflow_job_status(job_id)
+    status_value = str(status_data.get("status") or "")
+    control_state = read_job_control(job_dir)
+    is_active = status_value in {"pending", "running"}
+    is_terminal = status_value in {"success", "failed", "cancelled"}
+
+    if normalized_action == "pause":
+        if not is_active:
+            return _control_response(job_id, normalized_action, False, "当前任务没有正在执行的步骤。", status_value)
+        request_job_action(job_dir, normalized_action)
+        _append_job_event(job_dir, create_event("control", "running", "已请求暂停任务。"))
+        return _control_response(job_id, normalized_action, True, "已请求暂停，任务会停在最近的安全节点。", status_value)
+
+    if normalized_action == "resume":
+        if not control_state.get("pause_requested") and control_state.get("control_status") != "paused":
+            return _control_response(job_id, normalized_action, False, "当前任务没有处于暂停状态。", status_value)
+        request_job_action(job_dir, normalized_action)
+        _append_job_event(job_dir, create_event("control", "running", "任务已继续执行。"))
+        return _control_response(job_id, normalized_action, True, "任务已继续执行。", status_value)
+
+    if normalized_action == "cancel":
+        if not is_active and not control_state.get("pause_requested"):
+            return _control_response(job_id, normalized_action, False, "当前任务已结束，无需取消。", status_value)
+        request_job_action(job_dir, normalized_action)
+        _append_job_event(job_dir, create_event("control", "running", "已请求取消任务。"))
+        return _control_response(job_id, normalized_action, True, "已请求取消，任务会在安全节点停止。", status_value)
+
+    if is_active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="当前分析仍在执行，请先取消或等待完成后再重跑。")
+    if not is_terminal:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="当前任务状态暂不支持重跑。")
+    if normalized_action in {"rerun_explanation", "rerun_charts", "rerun_quality"} and status_value != "success":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="请在分析成功后重跑单个 Agent。")
+
+    request_job_action(job_dir, normalized_action)
+    _set_job_status(
+        job_dir,
+        status_value="running",
+        current_stage=normalized_action,
+        event=create_event(normalized_action, "running", _rerun_message(normalized_action)),
+    )
+    message_map = {
+        "rerun_all": "已开始完整重跑。",
+        "rerun_failed": "已开始从失败阶段重跑。",
+        "rerun_explanation": "已开始重跑解释 Agent。",
+        "rerun_charts": "已开始重跑图表 Agent。",
+        "rerun_quality": "已开始重跑质检 Agent。",
+    }
+    return {
+        "job_id": job_id,
+        "action": normalized_action,
+        "accepted": True,
+        "message": message_map[normalized_action],
+        "status": "running",
+        "background_action": normalized_action,
+    }
+
+
+def rerun_workflow_job_background(job_id: str, action: str) -> None:
+    job_dir = _get_job_dir(job_id).resolve()
+    status_data = _history_status_data(job_dir) or get_workflow_job_status(job_id)
+    dataset_id = str(status_data.get("dataset_id") or "")
+    user_goal = str(status_data.get("user_goal") or "")
+    max_retries = int(status_data.get("effective_max_retries") or 3)
+    timeout_seconds = int(status_data.get("timeout_seconds") or 90)
+    reset_runtime_control(job_dir, status="running", message=_rerun_message(action))
+    try:
+        if action in {"rerun_all", "rerun_failed"}:
+            run_workflow_job(
+                job_id=job_id,
+                dataset_id=dataset_id,
+                user_goal=user_goal,
+                max_retries=max_retries,
+                timeout_seconds=timeout_seconds,
+            )
+        else:
+            _refresh_workflow_artifact(job_id, action)
+            _set_job_status(
+                job_dir,
+                status_value="success",
+                current_stage="success",
+                event=create_event(action, "success", "指定 Agent 已完成重跑。"),
+            )
+        reset_runtime_control(job_dir, status="idle", message="重跑已完成。")
+    except JobCancelled:
+        reset_runtime_control(job_dir, status="cancelled", message="任务已取消。")
+        _set_job_status(
+            job_dir,
+            status_value="cancelled",
+            current_stage="cancelled",
+            event=create_event("cancelled", "cancelled", "任务已取消。"),
+        )
+    except Exception as exc:  # pragma: no cover - background safety net
+        reset_runtime_control(job_dir, status="failed", message="重跑未完成。")
+        _set_job_status(
+            job_dir,
+            status_value="failed",
+            current_stage="failed",
+            event=create_event("failed", "failed", f"重跑未完成：{exc}"),
+            error={"type": exc.__class__.__name__, "message": str(exc), "traceback": traceback.format_exc(limit=8)},
+        )
+
+
+def _control_response(job_id: str, action: str, accepted: bool, message: str, status_value: str | None) -> dict[str, Any]:
+    return {
+        "job_id": job_id,
+        "action": action,
+        "accepted": accepted,
+        "message": message,
+        "status": status_value,
+        "background_action": None,
+    }
+
+def create_workflow_follow_up(job_id: str, question: str) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    status_data = get_workflow_job_status(job_id)
+    if status_data.get("status") != "success":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="请等待分析完成后再继续追问。")
+    normalized_question = str(question or "").strip()
+    if not normalized_question:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="追问内容不能为空。")
+    artifacts = _follow_up_artifacts(job_dir)
+    answer = _build_follow_up_answer(normalized_question, artifacts, status_data)
+    followups_dir = job_dir / "followups"
+    followups_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    follow_up_path = followups_dir / f"followup_{timestamp}.json"
+    payload = {
+        "job_id": job_id,
+        "question": normalized_question,
+        "answer": answer,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "used_artifacts": sorted(artifacts.keys()),
+    }
+    _write_json(follow_up_path, payload)
+    _append_job_event(job_dir, create_event("follow_up", "success", "已基于现有分析产物生成追问回答。"))
+    return {**payload, "follow_up_path": str(follow_up_path)}
+
+
+def _refresh_workflow_artifact(job_id: str, action: str) -> None:
+    job_dir = _get_job_dir(job_id).resolve()
+    status_data = (
+        _read_json_if_exists(job_dir / "prediction_task_status.json")
+        or _read_json_if_exists(job_dir / "task_status.json")
+        or get_workflow_job_status(job_id)
+    )
+    workflow_type = str(status_data.get("workflow_type") or _workflow_type_for_job_dir(job_dir))
+    dataset_profile = _read_json_if_exists(job_dir / "dataset_profile.json") or {}
+    user_goal = str(status_data.get("user_goal") or "")
+    if action == "rerun_charts":
+        _rerun_latest_chart_script(job_dir, status_data)
+        _append_job_event(job_dir, create_event("rerun_charts", "success", "图表 Agent 已基于当前脚本重新渲染图表。"))
+        return
+
+    if workflow_type == PREDICTION_TASK_TYPE:
+        from app.agents.prediction_explanation_agent import create_prediction_explanation
+        from app.agents.quality_review_agent import create_quality_review
+        from app.services.evidence_service import build_evidence_chain, merge_evidence_into_quality_review
+        from app.services.report_service import generate_markdown_report
+
+        prediction_result = _read_json_if_exists(job_dir / "prediction_result.json") or {}
+        chart_paths = _collect_chart_paths(job_dir, PREDICTION_TASK_TYPE)
+        explanation = _read_json_if_exists(job_dir / "prediction_explanation.json") or {}
+        if action in {"rerun_explanation", "rerun_quality"}:
+            if action == "rerun_explanation":
+                explanation = create_prediction_explanation(user_goal, prediction_result, chart_paths)
+                _write_json(job_dir / "prediction_explanation.json", explanation)
+            evidence = build_evidence_chain(
+                job_dir=job_dir,
+                explanation=explanation,
+                result_payload=prediction_result,
+                report_data=_read_json_if_exists(job_dir / "report_data.json") or {},
+                prediction_result=prediction_result,
+                chart_paths=chart_paths,
+            )
+            quality = create_quality_review(user_goal, dataset_profile, prediction_result, explanation, {}, chart_paths, "what_if_prediction")
+            _write_json(job_dir / "quality_review.json", merge_evidence_into_quality_review(quality, evidence))
+            generate_markdown_report(str(job_dir / "prediction_result.json"), chart_paths, include_pptx=True)
+            _append_job_event(job_dir, create_event(action, "success", "指定 Agent 已完成重跑。"))
+        return
+
+    from app.agents.explanation_agent import create_explanation
+    from app.agents.quality_review_agent import create_quality_review
+    from app.services.evidence_service import build_evidence_chain, merge_evidence_into_quality_review
+    from app.services.report_service import generate_markdown_report
+
+    analysis_result = _read_json_if_exists(job_dir / "analysis_result.json") or {}
+    analysis_plan = _read_json_if_exists(job_dir / "analysis_plan.json") or {}
+    chart_paths = _collect_chart_paths(job_dir, ANALYSIS_WORKFLOW_TYPE)
+    explanation = _read_json_if_exists(job_dir / "explanation.json") or {}
+    if action == "rerun_explanation":
+        explanation = create_explanation(
+            user_goal=user_goal,
+            dataset_profile=dataset_profile,
+            analysis_result=analysis_result,
+            chart_paths=chart_paths,
+            limitations=_string_list(analysis_plan.get("limitations")),
+        )
+        _write_json(job_dir / "explanation.json", explanation)
+    if action in {"rerun_explanation", "rerun_quality"}:
+        evidence = build_evidence_chain(
+            job_dir=job_dir,
+            explanation=explanation,
+            result_payload=analysis_result,
+            report_data=_read_json_if_exists(job_dir / "report_data.json") or {},
+            chart_paths=chart_paths,
+        )
+        quality = create_quality_review(user_goal, dataset_profile, analysis_result, explanation, {}, chart_paths, "auto_repair")
+        _write_json(job_dir / "quality_review.json", merge_evidence_into_quality_review(quality, evidence))
+        generate_markdown_report(str(job_dir / "analysis_result.json"), chart_paths, include_pptx=True)
+        _append_job_event(job_dir, create_event(action, "success", "指定 Agent 已完成重跑。"))
+
+
+def _rerun_latest_chart_script(job_dir: Path, status_data: dict[str, Any]) -> None:
+    script_path = _latest_existing_script_path(status_data)
+    if script_path is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="当前任务缺少可用于重跑图表的脚本。")
+    dataset_id = str(status_data.get("dataset_id") or "")
+    input_file, _ = load_uploaded_dataset(dataset_id)
+    execution_result = LocalSubprocessSandboxExecutor().execute(
+        generated_script_path=str(script_path),
+        input_file=str(input_file.resolve()),
+        output_dir=str(job_dir),
+        timeout_seconds=int(status_data.get("timeout_seconds") or 90),
+    )
+    _write_json(job_dir / "rerun_chart_execution_result.json", execution_result)
+    if not execution_result.get("success"):
+        raise RuntimeError("图表重跑未完成，请查看执行日志。")
+
+def _append_job_event(job_dir: Path, event: dict[str, Any]) -> None:
+    for filename in (WORKFLOW_STATUS_FILENAME, "task_status.json", "prediction_task_status.json"):
+        path = job_dir / filename
+        data = _read_json_if_exists(path)
+        if not data:
+            continue
+        events = _event_list(data.get("events"))
+        events.append(event)
+        data["events"] = events
+        data["current_stage"] = event.get("stage") or data.get("current_stage")
+        _write_json(path, data)
+
+
+
+def _set_job_status(
+    job_dir: Path,
+    *,
+    status_value: str | None = None,
+    current_stage: str | None = None,
+    event: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+    artifacts: dict[str, Any] | None = None,
+) -> None:
+    for filename in (WORKFLOW_STATUS_FILENAME, "task_status.json", "prediction_task_status.json"):
+        path = job_dir / filename
+        data = _read_json_if_exists(path)
+        if not data:
+            continue
+        if status_value is not None:
+            data["status"] = status_value
+        if current_stage is not None:
+            data["current_stage"] = current_stage
+        if event is not None:
+            events = _event_list(data.get("events"))
+            events.append(event)
+            data["events"] = events
+        if error is not None:
+            data["error"] = error
+        if artifacts:
+            for key, value in artifacts.items():
+                if value is not None:
+                    data[key] = value
+        _write_json(path, data)
+
+def _follow_up_artifacts(job_dir: Path) -> dict[str, Any]:
+    artifacts: dict[str, Any] = {}
+    for filename in (
+        "dataset_profile.json",
+        "controller_plan.json",
+        "data_understanding.json",
+        "analysis_plan.json",
+        "hypothesis_plan.json",
+        "prediction_plan.json",
+        "analysis_result.json",
+        "prediction_result.json",
+        "report_data.json",
+        "explanation.json",
+        "prediction_explanation.json",
+        "quality_review.json",
+        "evidence_chain.json",
+        "cleaning_report.json",
+    ):
+        value = _read_json_if_exists(job_dir / filename)
+        if value:
+            artifacts[filename] = value
+    report_text = _read_text_if_exists(job_dir / "report.md")
+    if report_text:
+        artifacts["report.md"] = report_text
+    return artifacts
+
+
+def _build_follow_up_answer(question: str, artifacts: dict[str, Any], status_data: dict[str, Any]) -> str:
+    fallback = _build_rule_follow_up_answer(question, artifacts)
+    prompt_payload = {
+        "question": question,
+        "job_context": {
+            "user_goal": status_data.get("user_goal"),
+            "workflow_type": status_data.get("workflow_type"),
+            "task_type": status_data.get("task_type"),
+            "dataset_id": status_data.get("dataset_id"),
+        },
+        "available_artifacts": sorted(artifacts.keys()),
+        "artifacts": _compact_for_prompt(artifacts),
+    }
+    try:
+        result = get_llm_client().chat_json(
+            messages=[
+                {"role": "system", "content": FOLLOW_UP_SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False, indent=2)},
+            ],
+            temperature=0.1,
+        )
+    except Exception:
+        return fallback
+    return _format_follow_up_answer(result) or fallback
+
+
+def _format_follow_up_answer(result: Any) -> str:
+    if isinstance(result, str):
+        return result.strip()
+    if not isinstance(result, dict):
+        return ""
+    answer = str(result.get("answer") or "").strip()
+    points = _string_list(result.get("supporting_points"))[:5]
+    evidence_refs = _string_list(result.get("evidence_refs"))[:5]
+    limitations = _string_list(result.get("limitations"))[:4]
+    parts: list[str] = []
+    if answer:
+        parts.append(answer)
+    if points:
+        parts.append("依据：" + "；".join(points) + "。")
+    if evidence_refs:
+        parts.append("证据：" + "；".join(evidence_refs) + "。")
+    if limitations:
+        parts.append("限制：" + "；".join(limitations) + "。")
+    return " ".join(parts).strip()
+
+
+def _build_rule_follow_up_answer(question: str, artifacts: dict[str, Any]) -> str:
+    snippets = _search_artifact_snippets(question, artifacts, limit=5)
+    if snippets:
+        details = "；".join(f"{item['text']}（{item['source']}）" for item in snippets)
+        return f"针对“{question}”，现有分析产物中最相关的线索是：{details}。这些线索用于定位可能原因或相关信号，仍需要结合原始业务背景和后续验证判断。"
+
+    explanation = artifacts.get("explanation.json") or artifacts.get("prediction_explanation.json") or {}
+    recommendations = _string_list(explanation.get("recommendations"))[:4] if isinstance(explanation, dict) else []
+    summary = str(explanation.get("summary") or "当前问题需要进一步查看分析产物。") if isinstance(explanation, dict) else "当前问题需要进一步查看分析产物。"
+    advice = "；".join(recommendations or ["建议在证据链中核对对应分组表、计算字段和图表后再决策。"])
+    return f"{summary} 针对“{question}”，当前结构化产物中没有找到更细的直接证据。建议重点查看：{advice}"
+
+
+def _compact_for_prompt(value: Any, *, depth: int = 0, max_depth: int = 5, max_items: int = 12, max_string: int = 1200) -> Any:
+    if depth >= max_depth:
+        return _short_value(value, max_string=240)
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= max_items:
+                compact["__truncated__"] = True
+                break
+            compact[str(key)] = _compact_for_prompt(
+                item,
+                depth=depth + 1,
+                max_depth=max_depth,
+                max_items=max_items,
+                max_string=max_string,
+            )
+        return compact
+    if isinstance(value, list):
+        result = [
+            _compact_for_prompt(item, depth=depth + 1, max_depth=max_depth, max_items=max_items, max_string=max_string)
+            for item in value[:max_items]
+        ]
+        if len(value) > max_items:
+            result.append({"__truncated__": True, "total_items": len(value)})
+        return result
+    return _short_value(value, max_string=max_string)
+
+
+def _short_value(value: Any, *, max_string: int = 1200) -> Any:
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    text = str(value)
+    return text if len(text) <= max_string else text[:max_string] + "..."
+
+
+def _search_artifact_snippets(question: str, artifacts: dict[str, Any], *, limit: int = 5) -> list[dict[str, str]]:
+    keywords = _question_keywords(question)
+    if not keywords:
+        return []
+    candidates: list[tuple[int, str, str]] = []
+    for artifact_name, artifact_value in artifacts.items():
+        for path, text in _iter_artifact_texts(artifact_value, artifact_name):
+            normalized = text.strip()
+            if not normalized or len(normalized) < 8:
+                continue
+            score = sum(1 for keyword in keywords if keyword and keyword in normalized)
+            if score <= 0:
+                continue
+            if re.search(r"[-+]?\d+(?:\.\d+)?%?|\d+月", normalized):
+                score += 1
+            candidates.append((score, path, _clip_snippet(normalized)))
+    candidates.sort(key=lambda item: (-item[0], len(item[2])))
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for _, source, snippet in candidates:
+        if snippet in seen:
+            continue
+        seen.add(snippet)
+        result.append({"source": source, "text": snippet})
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _question_keywords(question: str) -> list[str]:
+    text = str(question or "")
+    priority_words = [
+        "1月", "2月", "3月", "4月", "5月", "6月", "下降", "下滑", "加速", "关键", "原因",
+        "销量", "销售额", "环比", "同比", "贡献", "地区", "渠道", "商品", "品类", "类别",
+        "家电", "个护", "食品", "预测", "证据", "风险", "限制", "PPT", "图表",
+    ]
+    keywords = [word for word in priority_words if word in text]
+    keywords.extend(re.findall(r"\d+月|[-+]?\d+(?:\.\d+)?%|[A-Za-z][A-Za-z0-9_]{2,}", text))
+    deduped: list[str] = []
+    for keyword in keywords:
+        if keyword and keyword not in deduped:
+            deduped.append(keyword)
+    return deduped[:12]
+
+
+def _iter_artifact_texts(value: Any, source: str) -> list[tuple[str, str]]:
+    results: list[tuple[str, str]] = []
+
+    def walk(current: Any, path: str) -> None:
+        if isinstance(current, dict):
+            for key, item in current.items():
+                walk(item, f"{path}.{key}")
+            return
+        if isinstance(current, list):
+            for index, item in enumerate(current[:60]):
+                walk(item, f"{path}[{index}]")
+            return
+        if current is None:
+            return
+        text = str(current)
+        if text.strip():
+            results.append((path, text))
+
+    walk(value, source)
+    return results
+
+
+def _clip_snippet(text: str, *, max_length: int = 220) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    return text if len(text) <= max_length else text[:max_length] + "..."
+
+
+def _rerun_message(action: str) -> str:
+    return {
+        "rerun_all": "正在完整重跑分析任务。",
+        "rerun_failed": "正在从失败阶段重新执行分析任务。",
+        "rerun_explanation": "正在重跑解释 Agent。",
+        "rerun_charts": "正在重跑图表 Agent。",
+        "rerun_quality": "正在重跑质检 Agent。",
+    }.get(action, "正在重跑分析任务。")
+
 def _write_workflow_status(
     *,
     job_dir: Path,
@@ -657,6 +1252,11 @@ def _write_workflow_status(
     visual_parse_result_path: str | None = None,
     visual_extracted_dataset_path: str | None = None,
     visual_extraction_confidence: float | None = None,
+    cleaning_report_path: str | None = None,
+    evidence_chain_path: str | None = None,
+    report_path: str | None = None,
+    pptx_path: str | None = None,
+    pptx_preview_path: str | None = None,
     error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     status_data = {
@@ -678,6 +1278,11 @@ def _write_workflow_status(
         "visual_parse_result_path": visual_parse_result_path,
         "visual_extracted_dataset_path": visual_extracted_dataset_path,
         "visual_extraction_confidence": visual_extraction_confidence,
+        "cleaning_report_path": cleaning_report_path,
+        "evidence_chain_path": evidence_chain_path,
+        "report_path": report_path,
+        "pptx_path": pptx_path,
+        "pptx_preview_path": pptx_preview_path,
         "effective_max_retries": max_retries,
         "timeout_seconds": timeout_seconds,
         "events": events,
@@ -702,6 +1307,11 @@ def _write_workflow_status(
             "artifacts": {
                 "analysis_roadmap": analysis_roadmap_path,
                 "quality_review": quality_review_path,
+                "cleaning_report": cleaning_report_path,
+                "evidence_chain": evidence_chain_path,
+                "report": report_path,
+                "pptx": pptx_path,
+                "pptx_preview": pptx_preview_path,
             },
             "visual_parse_result": visual_parse_result_path,
             "visual_extracted_dataset": visual_extracted_dataset_path,
@@ -726,6 +1336,12 @@ def _normalize_workflow_status(
             "dataset_profile_path": _existing_or_none(data.get("dataset_profile_path"), job_dir / "dataset_profile.json"),
             "analysis_roadmap_path": _existing_or_none(data.get("analysis_roadmap_path"), job_dir / ROADMAP_FILENAME),
             "quality_review_path": _existing_or_none(data.get("quality_review_path"), job_dir / QUALITY_REVIEW_FILENAME),
+            "cleaning_report_path": _existing_or_none(data.get("cleaning_report_path"), job_dir / "cleaning_report.json"),
+            "evidence_chain_path": _existing_or_none(data.get("evidence_chain_path"), job_dir / "evidence_chain.json"),
+            "report_path": _existing_or_none(data.get("report_path"), job_dir / "report.md"),
+            "pptx_path": _existing_or_none(data.get("pptx_path"), job_dir / "report.pptx"),
+            "pptx_preview_path": _existing_or_none(data.get("pptx_preview_path"), job_dir / "pptx_preview.json"),
+            "job_control_path": _existing_or_none(data.get("job_control_path"), job_dir / "job_control.json"),
             "visual_parse_result_path": _existing_or_none(data.get("visual_parse_result_path"), job_dir / "visual_parse_result.json"),
             "visual_extracted_dataset_path": data.get("visual_extracted_dataset_path"),
             "data_understanding_path": _existing_or_none(data.get("data_understanding_path"), job_dir / "data_understanding.json"),
@@ -759,6 +1375,13 @@ def _normalize_workflow_status(
         "dataset_profile_path": data.get("dataset_profile_path"),
         "analysis_roadmap_path": data.get("analysis_roadmap_path"),
         "quality_review_path": data.get("quality_review_path"),
+        "cleaning_report_path": data.get("cleaning_report_path"),
+        "evidence_chain_path": data.get("evidence_chain_path"),
+        "report_path": data.get("report_path"),
+        "pptx_path": data.get("pptx_path"),
+        "pptx_preview_path": data.get("pptx_preview_path"),
+        "job_control_path": data.get("job_control_path"),
+        "control_state": read_job_control(job_dir) if job_dir.exists() else {},
         "visual_parse_result_path": data.get("visual_parse_result_path"),
         "visual_extracted_dataset_path": _visual_extracted_path(data, job_dir),
         "visual_extraction_confidence": data.get("visual_extraction_confidence") if data.get("visual_extraction_confidence") is not None else _visual_confidence(job_dir),
@@ -785,7 +1408,7 @@ def _history_status_data(job_dir: Path) -> dict[str, Any] | None:
     prediction_status = _read_json_if_exists(job_dir / "prediction_task_status.json")
     analysis_status = _read_json_if_exists(job_dir / "task_status.json")
     workflow_status = _read_json_if_exists(job_dir / WORKFLOW_STATUS_FILENAME)
-    if _is_authoritative_workflow_failure(workflow_status, prediction_status, analysis_status):
+    if _is_authoritative_workflow_state(workflow_status, prediction_status, analysis_status):
         return workflow_status
     for data in (prediction_status, analysis_status, workflow_status):
         if data:
@@ -794,21 +1417,27 @@ def _history_status_data(job_dir: Path) -> dict[str, Any] | None:
 
 
 
-def _is_authoritative_workflow_failure(
+def _is_authoritative_workflow_state(
     workflow_status: dict[str, Any] | None,
     prediction_status: dict[str, Any] | None,
     analysis_status: dict[str, Any] | None,
 ) -> bool:
-    if not workflow_status or workflow_status.get("status") != "failed" or not workflow_status.get("error"):
+    if not workflow_status:
         return False
-    branch_status = prediction_status or analysis_status
-    if branch_status is None:
+    status_value = str(workflow_status.get("status") or "")
+    stage = str(workflow_status.get("current_stage") or "")
+    if status_value == "cancelled":
         return True
-    if branch_status.get("status") in {"success", "failed"}:
-        return False
-    return True
-
-
+    if status_value == "running" and (stage.startswith("rerun") or stage == "pptx"):
+        return True
+    if status_value == "failed" and workflow_status.get("error"):
+        branch_status = prediction_status or analysis_status
+        if branch_status is None:
+            return True
+        if branch_status.get("status") in {"success", "failed"}:
+            return False
+        return True
+    return False
 
 def _normalize_search_query(query: str | None) -> str:
     return " ".join(str(query or "").casefold().split())
@@ -842,6 +1471,7 @@ def _status_search_label(value: Any) -> str:
         "running": "运行中 执行中",
         "success": "成功 已完成",
         "failed": "失败",
+        "cancelled": "取消 已取消",
     }
     return labels.get(str(value or ""), "")
 
@@ -1235,12 +1865,25 @@ def _read_json_if_exists(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _read_text_if_exists(path: Path, *, max_chars: int = 16000) -> str:
+    if not str(path) or not path.exists() or not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return text[:max_chars]
+
+
 def _event_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+
 
 
 

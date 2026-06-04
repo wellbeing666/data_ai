@@ -33,6 +33,39 @@ class WorkflowPreflightResponse(BaseModel):
     data_understanding: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkflowControlRequest(BaseModel):
+    action: str = Field(..., min_length=1)
+
+
+class WorkflowControlResponse(BaseModel):
+    job_id: str
+    action: str
+    accepted: bool
+    message: str
+    status: str | None = None
+
+
+class WorkflowPptxGenerateResponse(BaseModel):
+    job_id: str
+    pptx_path: str | None = None
+    pptx_preview_path: str | None = None
+    message: str
+    status: str | None = None
+
+
+class WorkflowFollowUpRequest(BaseModel):
+    question: str = Field(..., min_length=1)
+
+
+class WorkflowFollowUpResponse(BaseModel):
+    job_id: str
+    question: str
+    answer: str
+    follow_up_path: str | None = None
+    created_at: str | None = None
+    used_artifacts: list[str] = Field(default_factory=list)
+
+
 class ChartConfigRequest(BaseModel):
     instruction: str = Field(..., min_length=1)
     current_config: dict[str, Any] | None = None
@@ -101,6 +134,13 @@ class WorkflowJobResponse(BaseModel):
     dataset_profile_path: str | None = None
     analysis_roadmap_path: str | None = None
     quality_review_path: str | None = None
+    cleaning_report_path: str | None = None
+    evidence_chain_path: str | None = None
+    report_path: str | None = None
+    pptx_path: str | None = None
+    pptx_preview_path: str | None = None
+    job_control_path: str | None = None
+    control_state: dict[str, Any] = Field(default_factory=dict)
     visual_parse_result_path: str | None = None
     visual_extracted_dataset_path: str | None = None
     visual_extraction_confidence: float | None = None
@@ -163,5 +203,7 @@ class WorkflowLogResponse(BaseModel):
     max_retries: int = 0
     artifacts: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list)
+
+
 
 

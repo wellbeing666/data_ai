@@ -6,18 +6,21 @@ from fastapi import HTTPException, status
 
 
 REPORT_FILENAME = "report.md"
+PPTX_FILENAME = "report.pptx"
+PPTX_PREVIEW_FILENAME = "pptx_preview.json"
 
 
 def generate_markdown_report(
     analysis_result_path: str,
     chart_paths: list[str] | None = None,
     output_path: str | None = None,
+    include_pptx: bool = True,
 ) -> dict[str, Any]:
     result_path = Path(analysis_result_path).resolve()
     if not result_path.exists() or not result_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="analysis_result_path does not exist or is not a file.",
+            detail="分析结果文件不存在，请先完成分析后再生成报告。",
         )
 
     analysis_result = _load_json(result_path)
@@ -27,7 +30,7 @@ def generate_markdown_report(
     if not _is_relative_to(resolved_output_path, result_dir):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="output_path must be inside the analysis result directory.",
+            detail="报告文件必须保存到当前任务目录内。",
         )
 
     resolved_chart_paths = _resolve_chart_paths(
@@ -35,15 +38,19 @@ def generate_markdown_report(
         analysis_result=analysis_result,
         base_dir=result_dir,
     )
-    explanation = _load_optional_json(result_dir / "explanation.json")
+    explanation = _load_optional_json(result_dir / "explanation.json") or _load_optional_json(result_dir / "prediction_explanation.json")
     if isinstance(explanation, dict) and _has_explanation_content(explanation):
         markdown = _build_explanation_report(explanation, analysis_result, resolved_chart_paths, result_dir)
+        markdown = _append_cleaning_section(markdown, result_dir)
         resolved_output_path.write_text(markdown, encoding="utf-8")
-        return {
-            "report_path": str(resolved_output_path),
-            "analysis_result_path": str(result_path),
-            "chart_paths": [str(path) for path in resolved_chart_paths],
-        }
+        return _build_report_response(
+            report_path=resolved_output_path,
+            analysis_result_path=result_path,
+            chart_paths=resolved_chart_paths,
+            explanation=explanation,
+            analysis_result=analysis_result,
+            include_pptx=include_pptx,
+        )
 
     task_type = str(
         analysis_result.get("task_type")
@@ -58,13 +65,53 @@ def generate_markdown_report(
     else:
         markdown = _build_general_report(analysis_result, resolved_chart_paths, result_dir)
 
+    markdown = _append_cleaning_section(markdown, result_dir)
     resolved_output_path.write_text(markdown, encoding="utf-8")
+    return _build_report_response(
+        report_path=resolved_output_path,
+        analysis_result_path=result_path,
+        chart_paths=resolved_chart_paths,
+        explanation=explanation if isinstance(explanation, dict) else {},
+        analysis_result=analysis_result,
+        include_pptx=include_pptx,
+    )
+
+
+def generate_pptx_report(
+    analysis_result_path: str,
+    chart_paths: list[str] | None = None,
+) -> dict[str, Any]:
+    result_path = Path(analysis_result_path).resolve()
+    if not result_path.exists() or not result_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="分析结果文件不存在，请先完成分析后再生成 PPTX。",
+        )
+
+    analysis_result = _load_json(result_path)
+    result_dir = result_path.parent
+    resolved_chart_paths = _resolve_chart_paths(
+        chart_paths=chart_paths or [],
+        analysis_result=analysis_result,
+        base_dir=result_dir,
+    )
+    explanation = _load_optional_json(result_dir / "explanation.json") or _load_optional_json(result_dir / "prediction_explanation.json")
+    if not isinstance(explanation, dict):
+        explanation = {}
+
+    pptx_path = _create_pptx_report(result_dir, explanation, analysis_result, resolved_chart_paths)
+    if pptx_path is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="PPTX 生成失败，请稍后重试。",
+        )
+    preview_path = _create_pptx_preview(result_dir, explanation, analysis_result, resolved_chart_paths, pptx_path)
     return {
-        "report_path": str(resolved_output_path),
         "analysis_result_path": str(result_path),
         "chart_paths": [str(path) for path in resolved_chart_paths],
+        "pptx_path": str(pptx_path),
+        "pptx_preview_path": str(preview_path),
     }
-
 
 def _load_json(path: Path) -> dict[str, Any]:
     try:
@@ -99,22 +146,54 @@ def _resolve_chart_paths(
     base_dir: Path,
 ) -> list[Path]:
     raw_paths = chart_paths or [str(path) for path in analysis_result.get("charts", [])]
-    resolved_paths = []
+    resolved_paths: list[Path] = []
+    seen: set[str] = set()
 
     for raw_path in raw_paths:
-        path = Path(raw_path)
-        if not path.is_absolute():
-            path = base_dir / path
-        path = path.resolve()
-        if path.exists() and path.is_file():
+        path = _resolve_chart_path(raw_path, base_dir)
+        if path is None:
+            continue
+        key = path.as_posix()
+        if key not in seen:
             resolved_paths.append(path)
+            seen.add(key)
 
     charts_dir = base_dir / "charts"
-    if not resolved_paths and charts_dir.exists():
-        resolved_paths = sorted(path.resolve() for path in charts_dir.glob("*.png") if path.is_file())
+    if charts_dir.exists():
+        for chart_file in sorted(charts_dir.glob("*.png")):
+            path = chart_file.resolve()
+            key = path.as_posix()
+            if path.is_file() and key not in seen:
+                resolved_paths.append(path)
+                seen.add(key)
 
     return resolved_paths
 
+
+def _resolve_chart_path(raw_path: Any, base_dir: Path) -> Path | None:
+    raw = str(raw_path or "").strip().replace("\\", "/")
+    if not raw or raw.startswith(("http://", "https://")):
+        return None
+
+    if raw.startswith("/storage/"):
+        candidate = Path(raw.lstrip("/"))
+    elif raw.startswith("storage/"):
+        candidate = Path(raw)
+    else:
+        path = Path(raw)
+        if path.is_absolute():
+            candidate = path
+        elif raw.startswith("charts/"):
+            candidate = base_dir / raw
+        elif "/" not in raw:
+            candidate = base_dir / "charts" / raw
+        else:
+            candidate = base_dir / raw
+
+    candidate = candidate.resolve()
+    if candidate.exists() and candidate.is_file():
+        return candidate
+    return None
 
 def _build_grade_analysis_report(
     analysis_result: dict[str, Any],
@@ -478,3 +557,293 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+
+def _append_cleaning_section(markdown: str, result_dir: Path) -> str:
+    cleaning_report = _load_optional_json(result_dir / "cleaning_report.json")
+    if not isinstance(cleaning_report, dict):
+        return markdown
+    strategies = cleaning_report.get("applied_strategies")
+    lines = [markdown.rstrip(), "", "## 数据清洗说明"]
+    message = str(cleaning_report.get("message") or "已完成数据质量检查。")
+    lines.append(f"- {message}")
+    lines.append(f"- 清洗前记录数：{cleaning_report.get('row_count_before', '-')}")
+    lines.append(f"- 清洗后记录数：{cleaning_report.get('row_count_after', '-')}")
+    if isinstance(strategies, list) and strategies:
+        for item in strategies:
+            if not isinstance(item, dict):
+                continue
+            column = item.get("column") or "全表"
+            label = item.get("strategy_label") or item.get("strategy_id") or "已确认"
+            description = item.get("description") or ""
+            lines.append(f"- {column}：{label}。{description}")
+    else:
+        lines.append("- 未应用自动修改策略，分析基于当前数据版本执行。")
+    return "\n".join(lines) + "\n"
+
+
+def _build_report_response(
+    *,
+    report_path: Path,
+    analysis_result_path: Path,
+    chart_paths: list[Path],
+    explanation: dict[str, Any],
+    analysis_result: dict[str, Any],
+    include_pptx: bool = True,
+) -> dict[str, Any]:
+    pptx_path = None
+    pptx_preview_path = None
+    if include_pptx:
+        pptx_path = _create_pptx_report(report_path.parent, explanation, analysis_result, chart_paths)
+        if pptx_path is not None:
+            pptx_preview_path = _create_pptx_preview(report_path.parent, explanation, analysis_result, chart_paths, pptx_path)
+    return {
+        "report_path": str(report_path),
+        "analysis_result_path": str(analysis_result_path),
+        "chart_paths": [str(path) for path in chart_paths],
+        "pptx_path": str(pptx_path) if pptx_path else None,
+        "pptx_preview_path": str(pptx_preview_path) if pptx_preview_path else None,
+    }
+
+
+def _create_pptx_report(
+    result_dir: Path,
+    explanation: dict[str, Any],
+    analysis_result: dict[str, Any],
+    chart_paths: list[Path],
+) -> Path | None:
+    try:
+        from pptx import Presentation
+        from pptx.dml.color import RGBColor
+        from pptx.enum.shapes import MSO_SHAPE
+        from pptx.enum.text import PP_ALIGN
+        from pptx.util import Inches, Pt
+    except Exception:
+        return None
+
+    slides = _ppt_slide_payload(explanation, analysis_result, chart_paths)
+    pptx_path = result_dir / PPTX_FILENAME
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+    blank_layout = prs.slide_layouts[6]
+    total = max(len(slides), 1)
+
+    def rgb(hex_value: str) -> RGBColor:
+        value = hex_value.strip().lstrip("#")
+        return RGBColor(int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+
+    def add_shape(slide: Any, shape_type: Any, left: float, top: float, width: float, height: float, fill: str, line: str | None = None) -> Any:
+        shape = slide.shapes.add_shape(shape_type, Inches(left), Inches(top), Inches(width), Inches(height))
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = rgb(fill)
+        if line:
+            shape.line.color.rgb = rgb(line)
+        else:
+            try:
+                shape.line.fill.background()
+            except Exception:
+                pass
+        return shape
+
+    def add_text(
+        slide: Any,
+        left: float,
+        top: float,
+        width: float,
+        height: float,
+        text: str,
+        *,
+        font_size: int,
+        color: str = "0F172A",
+        bold: bool = False,
+        align: Any | None = None,
+    ) -> Any:
+        box = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(width), Inches(height))
+        frame = box.text_frame
+        frame.clear()
+        frame.word_wrap = True
+        frame.margin_left = Inches(0.02)
+        frame.margin_right = Inches(0.02)
+        paragraph = frame.paragraphs[0]
+        if align is not None:
+            paragraph.alignment = align
+        run = paragraph.add_run()
+        run.text = str(text)
+        run.font.name = "Microsoft YaHei"
+        run.font.size = Pt(font_size)
+        run.font.bold = bold
+        run.font.color.rgb = rgb(color)
+        return box
+
+    def add_bullets(slide: Any, bullets: list[str], left: float, top: float, width: float, height: float, font_size: int = 15) -> Any:
+        box = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(width), Inches(height))
+        frame = box.text_frame
+        frame.clear()
+        frame.word_wrap = True
+        frame.margin_left = Inches(0.12)
+        frame.margin_right = Inches(0.12)
+        frame.margin_top = Inches(0.08)
+        frame.margin_bottom = Inches(0.08)
+        values = bullets or ["暂无要点。"]
+        for idx, bullet in enumerate(values[:7]):
+            paragraph = frame.paragraphs[0] if idx == 0 else frame.add_paragraph()
+            paragraph.text = str(bullet)
+            paragraph.level = 0
+            paragraph.space_after = Pt(8)
+            for run in paragraph.runs:
+                run.font.name = "Microsoft YaHei"
+                run.font.size = Pt(font_size)
+                run.font.color.rgb = rgb("1F2937")
+        return box
+
+    def add_picture(slide: Any, chart_path: Path, left: float, top: float, width: float, height: float) -> None:
+        try:
+            picture = slide.shapes.add_picture(str(chart_path), Inches(left), Inches(top), width=Inches(width))
+            if picture.height > Inches(height):
+                scale = Inches(height) / picture.height
+                picture.width = int(picture.width * scale)
+                picture.height = int(picture.height * scale)
+            picture.left = int(Inches(left) + (Inches(width) - picture.width) / 2)
+            picture.top = int(Inches(top) + (Inches(height) - picture.height) / 2)
+        except Exception:
+            add_text(slide, left + 0.2, top + 0.2, width - 0.4, 0.6, "图表暂不可嵌入", font_size=13, color="64748B")
+
+    for index, slide_data in enumerate(slides, start=1):
+        slide = prs.slides.add_slide(blank_layout)
+        add_shape(slide, MSO_SHAPE.RECTANGLE, 0, 0, 13.333, 7.5, "F8FAFC")
+        add_shape(slide, MSO_SHAPE.RECTANGLE, 0, 0, 13.333, 0.34, "0F766E")
+        add_shape(slide, MSO_SHAPE.RECTANGLE, 0, 7.22, 13.333, 0.28, "E2E8F0")
+        add_text(slide, 0.62, 7.24, 9.0, 0.18, "AI 原生数据分析工作台", font_size=8, color="475569")
+        add_text(slide, 11.8, 7.24, 0.9, 0.18, f"{index}/{total}", font_size=8, color="475569", align=PP_ALIGN.RIGHT)
+
+        title = str(slide_data.get("title") or f"第 {index} 页")
+        bullets = _as_string_list(slide_data.get("bullets"))[:7]
+        subtitle = str(slide_data.get("subtitle") or slide_data.get("section_label") or "数据分析报告")
+        chart_path = _slide_chart_path(slide_data, chart_paths)
+
+        if index == 1:
+            add_shape(slide, MSO_SHAPE.RECTANGLE, 0.65, 0.95, 5.25, 0.16, "14B8A6")
+            add_text(slide, 0.65, 1.25, 8.2, 0.75, title, font_size=32, color="0F172A", bold=True)
+            add_text(slide, 0.68, 2.1, 5.7, 0.35, subtitle, font_size=13, color="0F766E", bold=True)
+            add_shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 0.68, 2.82, 5.7, 2.9, "FFFFFF", "DDE7EF")
+            add_bullets(slide, bullets[:4], 0.95, 3.05, 5.15, 2.35, 16)
+            add_shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 7.0, 1.0, 5.55, 4.9, "ECFDF5", "99F6E4")
+            if chart_path and chart_path.exists():
+                add_picture(slide, chart_path, 7.25, 1.28, 5.05, 4.35)
+            else:
+                add_text(slide, 7.5, 2.6, 4.6, 0.7, "分析结果已整理为结构化报告", font_size=20, color="0F766E", bold=True, align=PP_ALIGN.CENTER)
+        else:
+            add_shape(slide, MSO_SHAPE.OVAL, 0.62, 0.82, 0.52, 0.52, "0F766E")
+            add_text(slide, 0.755, 0.94, 0.25, 0.18, str(index), font_size=12, color="FFFFFF", bold=True, align=PP_ALIGN.CENTER)
+            add_text(slide, 1.25, 0.76, 10.8, 0.55, title, font_size=25, color="0F172A", bold=True)
+            add_text(slide, 1.28, 1.28, 6.8, 0.28, subtitle, font_size=10, color="64748B")
+            if chart_path and chart_path.exists():
+                add_shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 0.7, 1.82, 5.65, 4.75, "FFFFFF", "DDE7EF")
+                add_bullets(slide, bullets, 0.95, 2.05, 5.15, 4.2, 15)
+                add_shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 6.75, 1.82, 5.85, 4.75, "FFFFFF", "DDE7EF")
+                add_picture(slide, chart_path, 6.95, 2.05, 5.45, 4.25)
+            else:
+                add_shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 0.7, 1.82, 11.9, 4.75, "FFFFFF", "DDE7EF")
+                add_bullets(slide, bullets, 1.05, 2.1, 11.2, 4.15, 17)
+
+    try:
+        prs.save(pptx_path)
+    except Exception:
+        return None
+    return pptx_path
+
+
+def _create_pptx_preview(
+    result_dir: Path,
+    explanation: dict[str, Any],
+    analysis_result: dict[str, Any],
+    chart_paths: list[Path],
+    pptx_path: Path | None,
+) -> Path:
+    preview_path = result_dir / PPTX_PREVIEW_FILENAME
+    payload = {
+        "pptx_path": str(pptx_path) if pptx_path else None,
+        "slides": _ppt_slide_payload(explanation, analysis_result, chart_paths),
+    }
+    preview_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return preview_path
+
+
+def _ppt_slide_payload(
+    explanation: dict[str, Any],
+    analysis_result: dict[str, Any],
+    chart_paths: list[Path],
+) -> list[dict[str, Any]]:
+    outline = _as_outline(explanation.get("ppt_outline")) if isinstance(explanation, dict) else []
+    slides: list[dict[str, Any]] = []
+    if outline:
+        for index, item in enumerate(outline[:8], start=1):
+            chart = str(item.get("chart") or "")
+            if not chart and index <= len(chart_paths):
+                chart = str(chart_paths[index - 1])
+            slides.append(
+                {
+                    "page": index,
+                    "title": str(item.get("title") or f"第 {index} 页"),
+                    "subtitle": str(item.get("subtitle") or item.get("section_label") or "分析结论"),
+                    "bullets": _as_string_list(item.get("bullets")),
+                    "chart": chart,
+                }
+            )
+        if slides:
+            return slides
+
+    summary = str(explanation.get("summary") or analysis_result.get("summary") or "数据分析结果") if isinstance(explanation, dict) else "数据分析结果"
+    findings = _as_string_list(explanation.get("key_findings")) if isinstance(explanation, dict) else _build_generic_findings(analysis_result)
+    recommendations = _as_string_list(explanation.get("recommendations")) if isinstance(explanation, dict) else []
+    limitations = _as_string_list(explanation.get("limitations")) if isinstance(explanation, dict) else []
+    slides = [
+        {
+            "page": 1,
+            "title": "分析摘要",
+            "subtitle": "核心结论总览",
+            "bullets": [summary],
+            "chart": str(chart_paths[0]) if chart_paths else "",
+        },
+        {
+            "page": 2,
+            "title": "关键发现",
+            "subtitle": "数据中值得优先关注的信号",
+            "bullets": findings[:6] or ["暂无关键发现。"],
+            "chart": str(chart_paths[0]) if chart_paths else "",
+        },
+        {
+            "page": 3,
+            "title": "建议动作",
+            "subtitle": "面向业务跟进的下一步",
+            "bullets": recommendations[:6] or ["建议结合业务背景进一步核对。"],
+            "chart": str(chart_paths[1]) if len(chart_paths) > 1 else "",
+        },
+    ]
+    if limitations:
+        slides.append(
+            {
+                "page": 4,
+                "title": "限制说明",
+                "subtitle": "结论适用范围与数据边界",
+                "bullets": limitations[:6],
+                "chart": str(chart_paths[2]) if len(chart_paths) > 2 else "",
+            }
+        )
+    return slides
+
+
+def _slide_chart_path(slide_data: dict[str, Any], chart_paths: list[Path]) -> Path | None:
+    raw = str(slide_data.get("chart") or "").strip()
+    if raw:
+        path = _resolve_chart_path(raw, chart_paths[0].parent if chart_paths else Path.cwd())
+        if path is not None:
+            return path
+        raw_name = Path(raw.replace("\\", "/")).name
+        for chart_path in chart_paths:
+            if chart_path.name == raw_name:
+                return chart_path
+    return chart_paths[0] if chart_paths else None
+

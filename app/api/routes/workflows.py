@@ -8,25 +8,34 @@ from app.schemas.workflow import (
     ChartRefineRequest,
     ChartRefineResponse,
     ChartSuggestionResponse,
+    WorkflowControlRequest,
+    WorkflowControlResponse,
+    WorkflowFollowUpRequest,
+    WorkflowFollowUpResponse,
     WorkflowJobDeleteResponse,
     WorkflowJobListResponse,
     WorkflowJobRequest,
     WorkflowJobResponse,
     WorkflowLogResponse,
+    WorkflowPptxGenerateResponse,
     WorkflowPreflightRequest,
     WorkflowPreflightResponse,
 )
 from app.services.workflow_service import (
     create_workflow_chart_config,
     create_workflow_chart_suggestions,
+    control_workflow_job,
+    create_workflow_follow_up,
     create_workflow_job_record,
     create_workflow_preflight,
     delete_workflow_chart,
     delete_workflow_job,
     get_workflow_job_log,
+    generate_workflow_pptx,
     get_workflow_job_status,
     list_workflow_jobs,
     refine_workflow_chart,
+    rerun_workflow_job_background,
     run_workflow_job_background,
 )
 
@@ -75,6 +84,31 @@ def read_workflow_job_status(job_id: str) -> WorkflowJobResponse:
     return WorkflowJobResponse(**get_workflow_job_status(job_id))
 
 
+@router.post("/jobs/{job_id}/control", response_model=WorkflowControlResponse)
+def control_job(
+    job_id: str,
+    request: WorkflowControlRequest,
+    background_tasks: BackgroundTasks,
+) -> WorkflowControlResponse:
+    result = control_workflow_job(job_id=job_id, action=request.action)
+    background_action = result.pop("background_action", None)
+    if background_action:
+        background_tasks.add_task(rerun_workflow_job_background, job_id, str(background_action))
+    return WorkflowControlResponse(**result)
+
+
+@router.post("/jobs/{job_id}/pptx", response_model=WorkflowPptxGenerateResponse)
+def generate_job_pptx(job_id: str) -> WorkflowPptxGenerateResponse:
+    result = generate_workflow_pptx(job_id=job_id)
+    return WorkflowPptxGenerateResponse(**result)
+
+
+@router.post("/jobs/{job_id}/follow-up", response_model=WorkflowFollowUpResponse)
+def create_job_follow_up(job_id: str, request: WorkflowFollowUpRequest) -> WorkflowFollowUpResponse:
+    result = create_workflow_follow_up(job_id=job_id, question=request.question)
+    return WorkflowFollowUpResponse(**result)
+
+
 @router.get("/jobs/{job_id}/logs", response_model=WorkflowLogResponse)
 def read_workflow_job_logs(job_id: str) -> WorkflowLogResponse:
     return WorkflowLogResponse(**get_workflow_job_log(job_id))
@@ -120,5 +154,7 @@ def remove_workflow_chart(
     chart_path: str = Query(..., min_length=1),
 ) -> dict[str, Any]:
     return delete_workflow_chart(job_id, chart_path)
+
+
 
 

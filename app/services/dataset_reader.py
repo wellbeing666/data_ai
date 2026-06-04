@@ -7,11 +7,17 @@ from app.services.dataset_storage import IMAGE_FILE_TYPES, TABULAR_FILE_TYPES, U
 
 
 CSV_ENCODINGS = ("utf-8", "utf-8-sig", "gbk")
+CLEANED_DATASET_FILENAME = "cleaned_dataset.csv"
+VISUAL_EXTRACTED_FILENAME = "visual_extracted.csv"
+_RESERVED_TABULAR_OUTPUTS = {
+    CLEANED_DATASET_FILENAME,
+    VISUAL_EXTRACTED_FILENAME,
+}
 
 
-def load_uploaded_dataset(dataset_id: str) -> tuple[Path, pd.DataFrame]:
+def load_uploaded_dataset(dataset_id: str, prefer_cleaned: bool = True) -> tuple[Path, pd.DataFrame]:
     dataset_dir = get_dataset_dir(dataset_id)
-    file_path = find_dataset_file(dataset_dir)
+    file_path = find_dataset_file(dataset_dir, prefer_cleaned=prefer_cleaned)
     return file_path, read_dataset(file_path)
 
 
@@ -32,20 +38,49 @@ def get_dataset_dir(dataset_id: str) -> Path:
     return dataset_dir
 
 
-def find_dataset_file(dataset_dir: Path) -> Path:
+def find_dataset_file(dataset_dir: Path, prefer_cleaned: bool = True) -> Path:
+    if prefer_cleaned:
+        for filename in (CLEANED_DATASET_FILENAME, VISUAL_EXTRACTED_FILENAME):
+            preferred_path = dataset_dir / filename
+            if preferred_path.exists() and preferred_path.is_file() and preferred_path.suffix.lower() in TABULAR_FILE_TYPES:
+                return preferred_path
+
     dataset_files = [
         path
         for path in dataset_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in TABULAR_FILE_TYPES
+        if path.is_file()
+        and path.suffix.lower() in TABULAR_FILE_TYPES
+        and path.name not in _RESERVED_TABULAR_OUTPUTS
     ]
 
     if not dataset_files:
+        extracted_path = dataset_dir / VISUAL_EXTRACTED_FILENAME
+        if extracted_path.exists() and extracted_path.is_file():
+            return extracted_path
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Dataset file not found.",
         )
 
     return sorted(dataset_files, key=lambda path: path.name)[0]
+
+
+def find_original_dataset_file(dataset_dir: Path) -> Path:
+    dataset_files = [
+        path
+        for path in dataset_dir.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in TABULAR_FILE_TYPES
+        and path.name not in _RESERVED_TABULAR_OUTPUTS
+    ]
+    if dataset_files:
+        return sorted(dataset_files, key=lambda path: path.name)[0]
+
+    extracted_path = dataset_dir / VISUAL_EXTRACTED_FILENAME
+    if extracted_path.exists() and extracted_path.is_file():
+        return extracted_path
+
+    return find_dataset_file(dataset_dir, prefer_cleaned=False)
 
 
 def get_uploaded_asset_type(dataset_id: str) -> str:

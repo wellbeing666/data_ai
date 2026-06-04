@@ -13,5 +13,7 @@ def generate_report(request: ReportGenerateRequest) -> ReportGenerateResponse:
         analysis_result_path=request.analysis_result_path,
         chart_paths=request.chart_paths,
         output_path=request.output_path,
+        include_pptx=request.include_pptx,
     )
     return ReportGenerateResponse(**result)
+

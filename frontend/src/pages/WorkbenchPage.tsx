@@ -5,6 +5,10 @@ import {
   createPredictionJobAsync,
   createPreflightAssessment,
   createSampleDataset,
+  createCleaningPlan,
+  applyCleaningPlan,
+  controlWorkflowJob,
+  createWorkflowFollowUp,
   createWorkflowJobAsync,
   deleteWorkflowChart,
   deleteWorkflowJob,
@@ -22,6 +26,7 @@ import {
   fetchWorkflowJobStatus,
   fetchWorkflowLog,
   generateReport,
+  generateWorkflowPptx,
   refineWorkflowChart,
   deleteKnowledgeDocument,
   searchKnowledge,
@@ -33,6 +38,8 @@ import type {
   AnalysisRoadmap,
   AnalysisResult,
   AutoRepairAnalysisJobResponse,
+  CleaningPlanResponse,
+  CleaningReportResponse,
   AutoRepairAttemptResult,
   DatasetProfile,
   DatasetUploadResponse,
@@ -40,6 +47,7 @@ import type {
   ExecutionLog,
   ExecutionLogEvent,
   ExplanationResult,
+  EvidenceChain,
   HealthStatus,
   KnowledgeDocument,
   KnowledgeSearchResponse,
@@ -47,12 +55,14 @@ import type {
   PredictionJobResponse,
   PredictionLogResponse,
   PredictionResult,
+  PptPreview,
   PreflightAssessment,
   QualityReview,
   ReportGenerateResponse,
   SampleDatasetResponse,
   ValidationAttemptLog,
   VisualParseResult,
+  WorkflowFollowUpResponse,
   WorkflowJobListItem,
   WorkflowJobResponse,
   WorkflowLogResponse
@@ -61,6 +71,7 @@ import type {
 import {
   ChartPreviewModal,
   ChartsPage,
+  CleaningPlanModal,
   HistoryPanel,
   InsightsPage,
   KnowledgePage,
@@ -155,6 +166,20 @@ export function WorkbenchPage() {
   const [samplePreview, setSamplePreview] = useState<SamplePreviewState | null>(null);
   const [samplePreviewGoal, setSamplePreviewGoal] = useState("");
   const [samplePreviewLoading, setSamplePreviewLoading] = useState(false);
+  const [cleaningPlan, setCleaningPlan] = useState<CleaningPlanResponse | null>(null);
+  const [cleaningReport, setCleaningReport] = useState<CleaningReportResponse | null>(null);
+  const [cleaningStrategies, setCleaningStrategies] = useState<Record<string, string>>({});
+  const [cleaningModalOpen, setCleaningModalOpen] = useState(false);
+  const [cleaningLoading, setCleaningLoading] = useState(false);
+  const [pendingAnalysisGoal, setPendingAnalysisGoal] = useState("");
+  const [evidenceChain, setEvidenceChain] = useState<EvidenceChain | null>(null);
+  const [pptPreview, setPptPreview] = useState<PptPreview | null>(null);
+  const [pptGenerating, setPptGenerating] = useState(false);
+  const [pptMessage, setPptMessage] = useState("");
+  const [followUps, setFollowUps] = useState<WorkflowFollowUpResponse[]>([]);
+  const [followUpQuestion, setFollowUpQuestion] = useState("");
+  const [followUpLoading, setFollowUpLoading] = useState(false);
+  const [jobControlLoading, setJobControlLoading] = useState<string | null>(null);
 
   useEffect(() => {
     fetchHealthStatus()
@@ -230,25 +255,32 @@ export function WorkbenchPage() {
   }, [predictionJob?.job_id, predictionJob?.status]);
 
   useEffect(() => {
+    const resultPath = job?.final_result_path || job?.final_prediction_result_path || "";
+    const predictionWorkflow = job?.workflow_type === "what_if_prediction" || job?.task_type === "what_if_prediction";
+    const resultPayload = predictionWorkflow ? predictionResult : analysisResult;
     if (
       job?.status !== "success" ||
-      !job.final_result_path ||
-      !analysisResult ||
-      reportGeneratedFor === job.job_id
+      !resultPath ||
+      !resultPayload ||
+      reportGeneratedFor === job.job_id ||
+      job.report_path
     ) {
       return;
     }
 
-    const chartPaths = getChartPaths(analysisResult, job);
-    generateReport(job.final_result_path, chartPaths)
+    const reportChartPaths = getChartPaths(resultPayload as AnalysisResult, job);
+    generateReport(resultPath, reportChartPaths)
       .then((reportData) => {
         setReport(reportData);
         setReportGeneratedFor(job.job_id);
+        if (reportData.pptx_preview_path) {
+          void refreshJsonPath<PptPreview>(reportData.pptx_preview_path, setPptPreview);
+        }
       })
       .catch(() => {
         setReportGeneratedFor(job.job_id);
       });
-  }, [analysisResult, job, reportGeneratedFor]);
+  }, [analysisResult, predictionResult, job, reportGeneratedFor]);
 
   const isFallbackMode = !health?.deepseek_configured || health.llm_mode !== "deepseek";
   const isPredictionWorkflow = job?.workflow_type === "what_if_prediction" || job?.task_type === "what_if_prediction";
@@ -450,22 +482,33 @@ export function WorkbenchPage() {
       return;
     }
     const finalGoal = samplePreviewGoal.trim() || samplePreview.sample.recommended_goal;
+    const sample = samplePreview.sample;
+    const datasetProfile = samplePreview.profile;
     clearCurrentWorkflowView();
+    setSelectedFile(null);
+    setUploadInfo(sample);
+    setProfile(datasetProfile);
+    setUserGoal(finalGoal);
+    setSamplePreview(null);
+    await prepareCleaningAndStart(sample, finalGoal, datasetProfile);
+  }
+
+  function handleSelectSampleFile() {
+    if (!samplePreview) {
+      return;
+    }
+    const finalGoal = samplePreviewGoal.trim() || samplePreview.sample.recommended_goal;
+    clearCurrentWorkflowView();
+    setSelectedFile(null);
     setUploadInfo(samplePreview.sample);
     setProfile(samplePreview.profile);
     setUserGoal(finalGoal);
     setSamplePreview(null);
-    setStatus("running");
-    setActivePage("process");
-    setMessage("示例数据已确认，Agent 分析任务已启动。");
-    try {
-      const createdJob = await createWorkflowJobAsync(samplePreview.sample.dataset_id, finalGoal, 3);
-      await applyJobUpdate(createdJob);
-    } catch (error) {
-      setStatus("failed");
-      setMessage(error instanceof Error ? error.message : "分析任务启动失败。");
-    }
+    setStatus("idle");
+    setActivePage("setup");
+    setMessage("已选中示例数据，可继续修改分析目标后启动分析。");
   }
+
 
 
   function handleCancelSamplePreview() {
@@ -574,6 +617,20 @@ export function WorkbenchPage() {
     setChartMessage("");
     setChartRefineInstructions({});
     setRefiningChartPath(null);
+    setCleaningPlan(null);
+    setCleaningReport(null);
+    setCleaningStrategies({});
+    setCleaningModalOpen(false);
+    setCleaningLoading(false);
+    setPendingAnalysisGoal("");
+    setEvidenceChain(null);
+    setPptPreview(null);
+    setPptGenerating(false);
+    setPptMessage("");
+    setFollowUps([]);
+    setFollowUpQuestion("");
+    setFollowUpLoading(false);
+    setJobControlLoading(null);
   }
 
   async function handleClearHistorySearch() {
@@ -695,6 +752,16 @@ export function WorkbenchPage() {
     setChartMessage("");
     setChartRefineInstructions({});
     setRefiningChartPath(null);
+    setCleaningPlan(null);
+    setCleaningReport(null);
+    setCleaningStrategies({});
+    setCleaningModalOpen(false);
+    setEvidenceChain(null);
+    setPptPreview(null);
+    setPptGenerating(false);
+    setPptMessage("");
+    setFollowUps([]);
+    setFollowUpQuestion("");
     if (historyItem?.dataset_id) {
       setUploadInfo({
         dataset_id: historyItem.dataset_id,
@@ -813,9 +880,22 @@ export function WorkbenchPage() {
       refreshJsonPath(nextJob.prediction_plan_path, setPredictionPlan),
       refreshJsonPath(nextJob.analysis_roadmap_path, setAnalysisRoadmap),
       refreshJsonPath(nextJob.quality_review_path, setQualityReview),
+      refreshJsonPath(nextJob.cleaning_report_path, setCleaningReport),
+      refreshJsonPath<EvidenceChain>(nextJob.evidence_chain_path, setEvidenceChain),
+      refreshJsonPath<PptPreview>(nextJob.pptx_preview_path, setPptPreview),
       refreshPredictionResult(nextJob.final_prediction_result_path),
       refreshPredictionExplanation(nextJob.prediction_explanation_path)
     ]);
+
+    if (nextJob.report_path || nextJob.pptx_path) {
+      setReport({
+        report_path: nextJob.report_path || "",
+        analysis_result_path: nextJob.final_prediction_result_path || "",
+        chart_paths: nextJob.chart_paths || [],
+        pptx_path: nextJob.pptx_path || null,
+        pptx_preview_path: nextJob.pptx_preview_path || null
+      });
+    }
 
     if (terminalStatuses.has(nextJob.status)) {
       void refreshWorkflowHistory();
@@ -928,49 +1008,89 @@ export function WorkbenchPage() {
       return;
     }
 
+    clearCurrentWorkflowView();
     setStatus("uploading");
     setActivePage("process");
-    setMessage("正在准备数据并创建分析任务。");
-    setJob(null);
-    setExecutionLog(null);
-    setAnalysisResult(null);
-    setControllerPlan(null);
-    setRagRetrieval(null);
-    setDataUnderstanding(null);
-    setAnalysisPlan(null);
-    setAnalysisRoadmap(null);
-    setQualityReview(null);
-    setVisualParseResult(null);
-    setExplanation(emptyExplanation);
-    setReport(null);
-    setReportGeneratedFor("");
-    setPredictionJob(null);
-    setPredictionLog(null);
-    setPredictionResult(null);
-    setPredictionExplanation(emptyPredictionExplanation);
-    setHypothesisPlan(null);
-    setPredictionPlan(null);
-    setPredictionStatus("idle");
-    setPredictionMessage("");
-    setHiddenChartPaths([]);
-    setChartRefreshToken(0);
-    setChartPreviewPath(null);
-    setChartMessage("");
-    setChartRefineInstructions({});
-    setRefiningChartPath(null);
+    setMessage("正在准备数据并检查数据质量。");
 
     try {
       const uploaded = await ensureAnalysisDataset();
       setUserGoal(effectiveGoal);
-      setStatus("running");
-      setMessage("任务已启动，Agent 状态将实时刷新。");
-      const createdJob = await createWorkflowJobAsync(uploaded.dataset_id, effectiveGoal, 3);
+      await prepareCleaningAndStart(uploaded, effectiveGoal);
+    } catch (error) {
+      setStatus("failed");
+      setMessage(error instanceof Error ? error.message : "分析任务启动失败。");
+    }
+  }
+
+  async function prepareCleaningAndStart(dataset: DatasetUploadResponse, effectiveGoal: string, knownProfile?: DatasetProfile) {
+    setPendingAnalysisGoal(effectiveGoal);
+    setCleaningLoading(true);
+    setMessage("正在检查数据质量并生成修复建议。");
+    try {
+      const plan = await createCleaningPlan(dataset.dataset_id);
+      setCleaningPlan(plan);
+      setCleaningReport(null);
+      setCleaningStrategies({ ...plan.recommended_strategy_ids });
+      setCleaningModalOpen(true);
+      if (knownProfile) {
+        setProfile(knownProfile);
+      }
+      setStatus("idle");
+      setMessage(plan.has_issues ? "请先确认数据修复策略，确认后再继续分析。" : "当前数据文件未发现明显质量问题，请确认后继续分析。");
+    } catch (error) {
+      setStatus("failed");
+      setMessage(error instanceof Error ? error.message : "数据质量检查失败，请稍后重试。");
+    } finally {
+      setCleaningLoading(false);
+    }
+  }
+
+  async function handleConfirmCleaningAndRun() {
+    if (!uploadInfo?.dataset_id || !cleaningPlan) {
+      setMessage("请先选择数据并生成修复建议。");
+      return;
+    }
+    const effectiveGoal = pendingAnalysisGoal || userGoal.trim();
+    if (!effectiveGoal) {
+      setMessage("请输入自然语言分析目标。");
+      return;
+    }
+
+    if (cleaningPlan.has_issues && !cleaningReport && cleaningPlan.source_file) {
+      setCleaningLoading(true);
+      setMessage("正在按照已选择策略生成清洗后数据。");
+      try {
+        const reportData = await applyCleaningPlan(uploadInfo.dataset_id, cleaningStrategies);
+        setCleaningReport(reportData);
+        setProfile(await fetchDatasetProfile(uploadInfo.dataset_id));
+        setMessage("清洗后数据已生成，可预览并下载，确认后继续分析。");
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : "数据修复失败，请调整策略后重试。");
+      } finally {
+        setCleaningLoading(false);
+      }
+      return;
+    }
+
+    setCleaningModalOpen(false);
+    setStatus("running");
+    setActivePage("process");
+    setMessage("任务已启动，Agent 状态将实时刷新。");
+    try {
+      const createdJob = await createWorkflowJobAsync(uploadInfo.dataset_id, effectiveGoal, 3);
       await applyJobUpdate(createdJob);
     } catch (error) {
       setStatus("failed");
       setMessage(error instanceof Error ? error.message : "分析任务启动失败。");
     }
   }
+
+  function handleCleaningStrategyChange(issueId: string, strategyId: string) {
+    setCleaningStrategies((current) => ({ ...current, [issueId]: strategyId }));
+    setCleaningReport(null);
+  }
+
 
   async function applyJobUpdate(nextJob: WorkflowJobResponse) {
     setJob(nextJob);
@@ -993,6 +1113,9 @@ export function WorkbenchPage() {
       refreshJsonPath(nextJob.analysis_plan_path, setAnalysisPlan),
       refreshJsonPath(nextJob.analysis_roadmap_path, setAnalysisRoadmap),
       refreshJsonPath(nextJob.quality_review_path, setQualityReview),
+      refreshJsonPath(nextJob.cleaning_report_path, setCleaningReport),
+      refreshJsonPath<EvidenceChain>(nextJob.evidence_chain_path, setEvidenceChain),
+      refreshJsonPath<PptPreview>(nextJob.pptx_preview_path, setPptPreview),
       refreshAnalysisResult(nextJob.final_result_path),
       refreshExplanation(nextJob.explanation_path),
       refreshJsonPath(nextJob.hypothesis_plan_path, setHypothesisPlan),
@@ -1000,6 +1123,16 @@ export function WorkbenchPage() {
       refreshPredictionResult(nextJob.final_prediction_result_path),
       refreshPredictionExplanation(nextJob.prediction_explanation_path)
     ]);
+
+    if (nextJob.report_path || nextJob.pptx_path) {
+      setReport({
+        report_path: nextJob.report_path || "",
+        analysis_result_path: nextJob.final_result_path || nextJob.final_prediction_result_path || "",
+        chart_paths: nextJob.chart_paths || [],
+        pptx_path: nextJob.pptx_path || null,
+        pptx_preview_path: nextJob.pptx_preview_path || null
+      });
+    }
 
     if (terminalStatuses.has(nextJob.status)) {
       void refreshWorkflowHistory();
@@ -1125,6 +1258,87 @@ export function WorkbenchPage() {
       await applyJobUpdate(latest);
     } catch (error) {
       setChartMessage(error instanceof Error ? error.message : "删除图表失败。");
+    }
+  }
+
+  async function handleControlJob(action: string) {
+    if (!job?.job_id) {
+      setMessage("请先启动或打开一个分析任务。");
+      return;
+    }
+    setJobControlLoading(action);
+    try {
+      const response = await controlWorkflowJob(job.job_id, action);
+      setMessage(response.message);
+      if (action.startsWith("rerun")) {
+        setStatus("running");
+        setReport(null);
+        setReportGeneratedFor("");
+        setPptPreview(null);
+        setPptMessage("");
+        setActivePage("process");
+      }
+      const latest = await fetchWorkflowJobStatus(job.job_id);
+      await applyJobUpdate(latest);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "任务控制操作未完成，请稍后重试。");
+    } finally {
+      setJobControlLoading(null);
+    }
+  }
+
+  async function handleGeneratePptx() {
+    if (!job?.job_id) {
+      setMessage("请先打开一个已完成的分析任务。");
+      return;
+    }
+    if (job.status !== "success") {
+      setMessage("请等待分析完成后再生成 PPTX。");
+      return;
+    }
+    setPptGenerating(true);
+    setPptMessage("正在生成 PPTX，请稍候。");
+    try {
+      const result = await generateWorkflowPptx(job.job_id);
+      setPptMessage(result.message || "PPTX 已生成。");
+      setReport((current) => ({
+        report_path: current?.report_path || job.report_path || "",
+        analysis_result_path: current?.analysis_result_path || job.final_result_path || job.final_prediction_result_path || "",
+        chart_paths: current?.chart_paths || job.chart_paths || [],
+        pptx_path: result.pptx_path || current?.pptx_path || null,
+        pptx_preview_path: result.pptx_preview_path || current?.pptx_preview_path || null
+      }));
+      if (result.pptx_preview_path) {
+        await refreshJsonPath<PptPreview>(result.pptx_preview_path, setPptPreview);
+      }
+      const latest = await fetchWorkflowJobStatus(job.job_id);
+      await applyJobUpdate(latest);
+    } catch (error) {
+      setPptMessage(error instanceof Error ? error.message : "PPTX 生成未完成，请稍后重试。");
+    } finally {
+      setPptGenerating(false);
+    }
+  }
+
+
+  async function handleSubmitFollowUp() {
+    if (!job?.job_id) {
+      setMessage("请先完成或打开一个分析任务后再继续追问。");
+      return;
+    }
+    const question = followUpQuestion.trim();
+    if (!question) {
+      return;
+    }
+    setFollowUpLoading(true);
+    try {
+      const result = await createWorkflowFollowUp(job.job_id, question);
+      setFollowUps((current) => [result, ...current]);
+      setFollowUpQuestion("");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "追问分析未完成，请调整问题后重试。");
+    } finally {
+      setFollowUpLoading(false);
     }
   }
 
@@ -1326,6 +1540,8 @@ export function WorkbenchPage() {
               qualityReview={qualityReview}
               isPredictionWorkflow={isPredictionWorkflow}
               events={events}
+              onControlJob={handleControlJob}
+              controlLoadingAction={jobControlLoading}
             />
           ) : null}
 
@@ -1352,8 +1568,18 @@ export function WorkbenchPage() {
           {activePage === "insights" ? (
             <InsightsPage
               explanation={isPredictionWorkflow ? toExplanationResult(predictionExplanation) : normalizeExplanationResult(explanation)}
-              report={isPredictionWorkflow ? null : report}
+              report={report}
               job={job}
+              evidenceChain={evidenceChain}
+              pptPreview={pptPreview}
+              followUps={followUps}
+              followUpQuestion={followUpQuestion}
+              followUpLoading={followUpLoading}
+              pptGenerating={pptGenerating}
+              pptMessage={pptMessage}
+              onGeneratePptx={handleGeneratePptx}
+              onFollowUpQuestionChange={setFollowUpQuestion}
+              onSubmitFollowUp={handleSubmitFollowUp}
             />
           ) : null}
 
@@ -1371,7 +1597,23 @@ export function WorkbenchPage() {
           goal={samplePreviewGoal}
           onGoalChange={setSamplePreviewGoal}
           onConfirm={handleConfirmSampleAnalysis}
+          onSelect={handleSelectSampleFile}
           onCancel={handleCancelSamplePreview}
+        />
+      ) : null}
+      {cleaningModalOpen && cleaningPlan ? (
+        <CleaningPlanModal
+          plan={cleaningPlan}
+          report={cleaningReport}
+          selectedStrategies={cleaningStrategies}
+          loading={cleaningLoading}
+          onStrategyChange={handleCleaningStrategyChange}
+          onConfirm={handleConfirmCleaningAndRun}
+          onClose={() => {
+            setCleaningModalOpen(false);
+            setStatus("idle");
+            setMessage("已暂停分析，可调整数据或目标后重新启动。");
+          }}
         />
       ) : null}
       {chartPreviewPath ? (
@@ -1385,6 +1627,8 @@ export function WorkbenchPage() {
     </main>
   );
 }
+
+
 
 
 

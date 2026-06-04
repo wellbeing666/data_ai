@@ -16,9 +16,12 @@ from app.sandbox.code_safety import validate_script_static_safety
 from app.sandbox.local_executor import LocalSubprocessSandboxExecutor
 from app.services.dataset_profile import generate_dataset_profile
 from app.services.dataset_reader import load_uploaded_dataset
+from app.services.evidence_service import build_evidence_chain, merge_evidence_into_quality_review
 from app.services.execution_log_service import create_event, write_execution_log
+from app.services.job_control_service import JobCancelled, checkpoint_job_control
 from app.services.prediction_validation_service import validate_prediction_outputs
 from app.services.rag_service import format_rag_context, get_rag_service
+from app.services.report_service import generate_markdown_report
 
 
 JOB_ROOT = Path("storage/jobs")
@@ -64,6 +67,23 @@ def run_prediction_job_background(
             max_retries=max_retries,
             timeout_seconds=timeout_seconds,
             job_id=job_id,
+        )
+    except JobCancelled:
+        job_dir = (JOB_ROOT / job_id).resolve()
+        current_status = _read_json_if_exists(job_dir / "prediction_task_status.json") or {}
+        events = _event_list(current_status.get("events"))
+        events.append(create_event("cancelled", "cancelled", "情景预测任务已取消。"))
+        _write_progress(
+            job_dir=job_dir,
+            job_id=job_id,
+            dataset_id=dataset_id,
+            user_goal=user_goal,
+            status_value="cancelled",
+            current_stage="cancelled",
+            attempts=_dict_list(current_status.get("attempts")),
+            events=events,
+            max_retries=min(max_retries, MAX_RETRIES),
+            timeout_seconds=timeout_seconds,
         )
     except Exception as exc:  # pragma: no cover
         job_dir = (JOB_ROOT / job_id).resolve()
@@ -124,8 +144,14 @@ def run_prediction_job(
     final_validation_result_path = None
     prediction_explanation_path = None
     quality_review_path = None
+    evidence_chain_path = None
+    cleaning_report_path = None
+    report_path = None
+    pptx_path = None
+    pptx_preview_path = None
 
     def progress(stage: str, message: str) -> None:
+        checkpoint_job_control(job_dir)
         events.append(create_event(stage, "running", message))
         write_stage_snapshot(stage)
 
@@ -150,6 +176,11 @@ def run_prediction_job(
             final_validation_result_path=final_validation_result_path,
             prediction_explanation_path=prediction_explanation_path,
             quality_review_path=quality_review_path,
+            evidence_chain_path=evidence_chain_path,
+            cleaning_report_path=cleaning_report_path,
+            report_path=report_path,
+            pptx_path=pptx_path,
+            pptx_preview_path=pptx_preview_path,
             dataset_profile_path=existing_job_file("dataset_profile.json"),
             rag_retrieval_path=existing_job_file("rag_retrieval.json"),
             hypothesis_plan_path=existing_job_file("hypothesis_plan.json"),
@@ -159,6 +190,10 @@ def run_prediction_job(
     progress("loading_dataset", "正在读取上传数据并生成数据画像。")
     input_file, _df = load_uploaded_dataset(dataset_id)
     input_file = input_file.resolve()
+    source_cleaning_report = input_file.parent / "cleaning_report.json"
+    if source_cleaning_report.exists():
+        cleaning_report_path = str(job_dir / "cleaning_report.json")
+        shutil.copy2(source_cleaning_report, job_dir / "cleaning_report.json")
     dataset_profile = generate_dataset_profile(dataset_id)
     _write_json(job_dir / "dataset_profile.json", dataset_profile)
 
@@ -197,6 +232,7 @@ def run_prediction_job(
     status_value = "failed"
 
     for attempt in range(1, total_attempts + 1):
+        checkpoint_job_control(job_dir)
         events.append(create_event("code_generation", "running", f"预测 Code Agent 正在生成第 {attempt} 次脚本。", attempt=attempt))
         write_stage_snapshot("code_generation")
         script_path = job_dir / f"generated_prediction_script_attempt_{attempt}.py.txt"
@@ -320,6 +356,7 @@ def run_prediction_job(
         shutil.copy2(job_dir / "execution_result.json", execution_attempt_path)
         events.append(create_event("sandbox", "success" if execution_result.get("success") else "failed", "沙箱已完成预测脚本执行。", attempt=attempt))
         write_stage_snapshot("sandbox")
+        checkpoint_job_control(job_dir)
 
         events.append(create_event("validation", "running", f"预测验证 Agent 正在检查第 {attempt} 次产物。", attempt=attempt))
         write_stage_snapshot("validation")
@@ -361,6 +398,15 @@ def run_prediction_job(
         )
         prediction_explanation_path = str(job_dir / "prediction_explanation.json")
         _write_json(job_dir / "prediction_explanation.json", explanation)
+        evidence_chain = build_evidence_chain(
+            job_dir=job_dir,
+            explanation=explanation,
+            result_payload=prediction_result,
+            report_data=_read_json_if_exists(job_dir / "report_data.json") or {},
+            prediction_result=prediction_result,
+            chart_paths=[str(path) for path in chart_paths],
+        )
+        evidence_chain_path = str(job_dir / "evidence_chain.json")
         events.append(create_event("explanation", "success", "预测解释 Agent 已生成结论。"))
 
         events.append(create_event("quality_review", "running", "质检 Agent 正在审查预测结论、证据链和不确定性表述。"))
@@ -379,6 +425,8 @@ def run_prediction_job(
             final_report_data_path=final_report_data_path,
             final_validation_result_path=final_validation_result_path,
             prediction_explanation_path=prediction_explanation_path,
+            evidence_chain_path=evidence_chain_path,
+            cleaning_report_path=cleaning_report_path,
             dataset_profile_path=str(job_dir / "dataset_profile.json"),
             rag_retrieval_path=str(job_dir / "rag_retrieval.json"),
             hypothesis_plan_path=str(job_dir / "hypothesis_plan.json"),
@@ -394,6 +442,7 @@ def run_prediction_job(
             chart_paths=[str(path) for path in chart_paths],
             workflow_type="what_if_prediction",
         )
+        quality_review = merge_evidence_into_quality_review(quality_review, evidence_chain)
         quality_review_path = str(job_dir / "quality_review.json")
         _write_json(job_dir / "quality_review.json", quality_review)
         events.append(create_event(
@@ -401,6 +450,11 @@ def run_prediction_job(
             "success" if quality_review.get("passed") else "warning",
             "质检 Agent 已完成预测结论审查。",
         ))
+        report_result = generate_markdown_report(final_prediction_result_path, [str(path) for path in chart_paths], include_pptx=True)
+        report_path = report_result.get("report_path")
+        pptx_path = report_result.get("pptx_path")
+        pptx_preview_path = report_result.get("pptx_preview_path")
+        events.append(create_event("report", "success", "预测报告和 PPTX 已生成。"))
 
     events.append(create_event("success" if status_value == "success" else "failed", status_value, "情景预测任务已完成。" if status_value == "success" else "情景预测任务失败。"))
     return _write_progress(
@@ -419,6 +473,11 @@ def run_prediction_job(
         final_validation_result_path=final_validation_result_path,
         prediction_explanation_path=prediction_explanation_path,
         quality_review_path=quality_review_path,
+        evidence_chain_path=evidence_chain_path,
+        cleaning_report_path=cleaning_report_path,
+        report_path=report_path,
+        pptx_path=pptx_path,
+        pptx_preview_path=pptx_preview_path,
         dataset_profile_path=str(job_dir / "dataset_profile.json"),
         rag_retrieval_path=str(job_dir / "rag_retrieval.json"),
         hypothesis_plan_path=str(job_dir / "hypothesis_plan.json"),
@@ -443,6 +502,11 @@ def _write_progress(
     final_validation_result_path: str | None = None,
     prediction_explanation_path: str | None = None,
     quality_review_path: str | None = None,
+    evidence_chain_path: str | None = None,
+    cleaning_report_path: str | None = None,
+    report_path: str | None = None,
+    pptx_path: str | None = None,
+    pptx_preview_path: str | None = None,
     dataset_profile_path: str | None = None,
     rag_retrieval_path: str | None = None,
     hypothesis_plan_path: str | None = None,
@@ -466,6 +530,11 @@ def _write_progress(
         "prediction_plan_path": prediction_plan_path,
         "prediction_explanation_path": prediction_explanation_path,
         "quality_review_path": quality_review_path,
+        "evidence_chain_path": evidence_chain_path,
+        "cleaning_report_path": cleaning_report_path,
+        "report_path": report_path,
+        "pptx_path": pptx_path,
+        "pptx_preview_path": pptx_preview_path,
         "effective_max_retries": max_retries,
         "timeout_seconds": timeout_seconds,
         "events": events,
@@ -509,6 +578,11 @@ def _build_execution_log(status_data: dict[str, Any]) -> dict[str, Any]:
             "validation_result": status_data.get("final_validation_result_path"),
             "prediction_explanation": status_data.get("prediction_explanation_path"),
             "quality_review": status_data.get("quality_review_path"),
+            "evidence_chain": status_data.get("evidence_chain_path"),
+            "cleaning_report": status_data.get("cleaning_report_path"),
+            "report": status_data.get("report_path"),
+            "pptx": status_data.get("pptx_path"),
+            "pptx_preview": status_data.get("pptx_preview_path"),
         },
         "events": _event_list(status_data.get("events")),
     }
@@ -526,6 +600,11 @@ def _normalize_status_payload(data: dict[str, Any]) -> dict[str, Any]:
             "prediction_plan_path": _existing_or_none(data.get("prediction_plan_path"), job_dir / "prediction_plan.json"),
             "prediction_explanation_path": _existing_or_none(data.get("prediction_explanation_path"), job_dir / "prediction_explanation.json") if expose_final_outputs else None,
             "quality_review_path": _existing_or_none(data.get("quality_review_path"), job_dir / "quality_review.json") if expose_final_outputs else None,
+            "evidence_chain_path": _existing_or_none(data.get("evidence_chain_path"), job_dir / "evidence_chain.json") if expose_final_outputs else None,
+            "cleaning_report_path": _existing_or_none(data.get("cleaning_report_path"), job_dir / "cleaning_report.json"),
+            "report_path": _existing_or_none(data.get("report_path"), job_dir / "report.md") if expose_final_outputs else None,
+            "pptx_path": _existing_or_none(data.get("pptx_path"), job_dir / "report.pptx") if expose_final_outputs else None,
+            "pptx_preview_path": _existing_or_none(data.get("pptx_preview_path"), job_dir / "pptx_preview.json") if expose_final_outputs else None,
             "final_prediction_result_path": _existing_or_none(data.get("final_prediction_result_path"), job_dir / "prediction_result.json") if expose_final_outputs else None,
             "final_report_data_path": _existing_or_none(data.get("final_report_data_path"), job_dir / "report_data.json") if expose_final_outputs else None,
             "final_validation_result_path": _existing_or_none(data.get("final_validation_result_path"), job_dir / "prediction_validation_result.json"),
@@ -545,6 +624,11 @@ def _normalize_status_payload(data: dict[str, Any]) -> dict[str, Any]:
         "prediction_plan_path": data.get("prediction_plan_path"),
         "prediction_explanation_path": data.get("prediction_explanation_path"),
         "quality_review_path": data.get("quality_review_path"),
+        "evidence_chain_path": data.get("evidence_chain_path"),
+        "cleaning_report_path": data.get("cleaning_report_path"),
+        "report_path": data.get("report_path"),
+        "pptx_path": data.get("pptx_path"),
+        "pptx_preview_path": data.get("pptx_preview_path"),
         "effective_max_retries": data.get("effective_max_retries"),
         "events": _event_list(data.get("events")),
         "error": data.get("error") if isinstance(data.get("error"), dict) else None,
@@ -644,6 +728,9 @@ def _existing_or_none(value: Any, fallback_path: Path) -> str | None:
     if isinstance(value, str) and value:
         return value
     return str(fallback_path) if fallback_path.exists() else None
+
+
+
 
 
 

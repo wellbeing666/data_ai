@@ -250,19 +250,47 @@ def _run_command(
 ) -> subprocess.CompletedProcess[str]:
     kwargs: dict[str, Any] = {
         "cwd": str(job_dir),
-        "capture_output": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
         "text": True,
         "encoding": "utf-8",
         "errors": "replace",
         "env": env,
-        "timeout": timeout_seconds,
-        "check": False,
     }
     creation_flags = _subprocess_creation_flags()
     if creation_flags:
         kwargs["creationflags"] = creation_flags
 
-    return subprocess.run(command, **kwargs)
+    process = subprocess.Popen(command, **kwargs)
+    deadline = time.monotonic() + max(1, timeout_seconds)
+    while process.poll() is None:
+        if _job_cancel_requested(job_dir):
+            process.terminate()
+            try:
+                stdout, stderr = process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+            stderr = ((stderr or "") + "\n任务已取消。").strip()
+            return subprocess.CompletedProcess(command, 130, stdout or "", stderr)
+        if time.monotonic() > deadline:
+            process.kill()
+            stdout, stderr = process.communicate()
+            raise subprocess.TimeoutExpired(command, timeout_seconds, output=stdout, stderr=stderr)
+        time.sleep(0.2)
+    stdout, stderr = process.communicate()
+    return subprocess.CompletedProcess(command, process.returncode, stdout or "", stderr or "")
+
+
+def _job_cancel_requested(job_dir: Path) -> bool:
+    control_path = job_dir / "job_control.json"
+    if not control_path.exists():
+        return False
+    try:
+        data = json.loads(control_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(isinstance(data, dict) and data.get("cancel_requested"))
 
 
 def _subprocess_creation_flags() -> int:
@@ -428,5 +456,6 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
 
 

@@ -1,24 +1,31 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 
 import { toStorageUrl } from "../api";
 import type {
   AnalysisRoadmap,
   AnalysisResult,
+  CleaningPlanResponse,
+  CleaningReportResponse,
   DatasetProfile,
   ExecutionAttemptLog,
   ExecutionLogEvent,
   ExplanationResult,
+  EvidenceChain,
+  EvidenceFinding,
   HealthStatus,
   KnowledgeDocument,
   KnowledgeSearchResponse,
   PredictionExplanationResult,
   PredictionResult,
+  PptPreview,
   PreflightAssessment,
   QualityReview,
   ReportGenerateResponse,
   SampleDatasetResponse,
   ValidationAttemptLog,
   VisualParseResult,
+  WorkflowFollowUpResponse,
   WorkflowJobListItem,
   WorkflowJobResponse,
   WorkflowLogResponse
@@ -145,6 +152,7 @@ export function SamplePreviewModal({
   goal,
   onGoalChange,
   onConfirm,
+  onSelect,
   onCancel
 }: {
   sample: SampleDatasetResponse;
@@ -154,6 +162,7 @@ export function SamplePreviewModal({
   goal: string;
   onGoalChange: (goal: string) => void;
   onConfirm: () => void;
+  onSelect: () => void;
   onCancel: () => void;
 }) {
   const visibleColumns = columns.slice(0, 10);
@@ -220,6 +229,9 @@ export function SamplePreviewModal({
           <a className="secondary-button sample-download-link" href={toStorageUrl(sample.file_path)} download>
             下载 CSV
           </a>
+          <button className="secondary-button" type="button" onClick={onSelect}>
+            选中该文件
+          </button>
           <button className="secondary-button" type="button" onClick={onCancel}>
             暂不分析
           </button>
@@ -347,8 +359,22 @@ export function RoadmapPage({
             <p>{roadmap.summary}</p>
           </article>
           <article className="info-card roadmap-rendered-card">
-            <strong>可视化执行路线</strong>
-            <RoadmapRenderedDiagram steps={roadmap.steps} />
+            <div className="roadmap-rendered-head">
+              <strong>可视化执行路线</strong>
+              <span>{roadmap.graph_type || "flowchart"}</span>
+            </div>
+            {roadmap.mermaid_code ? (
+              <MermaidDiagram code={roadmap.mermaid_code} steps={roadmap.steps} />
+            ) : (
+              <RoadmapRenderedDiagram steps={roadmap.steps} />
+            )}
+            {roadmap.dot_code || roadmap.mermaid_code ? (
+              <details className="raw-json-details compact roadmap-code-details">
+                <summary>查看流程图代码</summary>
+                {roadmap.mermaid_code ? <pre>{roadmap.mermaid_code}</pre> : null}
+                {roadmap.dot_code ? <pre>{roadmap.dot_code}</pre> : null}
+              </details>
+            ) : null}
           </article>
         </>
       ) : (
@@ -357,6 +383,7 @@ export function RoadmapPage({
     </section>
   );
 }
+
 
 export function RoadmapRenderedDiagram({ steps }: { steps: AnalysisRoadmap["steps"] }) {
   return (
@@ -401,33 +428,67 @@ function composeOptimizedGoal(assessment: PreflightAssessment, selectedOptions: 
     .join(" ");
 }
 
-export function MermaidDiagram({ code }: { code: string }) {
-  const nodes = parseMermaidFlowchart(code);
+export function MermaidDiagram({ code, steps }: { code: string; steps?: AnalysisRoadmap["steps"] }) {
+  const graph = useMemo(() => parseMermaidFlowchart(code, steps ?? []), [code, steps]);
 
-  if (!nodes.length) {
+  if (!graph.nodes.length) {
     return <pre className="mermaid-diagram mermaid-code-fallback">{code}</pre>;
   }
 
+  const nodeWidth = 270;
+  const nodeHeight = 82;
+  const gap = 42;
+  const padding = 28;
+  const width = nodeWidth + padding * 2;
+  const height = padding * 2 + graph.nodes.length * nodeHeight + Math.max(0, graph.nodes.length - 1) * gap;
+
   return (
-    <div className="mermaid-diagram mermaid-flow-render">
-      {nodes.map((node, index) => (
-        <div className="mermaid-flow-node-wrap" key={node.id}>
-          <div className="mermaid-flow-node">
-            <span>{index + 1}</span>
-            <div>
-              <strong>{node.title}</strong>
-              {node.agent ? <small>{node.agent}</small> : null}
-            </div>
-          </div>
-          {index < nodes.length - 1 ? <div className="mermaid-flow-edge">↓</div> : null}
-        </div>
-      ))}
+    <div className="mermaid-diagram roadmap-svg-frame" aria-label="流程图渲染结果">
+      <svg viewBox={`0 0 ${width} ${height}`} role="img">
+        <defs>
+          <marker id="roadmap-arrow" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto" markerUnits="strokeWidth">
+            <path d="M 0 0 L 10 5 L 0 10 z" />
+          </marker>
+        </defs>
+        {graph.nodes.map((node, index) => {
+          const x = padding;
+          const y = padding + index * (nodeHeight + gap);
+          const isFirst = index === 0;
+          const isLast = index === graph.nodes.length - 1;
+          return (
+            <g key={node.id}>
+              {index > 0 ? (
+                <line
+                  x1={width / 2}
+                  y1={y - gap + 8}
+                  x2={width / 2}
+                  y2={y - 10}
+                  className="roadmap-svg-edge"
+                  markerEnd="url(#roadmap-arrow)"
+                />
+              ) : null}
+              <rect
+                x={x}
+                y={y}
+                width={nodeWidth}
+                height={nodeHeight}
+                rx={isFirst || isLast ? 38 : 18}
+                className={isFirst || isLast ? "roadmap-svg-node endpoint" : "roadmap-svg-node"}
+              />
+              <circle cx={x + 34} cy={y + 41} r="18" className="roadmap-svg-index" />
+              <text x={x + 34} y={y + 46} textAnchor="middle" className="roadmap-svg-index-text">{index + 1}</text>
+              <text x={x + 64} y={y + 32} className="roadmap-svg-title">{node.title}</text>
+              <text x={x + 64} y={y + 55} className="roadmap-svg-agent">{node.agent || node.stage || "Agent"}</text>
+            </g>
+          );
+        })}
+      </svg>
     </div>
   );
 }
 
-function parseMermaidFlowchart(code: string): Array<{ id: string; title: string; agent: string }> {
-  const nodes = new Map<string, { id: string; title: string; agent: string }>();
+function parseMermaidFlowchart(code: string, fallbackSteps: AnalysisRoadmap["steps"]): { nodes: Array<{ id: string; title: string; agent: string; stage?: string }> } {
+  const nodes = new Map<string, { id: string; title: string; agent: string; stage?: string }>();
   const order: string[] = [];
 
   code.split(/\r?\n/).forEach((line) => {
@@ -445,10 +506,6 @@ function parseMermaidFlowchart(code: string): Array<{ id: string; title: string;
     nodes.set(id, { id, title, agent });
   });
 
-  if (!order.length) {
-    return [];
-  }
-
   const edgeOrder: string[] = [];
   code.split(/\r?\n/).forEach((line) => {
     const edgeMatch = line.match(/^\s*([A-Za-z0-9_]+)\s*--?>\s*([A-Za-z0-9_]+)\s*$/);
@@ -465,8 +522,20 @@ function parseMermaidFlowchart(code: string): Array<{ id: string; title: string;
   });
 
   const finalOrder = edgeOrder.length ? edgeOrder : order;
-  return finalOrder.map((id) => nodes.get(id)).filter((node): node is { id: string; title: string; agent: string } => Boolean(node));
+  const parsedNodes = finalOrder.map((id) => nodes.get(id)).filter((node): node is { id: string; title: string; agent: string; stage?: string } => Boolean(node));
+  if (parsedNodes.length) {
+    return { nodes: parsedNodes };
+  }
+  return {
+    nodes: (fallbackSteps || []).map((step, index) => ({
+      id: step.step_id || `S${index + 1}`,
+      title: step.title || `步骤 ${index + 1}`,
+      agent: step.agent || "Agent",
+      stage: step.stage
+    }))
+  };
 }
+
 
 
 
@@ -947,7 +1016,9 @@ export function ProcessPage({
   explanation,
   qualityReview,
   isPredictionWorkflow,
-  events
+  events,
+  onControlJob,
+  controlLoadingAction
 }: {
   job: WorkflowJobResponse | null;
   log: WorkflowLogResponse | null;
@@ -963,6 +1034,8 @@ export function ProcessPage({
   qualityReview: QualityReview | null;
   isPredictionWorkflow: boolean;
   events: ExecutionLogEvent[];
+  onControlJob?: (action: string) => void;
+  controlLoadingAction?: string | null;
 }) {
   const cards = buildAgentCards({
     job,
@@ -987,10 +1060,19 @@ export function ProcessPage({
 
   return (
     <section className="page-section">
-      <div className="section-heading">
-        <h2>Agent 对话过程</h2>
-        {job ? <span>{workflowLabel(job.workflow_type || job.task_type)} · Job {job.job_id}</span> : <span>等待任务启动</span>}
+      <div className="section-heading process-heading">
+        <div>
+          <h2>Agent 对话过程</h2>
+          {job ? <span>{workflowLabel(job.workflow_type || job.task_type)} · Job {job.job_id}</span> : <span>等待任务启动</span>}
+        </div>
       </div>
+      {job && onControlJob ? (
+        <JobControlDock
+          job={job}
+          loadingAction={controlLoadingAction || null}
+          onControlJob={onControlJob}
+        />
+      ) : null}
       <div className="agent-chat-list">
         {cards.length ? (
           cards.map((card) => <AgentMessageCard card={card} key={card.key} />)
@@ -1003,6 +1085,122 @@ export function ProcessPage({
     </section>
   );
 }
+
+type JobControlAction = {
+  action: string;
+  label: string;
+  kind?: "danger" | "primary";
+  disabled?: boolean;
+};
+
+function JobControlDock({
+  job,
+  loadingAction,
+  onControlJob
+}: {
+  job: WorkflowJobResponse;
+  loadingAction: string | null;
+  onControlJob: (action: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ top: 160, left: Math.max(24, window.innerWidth - 92) });
+  const [dragging, setDragging] = useState(false);
+  const dragMovedRef = useRef(false);
+  const statusValue = job.status || "pending";
+  const controlState = job.control_state ?? {};
+  const paused = Boolean(controlState.pause_requested) || controlState.control_status === "paused";
+  const active = statusValue === "pending" || statusValue === "running";
+  const terminal = ["success", "failed", "cancelled"].includes(statusValue);
+  const canRerunAgent = statusValue === "success";
+  const actions: JobControlAction[] = [
+    { action: "pause", label: "暂停", disabled: !active || paused },
+    { action: "resume", label: "继续", kind: "primary", disabled: !paused },
+    { action: "cancel", label: "取消", kind: "danger", disabled: !active && !paused },
+    { action: "rerun_all", label: "完整重跑", disabled: !terminal },
+    { action: "rerun_failed", label: "失败处重跑", disabled: !terminal },
+    { action: "rerun_explanation", label: "只重跑解释", disabled: !canRerunAgent },
+    { action: "rerun_charts", label: "只重跑图表", disabled: !canRerunAgent },
+    { action: "rerun_quality", label: "只重跑质检", disabled: !canRerunAgent }
+  ];
+
+  const startDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const originX = event.clientX;
+    const originY = event.clientY;
+    const startLeft = position.left;
+    const startTop = position.top;
+    setDragging(true);
+    dragMovedRef.current = false;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const onMove = (moveEvent: PointerEvent) => {
+      const deltaX = moveEvent.clientX - originX;
+      const deltaY = moveEvent.clientY - originY;
+      if (Math.abs(deltaX) + Math.abs(deltaY) > 4) {
+        dragMovedRef.current = true;
+      }
+      setPosition({
+        left: Math.min(Math.max(12, startLeft + deltaX), Math.max(12, window.innerWidth - 72)),
+        top: Math.min(Math.max(80, startTop + deltaY), Math.max(90, window.innerHeight - 72))
+      });
+    };
+    const onUp = () => {
+      setDragging(false);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  };
+
+  const toggleOpen = () => {
+    if (dragMovedRef.current) {
+      dragMovedRef.current = false;
+      return;
+    }
+    setOpen((value) => !value);
+  };
+
+  return (
+    <div
+      className={`job-control-dock ${open ? "open" : ""} ${dragging ? "dragging" : ""}`}
+      style={{ top: position.top, left: position.left }}
+    >
+      {open ? (
+        <div className="job-control-float-panel" role="dialog" aria-label="任务控制面板">
+          <div className="job-control-float-head">
+            <strong>任务控制</strong>
+            <span>{statusLabel(statusValue)} · {stageLabel(job.current_stage || statusValue)}</span>
+          </div>
+          {controlState.control_message ? <p>{String(controlState.control_message)}</p> : null}
+          <div className="job-control-float-grid">
+            {actions.map((item) => (
+              <button
+                key={item.action}
+                type="button"
+                className={item.kind === "danger" ? "danger-button" : item.kind === "primary" ? "primary-button" : "secondary-button"}
+                disabled={item.disabled || loadingAction === item.action}
+                onClick={() => onControlJob(item.action)}
+              >
+                {loadingAction === item.action ? "处理中" : item.label}
+              </button>
+            ))}
+          </div>
+          <small>重跑会复用本次数据与目标，执行期间可继续查看页面内容。</small>
+        </div>
+      ) : null}
+      <button
+        type="button"
+        className="job-control-dock-button"
+        onPointerDown={startDrag}
+        onClick={toggleOpen}
+        aria-expanded={open}
+        aria-label={open ? "收起任务控制" : "展开任务控制"}
+      >
+        {open ? "收起" : "控制"}
+      </button>
+    </div>
+  );
+}
+
 
 export function AgentMessageCard({ card }: { card: AgentCardView }) {
   return (
@@ -1544,23 +1742,13 @@ export function ChartsPage({
               : buildChartRefineSuggestions(chartPath, isPredictionWorkflow, analysisResult, predictionResult, job);
             return (
               <figure className="chart-card" key={chartPath}>
-                <button
-                  className="chart-image-button"
-                  type="button"
-                  onClick={() => onOpenChart(chartPath)}
-                  aria-label={`放大查看${chartTitle(chartPath, index)}`}
-                >
-                  <img alt={`分析图表 ${index + 1}`} src={toVersionedStorageUrl(chartPath, chartRefreshToken)} />
-                </button>
-                <figcaption>{chartTitle(chartPath, index)}</figcaption>
-                <div className="chart-actions">
-                  <button type="button" onClick={() => onOpenChart(chartPath)}>
-                    放大查看
-                  </button>
-                  <button className="danger-button" type="button" onClick={() => onDeleteChart(chartPath)}>
-                    删除
-                  </button>
-                </div>
+                <ChartFigure
+                  chartPath={chartPath}
+                  index={index}
+                  chartRefreshToken={chartRefreshToken}
+                  onOpenChart={onOpenChart}
+                  onDeleteChart={onDeleteChart}
+                />
                 <div className="chart-refine-panel">
                   <label htmlFor={`chart-refine-${index}`}>针对这张图输入修改要求</label>
                   <textarea
@@ -1602,6 +1790,60 @@ export function ChartsPage({
         />
       )}
     </section>
+  );
+}
+
+function ChartFigure({
+  chartPath,
+  index,
+  chartRefreshToken,
+  onOpenChart,
+  onDeleteChart
+}: {
+  chartPath: string;
+  index: number;
+  chartRefreshToken: number;
+  onOpenChart: (chartPath: string) => void;
+  onDeleteChart: (chartPath: string) => void;
+}) {
+  const [scale, setScale] = useState(1);
+  const [imageFailed, setImageFailed] = useState(false);
+  const imageUrl = toVersionedStorageUrl(chartPath, chartRefreshToken);
+  useEffect(() => {
+    setImageFailed(false);
+  }, [imageUrl]);
+  const changeScale = (delta: number) => {
+    setScale((current) => Math.min(2.4, Math.max(0.6, Math.round((current + delta) * 10) / 10)));
+  };
+
+  return (
+    <>
+      <button
+        className="chart-image-button"
+        type="button"
+        onClick={() => onOpenChart(chartPath)}
+        aria-label={`放大查看${chartTitle(chartPath, index)}`}
+      >
+        {imageFailed ? (
+          <span className="chart-image-fallback">图表暂时无法预览，可下载 PNG 或刷新任务状态。</span>
+        ) : (
+          <img
+            alt={`分析图表 ${index + 1}`}
+            src={imageUrl}
+            style={{ transform: `scale(${scale})` }}
+            onError={() => setImageFailed(true)}
+          />
+        )}
+      </button>
+      <figcaption>{chartTitle(chartPath, index)}</figcaption>
+      <div className="chart-actions chart-tools">
+        <button type="button" onClick={() => changeScale(0.2)}>放大</button>
+        <button type="button" onClick={() => changeScale(-0.2)}>缩小</button>
+        <a href={toStorageUrl(chartPath)} download>下载 PNG</a>
+        <button type="button" onClick={() => onOpenChart(chartPath)}>放大查看</button>
+        <button className="danger-button" type="button" onClick={() => onDeleteChart(chartPath)}>删除</button>
+      </div>
+    </>
   );
 }
 
@@ -1770,22 +2012,29 @@ export function ChartPreviewModal({
   onClose: () => void;
   onDelete: () => void;
 }) {
+  const [scale, setScale] = useState(1);
+  const changeScale = (delta: number) => {
+    setScale((current) => Math.min(2.4, Math.max(0.6, Math.round((current + delta) * 10) / 10)));
+  };
   return (
     <div className="chart-modal-backdrop" role="dialog" aria-modal="true" aria-label="图表预览">
       <div className="chart-modal">
         <div className="chart-modal-head">
           <strong>{chartTitle(chartPath, 0)}</strong>
           <div className="chart-modal-actions">
-            <button className="danger-button" type="button" onClick={onDelete}>
-              删除
-            </button>
-            <button type="button" onClick={onClose}>
-              关闭
-            </button>
+            <button type="button" onClick={() => changeScale(0.2)}>放大</button>
+            <button type="button" onClick={() => changeScale(-0.2)}>缩小</button>
+            <a href={toStorageUrl(chartPath)} download>下载 PNG</a>
+            <button className="danger-button" type="button" onClick={onDelete}>删除</button>
+            <button type="button" onClick={onClose}>关闭</button>
           </div>
         </div>
         <div className="chart-modal-body">
-          <img alt="放大图表" src={toVersionedStorageUrl(chartPath, chartRefreshToken)} />
+          <img
+            alt="放大图表"
+            src={toVersionedStorageUrl(chartPath, chartRefreshToken)}
+            style={{ transform: `scale(${scale})` }}
+          />
         </div>
       </div>
     </div>
@@ -1803,32 +2052,71 @@ function toVersionedStorageUrl(path: string, token: number): string {
 export function InsightsPage({
   explanation,
   report,
-  job
+  job,
+  evidenceChain,
+  pptPreview,
+  followUps,
+  followUpQuestion,
+  followUpLoading,
+  pptGenerating,
+  pptMessage,
+  onGeneratePptx,
+  onFollowUpQuestionChange,
+  onSubmitFollowUp
 }: {
   explanation: ExplanationResult;
   report: ReportGenerateResponse | null;
   job: WorkflowJobResponse | null;
+  evidenceChain?: EvidenceChain | null;
+  pptPreview?: PptPreview | null;
+  followUps?: WorkflowFollowUpResponse[];
+  followUpQuestion?: string;
+  followUpLoading?: boolean;
+  pptGenerating?: boolean;
+  pptMessage?: string;
+  onGeneratePptx?: () => void;
+  onFollowUpQuestionChange?: (value: string) => void;
+  onSubmitFollowUp?: () => void;
 }) {
+  const pptxPath = report?.pptx_path || job?.pptx_path || pptPreview?.pptx_path || null;
   return (
     <section className="page-section">
       <div className="section-heading">
         <h2>结论与报告</h2>
-        {report ? (
-          <a className="download-button" href={toStorageUrl(report.report_path)} download>
-            下载报告
-          </a>
-        ) : (
-          <span>等待报告生成</span>
-        )}
+        <div className="report-downloads">
+          {report?.report_path || job?.report_path ? (
+            <a className="download-button" href={toStorageUrl(report?.report_path || job?.report_path || "")} download>
+              下载报告
+            </a>
+          ) : <span>等待报告生成</span>}
+          {pptxPath ? (
+            <a className="download-button" href={toStorageUrl(pptxPath)} download>
+              下载 PPTX
+            </a>
+          ) : onGeneratePptx && job?.status === "success" ? (
+            <button className="download-button" type="button" disabled={Boolean(pptGenerating)} onClick={onGeneratePptx}>
+              {pptGenerating ? "生成中" : "生成 PPTX"}
+            </button>
+          ) : null}
+        </div>
       </div>
       <DataSourceNotice job={job} />
+      {pptMessage ? <p className="ppt-generate-message">{pptMessage}</p> : null}
       {explanation.summary ? (
         <>
           <p className="summary-text">{explanation.summary}</p>
-          <ResultList title="关键发现" items={explanation.key_findings} />
-          <ResultList title="建议动作" items={explanation.recommendations} />
-          <ResultList title="限制说明" items={explanation.limitations} />
+          <EvidenceResultList title="关键发现" items={explanation.key_findings} evidenceChain={evidenceChain} />
+          <EvidenceResultList title="建议动作" items={explanation.recommendations} evidenceChain={evidenceChain} />
+          <EvidenceResultList title="限制说明" items={explanation.limitations} evidenceChain={evidenceChain} />
           <PptOutline outline={explanation.ppt_outline} />
+          <PptPreviewPanel preview={pptPreview || null} />
+          <FollowUpPanel
+            followUps={followUps ?? []}
+            question={followUpQuestion ?? ""}
+            loading={Boolean(followUpLoading)}
+            onQuestionChange={onFollowUpQuestionChange}
+            onSubmit={onSubmitFollowUp}
+          />
         </>
       ) : (
         <EmptyState title="暂无结论" text="验证 Agent 通过后，解释 Agent 会生成结论、建议和 PPT 大纲。" />
@@ -1836,6 +2124,503 @@ export function InsightsPage({
     </section>
   );
 }
+
+function EvidenceResultList({
+  title,
+  items,
+  evidenceChain
+}: {
+  title: string;
+  items: string[];
+  evidenceChain?: EvidenceChain | null;
+}) {
+  const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
+  const cleanItems = items.filter(Boolean);
+  if (!cleanItems.length) {
+    return null;
+  }
+  return (
+    <div className="result-list evidence-result-list">
+      <strong>{title}</strong>
+      <ul>
+        {cleanItems.map((item, index) => {
+          const key = `${title}-${index}`;
+          const evidence = findEvidenceForText(item, evidenceChain);
+          return (
+            <li key={key}>
+              <div className="finding-row">
+                <span>{item}</span>
+                <button
+                  className="secondary-button compact-button"
+                  type="button"
+                  title="查看证据"
+                  onClick={() => setOpenKeys((current) => ({ ...current, [key]: !current[key] }))}
+                >
+                  查看证据
+                </button>
+              </div>
+              {openKeys[key] ? <EvidencePanel evidence={evidence} /> : null}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+interface EvidenceNumberCandidate {
+  raw: string;
+  value: number;
+  isPercent: boolean;
+  context: string;
+}
+
+const EVIDENCE_NUMBER_PATTERN = /[-+]?\d+(?:\.\d+)?%?/g;
+const EVIDENCE_DATE_OR_ORDINAL_UNITS = "年月日号页行列个条项次季度";
+
+function findEvidenceForText(text: string, evidenceChain?: EvidenceChain | null): EvidenceFinding | null {
+  const cleanText = text.trim();
+  if (!cleanText) {
+    return null;
+  }
+
+  const findings = evidenceChain?.findings ?? [];
+  const normalized = normalizeEvidenceText(cleanText);
+  const exactMatch = findings.find((finding) => {
+    const findingText = normalizeEvidenceText(finding.text || "");
+    return findingText === normalized || findingText.includes(normalized) || normalized.includes(findingText);
+  });
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  const queryNumbers = extractEvidenceNumbers(cleanText);
+  const scoredMatches = findings
+    .map((finding) => {
+      const candidateNumbers = evidenceNumbersFromFinding(finding);
+      const numberMatches = countSharedEvidenceNumbers(queryNumbers, candidateNumbers);
+      const textScore = evidenceTextOverlap(cleanText, finding.text || "");
+      const score = numberMatches * 10 + textScore + (finding.has_evidence ? 0.5 : 0);
+      return { finding, numberMatches, textScore, score };
+    })
+    .sort((left, right) => right.score - left.score);
+
+  const best = scoredMatches[0];
+  if (best && (best.numberMatches > 0 || best.textScore >= 0.58)) {
+    return best.finding;
+  }
+
+  return fallbackEvidenceForText(cleanText, evidenceChain);
+}
+
+function normalizeEvidenceText(value: string): string {
+  return value.replace(/\s+/g, "").replace(/[，。,.；;：:]/g, "").toLowerCase();
+}
+
+function extractEvidenceNumbers(text: string): EvidenceNumberCandidate[] {
+  const result: EvidenceNumberCandidate[] = [];
+  EVIDENCE_NUMBER_PATTERN.lastIndex = 0;
+  for (const match of text.matchAll(EVIDENCE_NUMBER_PATTERN)) {
+    const raw = match[0];
+    const start = match.index ?? 0;
+    const end = start + raw.length;
+    const isPercent = raw.endsWith("%");
+    if (shouldSkipEvidenceNumber(text, start, end, raw, isPercent)) {
+      continue;
+    }
+    const numeric = Number((isPercent ? raw.slice(0, -1) : raw).replace(/,/g, ""));
+    if (!Number.isFinite(numeric)) {
+      continue;
+    }
+    result.push({
+      raw,
+      value: numeric,
+      isPercent,
+      context: text.slice(Math.max(0, start - 18), Math.min(text.length, end + 18))
+    });
+  }
+  return result;
+}
+
+function shouldSkipEvidenceNumber(text: string, start: number, end: number, raw: string, isPercent: boolean): boolean {
+  if (isPercent) {
+    return false;
+  }
+
+  const previousChar = start > 0 ? text[start - 1] : "";
+  const nextChar = end < text.length ? text[end] : "";
+
+  if (EVIDENCE_DATE_OR_ORDINAL_UNITS.includes(nextChar)) {
+    return true;
+  }
+  if (previousChar === "第" && EVIDENCE_DATE_OR_ORDINAL_UNITS.includes(nextChar)) {
+    return true;
+  }
+  if (["-", "/", "－", "—"].includes(previousChar) || ["-", "/", "－", "—"].includes(nextChar)) {
+    return true;
+  }
+  if (raw.startsWith("-") && /\d/.test(previousChar)) {
+    return true;
+  }
+  return false;
+}
+
+function evidenceNumbersFromFinding(finding: EvidenceFinding): EvidenceNumberCandidate[] {
+  const candidates = extractEvidenceNumbers(finding.text || "");
+
+  (finding.numbers ?? []).forEach((item) => {
+    const raw = typeof item.raw === "string" ? item.raw : item.value !== undefined ? String(item.value) : "";
+    const value = numberValue(item.value ?? raw);
+    if (value !== null) {
+      candidates.push({
+        raw: raw || String(value),
+        value,
+        isPercent: Boolean(item.is_percent) || raw.endsWith("%"),
+        context: finding.text || ""
+      });
+    }
+  });
+
+  (finding.evidence_items ?? []).forEach((item) => {
+    if (item.number) {
+      candidates.push(...extractEvidenceNumbers(String(item.number)));
+    }
+    const value = numberValue(item.value);
+    if (value !== null) {
+      const raw = String(item.value);
+      candidates.push({
+        raw,
+        value,
+        isPercent: raw.endsWith("%"),
+        context: item.calculation || finding.text || ""
+      });
+    }
+  });
+
+  return candidates;
+}
+
+function countSharedEvidenceNumbers(queryNumbers: EvidenceNumberCandidate[], candidateNumbers: EvidenceNumberCandidate[]): number {
+  if (!queryNumbers.length || !candidateNumbers.length) {
+    return 0;
+  }
+  const used = new Set<number>();
+  let count = 0;
+  queryNumbers.forEach((queryNumber) => {
+    const index = candidateNumbers.findIndex((candidate, candidateIndex) => !used.has(candidateIndex) && evidenceNumbersClose(queryNumber, candidate));
+    if (index >= 0) {
+      used.add(index);
+      count += 1;
+    }
+  });
+  return count;
+}
+
+function evidenceNumbersClose(left: EvidenceNumberCandidate, right: EvidenceNumberCandidate): boolean {
+  const leftTargets = evidenceNumberTargets(left);
+  const rightTargets = evidenceNumberTargets(right);
+  return leftTargets.some((leftTarget) => rightTargets.some((rightTarget) => closeNumber(leftTarget, rightTarget)));
+}
+
+function evidenceNumberTargets(number: EvidenceNumberCandidate): number[] {
+  const targets = [number.value];
+  if (number.isPercent) {
+    targets.push(number.value / 100);
+    targets.push(-number.value);
+    targets.push(-number.value / 100);
+    targets.push(Math.abs(number.value));
+    targets.push(Math.abs(number.value) / 100);
+    targets.push(-Math.abs(number.value));
+    targets.push(-Math.abs(number.value) / 100);
+  }
+  return Array.from(new Set(targets.filter((value) => Number.isFinite(value))));
+}
+
+function closeNumber(left: number, right: number): boolean {
+  const tolerance = Math.max(0.000001, Math.abs(right) * 0.001);
+  return Math.abs(left - right) <= tolerance;
+}
+
+function numberValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const cleaned = value.trim().replace(/,/g, "").replace(/%$/, "");
+    if (!cleaned) {
+      return null;
+    }
+    const numeric = Number(cleaned);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+  return null;
+}
+
+function evidenceTextOverlap(left: string, right: string): number {
+  const leftTokens = evidenceTextTokens(left);
+  const rightTokens = evidenceTextTokens(right);
+  if (!leftTokens.size || !rightTokens.size) {
+    return 0;
+  }
+  let common = 0;
+  leftTokens.forEach((token) => {
+    if (rightTokens.has(token)) {
+      common += 1;
+    }
+  });
+  return common / Math.max(leftTokens.size, rightTokens.size);
+}
+
+function evidenceTextTokens(value: string): Set<string> {
+  const normalized = normalizeEvidenceText(value).replace(/[0-9+\-.%]/g, "");
+  const tokens = new Set<string>();
+  for (let index = 0; index < normalized.length - 1; index += 1) {
+    tokens.add(normalized.slice(index, index + 2));
+  }
+  if (!tokens.size && normalized) {
+    tokens.add(normalized);
+  }
+  return tokens;
+}
+
+function fallbackEvidenceForText(text: string, evidenceChain?: EvidenceChain | null): EvidenceFinding {
+  const numbers = extractEvidenceNumbers(text);
+  const charts = Array.from(new Set((evidenceChain?.findings ?? []).flatMap((finding) => finding.charts ?? [])));
+  const hasNumbers = numbers.length > 0;
+  return {
+    finding_id: `local_${normalizeEvidenceText(text).slice(0, 32)}`,
+    text,
+    numbers: numbers.map((number) => ({
+      raw: number.raw,
+      value: number.value,
+      is_percent: number.isPercent
+    })),
+    has_evidence: !hasNumbers,
+    risk_level: hasNumbers ? "high" : "low",
+    evidence_items: [],
+    charts,
+    calculation_note: hasNumbers
+      ? "该结论含数字，但暂未在可用证据链中找到对应结构化来源。"
+      : "该结论不含可抽取数字，依据为解释文本与图表整体判断。"
+  };
+}
+
+function EvidencePanel({ evidence }: { evidence: EvidenceFinding | null }) {
+  if (!evidence) {
+    return <div className="evidence-panel warning">暂未找到可展开的结构化证据，质检会将含数字但缺证据的结论标为高风险。</div>;
+  }
+  return (
+    <div className={`evidence-panel risk-${evidence.risk_level || "low"}`}>
+      <div className="evidence-head">
+        <strong>{evidence.has_evidence ? "已匹配证据" : "证据不足"}</strong>
+        <span>{evidence.risk_level === "high" ? "高风险" : "可核对"}</span>
+      </div>
+      <p>{evidence.calculation_note}</p>
+      {evidence.evidence_items?.length ? (
+        <div className="evidence-item-list">
+          {evidence.evidence_items.map((item, index) => (
+            <article key={`${evidence.finding_id}-${index}`}>
+              <strong>{item.number ? `数字 ${item.number}` : `证据 ${index + 1}`}</strong>
+              <dl className="compact-list artifact-kv">
+                <div><dt>来源</dt><dd>{item.source_file || "分析产物"}</dd></div>
+                <div><dt>路径</dt><dd>{item.json_path || "未记录"}</dd></div>
+                <div><dt>匹配值</dt><dd>{formatCell(item.value)}</dd></div>
+              </dl>
+              {item.row_context ? <RawJsonDetails value={item.row_context} title="查看原始分组表" /> : null}
+              {item.calculation ? <p>{item.calculation}</p> : null}
+            </article>
+          ))}
+        </div>
+      ) : <p className="agent-muted">该发现没有匹配到数字证据。</p>}
+      {evidence.charts?.length ? (
+        <div className="evidence-chart-list">
+          {evidence.charts.map((chartPath, index) => (
+            <a key={`${chartPath}-${index}`} href={toStorageUrl(chartPath)} target="_blank" rel="noreferrer">
+              相关图表 {index + 1}
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PptPreviewPanel({ preview }: { preview: PptPreview | null }) {
+  const [page, setPage] = useState(0);
+  const slides = preview?.slides ?? [];
+  useEffect(() => {
+    setPage(0);
+  }, [preview?.pptx_path, slides.length]);
+  if (!slides.length) {
+    return null;
+  }
+  const current = slides[Math.min(page, slides.length - 1)];
+  return (
+    <section className="ppt-preview-panel">
+      <div className="section-heading compact-heading">
+        <h2>PPT 页面预览</h2>
+        <span>{current.page} / {slides.length}</span>
+      </div>
+      <article className="ppt-slide-card">
+        <strong>{current.title}</strong>
+        {current.subtitle || current.section_label ? <span>{current.subtitle || current.section_label}</span> : null}
+        <ul>
+          {current.bullets.map((bullet, index) => <li key={`${current.page}-${index}`}>{bullet}</li>)}
+        </ul>
+        {current.chart ? <img alt="PPT 图表预览" src={toStorageUrl(current.chart)} /> : null}
+      </article>
+      <div className="button-row">
+        <button className="secondary-button" type="button" disabled={page <= 0} onClick={() => setPage((value) => Math.max(0, value - 1))}>上一页</button>
+        <button className="secondary-button" type="button" disabled={page >= slides.length - 1} onClick={() => setPage((value) => Math.min(slides.length - 1, value + 1))}>下一页</button>
+      </div>
+    </section>
+  );
+}
+
+function FollowUpPanel({
+  followUps,
+  question,
+  loading,
+  onQuestionChange,
+  onSubmit
+}: {
+  followUps: WorkflowFollowUpResponse[];
+  question: string;
+  loading: boolean;
+  onQuestionChange?: (value: string) => void;
+  onSubmit?: () => void;
+}) {
+  if (!onQuestionChange || !onSubmit) {
+    return null;
+  }
+  return (
+    <section className="follow-up-panel">
+      <div className="section-heading compact-heading">
+        <h2>继续追问</h2>
+        <span>基于当前分析产物</span>
+      </div>
+      <textarea
+        rows={3}
+        value={question}
+        placeholder="例如：为什么三班更高？或：把结论改成给校长看的版本。"
+        onChange={(event) => onQuestionChange(event.target.value)}
+      />
+      <button className="primary-button" type="button" disabled={loading || !question.trim()} onClick={onSubmit}>
+        {loading ? "分析中" : "发送追问"}
+      </button>
+      {followUps.length ? (
+        <div className="follow-up-list">
+          {followUps.map((item, index) => (
+            <article key={`${item.created_at}-${index}`}>
+              <strong>{item.question}</strong>
+              <p>{item.answer}</p>
+              {item.used_artifacts?.length ? <small>参考产物：{item.used_artifacts.join("、")}</small> : null}
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+export function CleaningPlanModal({
+  plan,
+  report,
+  selectedStrategies,
+  loading,
+  onStrategyChange,
+  onConfirm,
+  onClose
+}: {
+  plan: CleaningPlanResponse;
+  report: CleaningReportResponse | null;
+  selectedStrategies: Record<string, string>;
+  loading: boolean;
+  onStrategyChange: (issueId: string, strategyId: string) => void;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const preview = report?.preview ?? plan.preview;
+  const columns = preview.columns.slice(0, 12);
+  const rows = preview.rows.slice(0, 30);
+  return (
+    <div className="sample-preview-backdrop" role="dialog" aria-modal="true" aria-label="数据质量修复建议">
+      <div className="cleaning-modal">
+        <div className="sample-preview-head">
+          <div>
+            <strong>数据质量修复建议</strong>
+            <p>{report?.message || plan.message}</p>
+          </div>
+          <button type="button" onClick={onClose}>稍后处理</button>
+        </div>
+
+        <div className="cleaning-issue-list">
+          {plan.issues.length ? plan.issues.map((issue) => (
+            <article className="cleaning-issue-card" key={issue.issue_id}>
+              <strong>{issue.message}</strong>
+              <small>{issue.affected_count} 条记录受影响 · {severityLabel(issue.severity)}</small>
+              <div className="cleaning-strategy-grid">
+                {issue.strategies.map((strategy) => {
+                  const checked = (selectedStrategies[issue.issue_id] || issue.default_strategy_id) === strategy.strategy_id;
+                  return (
+                    <label className={checked ? "selected" : ""} key={strategy.strategy_id}>
+                      <input
+                        type="radio"
+                        name={issue.issue_id}
+                        checked={checked}
+                        onChange={() => onStrategyChange(issue.issue_id, strategy.strategy_id)}
+                      />
+                      <span>{strategy.label}</span>
+                      <small>{strategy.description}</small>
+                    </label>
+                  );
+                })}
+              </div>
+            </article>
+          )) : (
+            <article className="cleaning-issue-card">
+              <strong>当前数据文件没有发现需要自动修复的问题</strong>
+              <small>确认后将直接使用当前数据进入正式分析。</small>
+            </article>
+          )}
+        </div>
+
+        <div className="sample-preview-table-wrap cleaning-preview-table">
+          <table>
+            <thead><tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={`cleaning-preview-${rowIndex}`}>
+                  {columns.map((column) => <td key={`${rowIndex}-${column}`}>{formatCell(row[column])}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {report?.applied_strategies?.length ? (
+          <div className="cleaning-applied-list">
+            <strong>已采用的清洗策略</strong>
+            {report.applied_strategies.map((item) => (
+              <span key={`${item.issue_id}-${item.strategy_id}`}>{item.strategy_label}</span>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="sample-preview-actions">
+          {report?.cleaned_dataset_path ? (
+            <a className="secondary-button" href={toStorageUrl(report.cleaned_dataset_path)} download>下载清洗后 CSV</a>
+          ) : null}
+          <button className="secondary-button" type="button" onClick={onClose}>返回调整</button>
+          <button className="primary-button" type="button" disabled={loading} onClick={onConfirm}>
+            {loading ? "处理中" : report ? "继续分析" : "确认修复并继续分析"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 export function LogsPage({
   job,
@@ -2052,5 +2837,8 @@ export function EmptyState({ title, text, compact = false }: { title: string; te
     </div>
   );
 }
+
+
+
 
 

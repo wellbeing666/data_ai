@@ -4,6 +4,8 @@ import type {
   AutoRepairAnalysisJobResponse,
   ChartConfigResponse,
   ChartDeleteResponse,
+  CleaningPlanResponse,
+  CleaningReportResponse,
   ChartRefineResponse,
   ChartSuggestionResponse,
   DatasetProfile,
@@ -20,10 +22,13 @@ import type {
   ReportGenerateResponse,
   SampleDatasetResponse,
   SampleDatasetTypeListResponse,
+  WorkflowControlResponse,
+  WorkflowFollowUpResponse,
   WorkflowJobDeleteResponse,
   WorkflowJobListResponse,
   WorkflowJobResponse,
-  WorkflowLogResponse
+  WorkflowLogResponse,
+  WorkflowPptxGenerateResponse
 } from "./types";
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -72,6 +77,32 @@ export async function fetchSampleDatasetTypes(): Promise<SampleDatasetTypeListRe
 export async function fetchDatasetProfile(datasetId: string): Promise<DatasetProfile> {
   const response = await fetch(`/api/datasets/${datasetId}/profile`);
   return parseResponse<DatasetProfile>(response);
+}
+
+export async function createCleaningPlan(datasetId: string): Promise<CleaningPlanResponse> {
+  const response = await fetch(`/api/datasets/${datasetId}/cleaning-plan`, {
+    method: "POST"
+  });
+  return parseResponse<CleaningPlanResponse>(response);
+}
+
+export async function applyCleaningPlan(
+  datasetId: string,
+  selectedStrategies: Record<string, string>
+): Promise<CleaningReportResponse> {
+  const response = await fetch(`/api/datasets/${datasetId}/apply-cleaning`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ selected_strategies: selectedStrategies })
+  });
+  return parseResponse<CleaningReportResponse>(response);
+}
+
+export async function fetchCleaningReport(datasetId: string): Promise<CleaningReportResponse> {
+  const response = await fetch(`/api/datasets/${datasetId}/cleaning-report`);
+  return parseResponse<CleaningReportResponse>(response);
 }
 
 export async function createAnalysisJob(
@@ -250,6 +281,38 @@ export async function fetchWorkflowLog(jobId: string): Promise<WorkflowLogRespon
   return parseResponse<WorkflowLogResponse>(response);
 }
 
+export async function controlWorkflowJob(jobId: string, action: string): Promise<WorkflowControlResponse> {
+  const response = await fetch(`/api/workflows/jobs/${jobId}/control`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ action })
+  });
+  return parseResponse<WorkflowControlResponse>(response);
+}
+export async function generateWorkflowPptx(jobId: string): Promise<WorkflowPptxGenerateResponse> {
+  const response = await fetch(`/api/workflows/jobs/${jobId}/pptx`, {
+    method: "POST"
+  });
+  return parseResponse<WorkflowPptxGenerateResponse>(response);
+}
+
+
+export async function createWorkflowFollowUp(
+  jobId: string,
+  question: string
+): Promise<WorkflowFollowUpResponse> {
+  const response = await fetch(`/api/workflows/jobs/${jobId}/follow-up`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ question })
+  });
+  return parseResponse<WorkflowFollowUpResponse>(response);
+}
+
 export async function deleteWorkflowChart(
   jobId: string,
   chartPath: string
@@ -369,7 +432,8 @@ export async function generateReport(
     },
     body: JSON.stringify({
       analysis_result_path: analysisResultPath,
-      chart_paths: chartPaths
+      chart_paths: chartPaths,
+      include_pptx: true
     })
   });
 
@@ -384,6 +448,9 @@ export function toStorageUrl(path: string): string {
   }
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
+
+
+
 
 
 
