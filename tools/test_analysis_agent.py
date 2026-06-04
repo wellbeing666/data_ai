@@ -69,7 +69,7 @@ def test_filters_nonexistent_fields_and_adds_causal_limitation():
     assert result["grouping_dimensions"] == ["region"]
     assert result["metrics"] == ["sales"]
     assert result["chart_plan"][0]["y"] == ""
-    assert any("possible reasons" in item for item in result["limitations"])
+    assert any(("可能原因" in item or "相关信号" in item or "确定因果" in item) for item in result["limitations"])
     assert llm.last_messages[0]["role"] == "system"
 
 
@@ -84,7 +84,7 @@ def test_fallback_rule_based_analysis_plan():
     assert result["metrics"] == ["sales"]
     assert result["grouping_dimensions"] == ["region"]
     assert result["chart_plan"][0]["chart_type"] == "line"
-    assert any("cannot prove confirmed causality" in item for item in result["limitations"])
+    assert any(("确定因果" in item or "相关信号" in item or "可能原因" in item) for item in result["limitations"])
 
 
 if __name__ == "__main__":

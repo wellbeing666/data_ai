@@ -71,8 +71,8 @@ def test_llm_explanation_normalizes_chart_paths():
     assert result["chart_explanations"][0]["chart"] == "/tmp/allowed.png"
     assert result["chart_explanations"][1]["chart"] == ""
     assert result["ppt_outline"][0]["chart"] == ""
-    assert any("possible" in item.lower() for item in result["limitations"])
-    assert "possible" in result["summary"].lower()
+    assert any(("可能" in item or "因果" in item or "相关" in item) for item in result["limitations"])
+    assert any(word in result["summary"] for word in ("可能", "相关", "信号", "待验证"))
 
 
 def test_grade_fallback_mentions_class_pass_and_excellent_rates():
@@ -85,9 +85,9 @@ def test_grade_fallback_mentions_class_pass_and_excellent_rates():
         limitations=[],
     )
     joined = " ".join([result["summary"], *result["key_findings"]]).lower()
-    assert "class" in joined
-    assert "pass rate" in joined
-    assert "excellent rate" in joined
+    assert "班级" in joined
+    assert "及格率" in joined
+    assert "优秀率" in joined
     assert result["ppt_outline"][1]["chart"] == "/tmp/score.png"
 
 

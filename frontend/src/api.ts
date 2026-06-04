@@ -2,7 +2,10 @@ import type {
   AnalysisJobResponse,
   AnalysisResult,
   AutoRepairAnalysisJobResponse,
+  ChartConfigResponse,
   ChartDeleteResponse,
+  ChartRefineResponse,
+  ChartSuggestionResponse,
   DatasetProfile,
   DatasetUploadResponse,
   ExecutionLog,
@@ -13,7 +16,10 @@ import type {
   KnowledgeSearchResponse,
   PredictionJobResponse,
   PredictionLogResponse,
+  PreflightAssessment,
   ReportGenerateResponse,
+  SampleDatasetResponse,
+  SampleDatasetTypeListResponse,
   WorkflowJobDeleteResponse,
   WorkflowJobListResponse,
   WorkflowJobResponse,
@@ -27,7 +33,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
     const message =
       data && typeof data.detail === "string"
         ? data.detail
-        : "请求失败，请检查后端服务是否正常运行。";
+        : "操作未完成，请稍后重试或联系系统管理员。";
     throw new Error(message);
   }
 
@@ -44,6 +50,23 @@ export async function uploadDataset(file: File): Promise<DatasetUploadResponse> 
   });
 
   return parseResponse<DatasetUploadResponse>(response);
+}
+
+export async function createSampleDataset(sampleType: string): Promise<SampleDatasetResponse> {
+  const response = await fetch("/api/datasets/samples", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ sample_type: sampleType })
+  });
+
+  return parseResponse<SampleDatasetResponse>(response);
+}
+
+export async function fetchSampleDatasetTypes(): Promise<SampleDatasetTypeListResponse> {
+  const response = await fetch("/api/datasets/samples");
+  return parseResponse<SampleDatasetTypeListResponse>(response);
 }
 
 export async function fetchDatasetProfile(datasetId: string): Promise<DatasetProfile> {
@@ -170,6 +193,43 @@ export async function createWorkflowJobAsync(
   return parseResponse<WorkflowJobResponse>(response);
 }
 
+export async function createPreflightAssessment(
+  datasetId: string,
+  userGoal: string
+): Promise<PreflightAssessment> {
+  const response = await fetch("/api/workflows/preflight", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      dataset_id: datasetId,
+      user_goal: userGoal
+    })
+  });
+
+  return parseResponse<PreflightAssessment>(response);
+}
+
+export async function createIterativeChartConfig(
+  jobId: string,
+  instruction: string,
+  currentConfig?: Record<string, unknown> | null
+): Promise<ChartConfigResponse> {
+  const response = await fetch(`/api/workflows/jobs/${jobId}/chart-config`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      instruction,
+      current_config: currentConfig ?? null
+    })
+  });
+
+  return parseResponse<ChartConfigResponse>(response);
+}
+
 export async function fetchWorkflowJobs(limit = 30, query = ""): Promise<WorkflowJobListResponse> {
   const params = new URLSearchParams({ limit: String(limit) });
   const trimmedQuery = query.trim();
@@ -200,6 +260,34 @@ export async function deleteWorkflowChart(
   });
   return parseResponse<ChartDeleteResponse>(response);
 }
+
+export async function fetchWorkflowChartSuggestions(
+  jobId: string,
+  chartPath: string
+): Promise<ChartSuggestionResponse> {
+  const params = new URLSearchParams({ chart_path: chartPath });
+  const response = await fetch(`/api/workflows/jobs/${jobId}/chart-suggestions?${params.toString()}`);
+  return parseResponse<ChartSuggestionResponse>(response);
+}
+
+export async function refineWorkflowChart(
+  jobId: string,
+  chartPath: string,
+  instruction: string
+): Promise<ChartRefineResponse> {
+  const response = await fetch(`/api/workflows/jobs/${jobId}/chart-refine`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      chart_path: chartPath,
+      instruction
+    })
+  });
+  return parseResponse<ChartRefineResponse>(response);
+}
+
 
 export async function deleteWorkflowJob(jobId: string): Promise<WorkflowJobDeleteResponse> {
   const response = await fetch(`/api/workflows/jobs/${jobId}`, {
@@ -296,4 +384,7 @@ export function toStorageUrl(path: string): string {
   }
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
+
+
+
 

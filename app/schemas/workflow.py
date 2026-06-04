@@ -10,6 +10,69 @@ class WorkflowJobRequest(BaseModel):
     timeout_seconds: int = Field(default=90, ge=1, le=300)
 
 
+class WorkflowPreflightRequest(BaseModel):
+    dataset_id: str = Field(..., min_length=1)
+    user_goal: str = Field(..., min_length=1)
+
+
+class WorkflowPreflightResponse(BaseModel):
+    dataset_id: str
+    user_goal: str
+    asset_type: str = "tabular"
+    preflight_path: str | None = None
+    intent_type: str
+    is_task_clear: bool
+    clarity_score: float
+    detected_fields: list[dict[str, Any]] = Field(default_factory=list)
+    data_quality_report: dict[str, Any] = Field(default_factory=dict)
+    clarifying_questions: list[str] = Field(default_factory=list)
+    intent_questions: list[dict[str, Any]] = Field(default_factory=list)
+    suggested_goals: list[str] = Field(default_factory=list)
+    optimized_goal: str = ""
+    next_action: str
+    data_understanding: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChartConfigRequest(BaseModel):
+    instruction: str = Field(..., min_length=1)
+    current_config: dict[str, Any] | None = None
+
+
+class ChartConfigResponse(BaseModel):
+    chart_id: str
+    title: str
+    description: str
+    echarts_option: dict[str, Any] = Field(default_factory=dict)
+    data_preview: list[dict[str, Any]] = Field(default_factory=list)
+    applied_filters: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    config_path: str | None = None
+
+
+class ChartSuggestionResponse(BaseModel):
+    job_id: str
+    chart_path: str
+    suggestions: list[str] = Field(default_factory=list)
+
+
+class ChartRefineRequest(BaseModel):
+    chart_path: str = Field(..., min_length=1)
+    instruction: str = Field(..., min_length=1)
+
+
+class ChartRefineResponse(BaseModel):
+    success: bool
+    message: str
+    job_id: str
+    chart_path: str
+    instruction: str
+    source_script_path: str | None = None
+    refined_script_path: str | None = None
+    execution_result_path: str | None = None
+    chart_paths: list[str] = Field(default_factory=list)
+    safety_issues: list[str] = Field(default_factory=list)
+
+
 class WorkflowAttemptResult(BaseModel):
     attempt: int
     script_path: str
@@ -36,6 +99,8 @@ class WorkflowJobResponse(BaseModel):
     controller_plan_path: str | None = None
     rag_retrieval_path: str | None = None
     dataset_profile_path: str | None = None
+    analysis_roadmap_path: str | None = None
+    quality_review_path: str | None = None
     visual_parse_result_path: str | None = None
     visual_extracted_dataset_path: str | None = None
     visual_extraction_confidence: float | None = None
@@ -98,4 +163,5 @@ class WorkflowLogResponse(BaseModel):
     max_retries: int = 0
     artifacts: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list)
+
 

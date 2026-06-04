@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DatasetUploadResponse(BaseModel):
@@ -10,6 +10,29 @@ class DatasetUploadResponse(BaseModel):
     file_path: str
     asset_type: str = "tabular"
     preview_url: str | None = None
+
+
+class SampleDatasetRequest(BaseModel):
+    sample_type: str = "sales_decline"
+
+
+class SampleDatasetResponse(DatasetUploadResponse):
+    sample_type: str
+    recommended_goal: str
+    description: str
+    suggested_goals: list[str] = Field(default_factory=list)
+
+
+class SampleDatasetType(BaseModel):
+    sample_type: str
+    filename: str
+    description: str
+    recommended_goal: str
+    suggested_goals: list[str] = Field(default_factory=list)
+
+
+class SampleDatasetTypeListResponse(BaseModel):
+    samples: list[SampleDatasetType]
 
 
 class MissingValueSummary(BaseModel):

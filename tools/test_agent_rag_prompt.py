@@ -32,7 +32,7 @@ def main() -> None:
     )
 
     for prompt in (controller, understanding, analysis, explanation):
-        assert "Retrieved business knowledge JSON" in prompt
+        assert ("Retrieved business knowledge JSON" in prompt) or ("检索到的业务知识 JSON" in prompt)
         assert "及格率" in prompt
         assert "dataset_profile" in prompt or "analysis_result" in prompt
 

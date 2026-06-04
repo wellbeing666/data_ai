@@ -7,6 +7,25 @@ export interface DatasetUploadResponse {
   preview_url?: string | null;
 }
 
+export interface SampleDatasetResponse extends DatasetUploadResponse {
+  sample_type: string;
+  recommended_goal: string;
+  description: string;
+  suggested_goals: string[];
+}
+
+export interface SampleDatasetType {
+  sample_type: string;
+  filename: string;
+  description: string;
+  recommended_goal: string;
+  suggested_goals: string[];
+}
+
+export interface SampleDatasetTypeListResponse {
+  samples: SampleDatasetType[];
+}
+
 export interface MissingValueSummary {
   count: number;
   ratio: number;
@@ -186,6 +205,93 @@ export interface ExplanationResult {
   }>;
 }
 
+export interface IntentQuestionOption {
+  value: string;
+  label: string;
+  append_text: string;
+}
+
+export interface IntentQuestion {
+  question_id: string;
+  question: string;
+  options: IntentQuestionOption[];
+}
+
+export interface PreflightAssessment {
+  dataset_id: string;
+  user_goal: string;
+  asset_type?: string;
+  preflight_path?: string | null;
+  intent_type: string;
+  is_task_clear: boolean;
+  clarity_score: number;
+  detected_fields: Array<Record<string, unknown>>;
+  data_quality_report: Record<string, unknown>;
+  clarifying_questions: string[];
+  intent_questions: IntentQuestion[];
+  suggested_goals: string[];
+  optimized_goal: string;
+  next_action: string;
+  data_understanding: Record<string, unknown>;
+}
+
+export interface AnalysisRoadmapStep {
+  step_id: string;
+  title: string;
+  agent: string;
+  stage: string;
+  description: string;
+  inputs: string[];
+  outputs: string[];
+  status_hint: string;
+}
+
+export interface AnalysisRoadmap {
+  title: string;
+  user_goal: string;
+  workflow_type: string;
+  task_type: string;
+  summary: string;
+  steps: AnalysisRoadmapStep[];
+  mermaid_code?: string;
+}
+
+export interface QualityReviewIssue {
+  issue_type: string;
+  severity: string;
+  finding: string;
+  evidence: string;
+  suggestion: string;
+}
+
+export interface QualityReview {
+  passed: boolean;
+  risk_level: string;
+  issues: QualityReviewIssue[];
+  checked_items: Array<Record<string, unknown>>;
+  revised_summary: string;
+  safe_language_suggestions: string[];
+  missing_evidence: string[];
+}
+
+export interface ChartSuggestionResponse {
+  job_id: string;
+  chart_path: string;
+  suggestions: string[];
+}
+
+
+export interface ChartConfigResponse {
+  chart_id: string;
+  title: string;
+  description: string;
+  echarts_option: Record<string, unknown>;
+  data_preview: Array<Record<string, unknown>>;
+  applied_filters: string[];
+  warnings: string[];
+  config_path?: string | null;
+}
+
 export interface ExecutionLogEvent {
   timestamp: string;
   stage: string;
@@ -259,6 +365,7 @@ export interface PredictionJobResponse {
   hypothesis_plan_path?: string | null;
   prediction_plan_path?: string | null;
   prediction_explanation_path?: string | null;
+  quality_review_path?: string | null;
   effective_max_retries?: number | null;
   events?: ExecutionLogEvent[];
   error?: Record<string, unknown> | null;
@@ -332,6 +439,8 @@ export interface WorkflowJobResponse {
   controller_plan_path?: string | null;
   rag_retrieval_path?: string | null;
   dataset_profile_path?: string | null;
+  analysis_roadmap_path?: string | null;
+  quality_review_path?: string | null;
   visual_parse_result_path?: string | null;
   visual_extracted_dataset_path?: string | null;
   visual_extraction_confidence?: number | null;
@@ -417,9 +526,26 @@ export interface VisualParseResult {
 
 
 
+
+export interface ChartRefineResponse {
+  success: boolean;
+  message: string;
+  job_id: string;
+  chart_path: string;
+  instruction: string;
+  source_script_path?: string | null;
+  refined_script_path?: string | null;
+  execution_result_path?: string | null;
+  chart_paths: string[];
+  safety_issues: string[];
+}
+
 export interface ChartDeleteResponse {
   deleted: boolean;
   chart_path: string;
   chart_paths: string[];
 }
+
+
+
 

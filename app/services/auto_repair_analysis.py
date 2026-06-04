@@ -12,6 +12,7 @@ from app.agents.code_agent import CodeAgent, CodeGenerationError
 from app.agents.controller_agent import create_controller_plan
 from app.agents.data_understanding_agent import create_data_understanding
 from app.agents.explanation_agent import create_explanation
+from app.agents.quality_review_agent import create_quality_review
 from app.sandbox.code_safety import validate_script_static_safety
 from app.sandbox.local_executor import LocalSubprocessSandboxExecutor
 from app.services.dataset_profile import generate_dataset_profile
@@ -139,6 +140,7 @@ def run_auto_repair_analysis_job(
     final_report_data_path = None
     final_validation_result_path = None
     explanation_path = None
+    quality_review_path = None
     rag_retrieval_path = None
     rag_context: list[dict[str, Any]] = []
 
@@ -162,6 +164,7 @@ def run_auto_repair_analysis_job(
             final_report_data_path=final_report_data_path,
             final_validation_result_path=final_validation_result_path,
             explanation_path=explanation_path,
+            quality_review_path=quality_review_path,
             controller_plan_path=existing_job_file("controller_plan.json"),
             rag_retrieval_path=rag_retrieval_path or existing_job_file("rag_retrieval.json"),
             dataset_profile_path=existing_job_file("dataset_profile.json"),
@@ -709,6 +712,46 @@ def run_auto_repair_analysis_job(
         _write_json(job_dir / "explanation.json", explanation)
         events.append(create_event("explanation", "success", "解释 Agent 已生成结论和 PPT 大纲。"))
 
+        events.append(create_event("quality_review", "running", "质检 Agent 正在审查结论证据链和风险表述。"))
+        _write_progress(
+            job_dir=job_dir,
+            job_id=job_id,
+            dataset_id=dataset_id,
+            user_goal=user_goal,
+            status_value="running",
+            current_stage="quality_review",
+            max_retries=effective_max_retries,
+            attempts=attempts,
+            events=events,
+            timeout_seconds=timeout_seconds,
+            final_result_path=final_result_path,
+            final_report_data_path=final_report_data_path,
+            final_validation_result_path=final_validation_result_path,
+            explanation_path=explanation_path,
+            controller_plan_path=str(job_dir / "controller_plan.json"),
+            rag_retrieval_path=rag_retrieval_path,
+            dataset_profile_path=str(job_dir / "dataset_profile.json"),
+            data_understanding_path=str(job_dir / "data_understanding.json"),
+            analysis_plan_path=str(job_dir / "analysis_plan.json"),
+        )
+        validation_payload = _read_json_if_exists(Path(final_validation_result_path)) if final_validation_result_path else None
+        quality_review = create_quality_review(
+            user_goal=user_goal,
+            dataset_profile=dataset_profile,
+            result_payload=analysis_result_data,
+            explanation=explanation,
+            validation_result=validation_payload or {},
+            chart_paths=chart_paths,
+            workflow_type="auto_repair",
+        )
+        quality_review_path = str(job_dir / "quality_review.json")
+        _write_json(job_dir / "quality_review.json", quality_review)
+        events.append(create_event(
+            "quality_review",
+            "success" if quality_review.get("passed") else "warning",
+            "质检 Agent 已完成结论审查。",
+        ))
+
     events.append(
         create_event(
             "success" if status_value == "success" else "failed",
@@ -731,6 +774,7 @@ def run_auto_repair_analysis_job(
         "data_understanding_path": str(job_dir / "data_understanding.json"),
         "analysis_plan_path": str(job_dir / "analysis_plan.json"),
         "explanation_path": explanation_path,
+        "quality_review_path": quality_review_path,
         "effective_max_retries": effective_max_retries,
     }
     return _write_progress(
@@ -748,6 +792,7 @@ def run_auto_repair_analysis_job(
         final_report_data_path=final_report_data_path,
         final_validation_result_path=final_validation_result_path,
         explanation_path=explanation_path,
+        quality_review_path=quality_review_path,
         controller_plan_path=str(job_dir / "controller_plan.json"),
         dataset_profile_path=str(job_dir / "dataset_profile.json"),
         data_understanding_path=str(job_dir / "data_understanding.json"),
@@ -804,6 +849,7 @@ def _write_progress(
     final_report_data_path: str | None = None,
     final_validation_result_path: str | None = None,
     explanation_path: str | None = None,
+    quality_review_path: str | None = None,
     controller_plan_path: str | None = None,
     rag_retrieval_path: str | None = None,
     dataset_profile_path: str | None = None,
@@ -829,6 +875,7 @@ def _write_progress(
         "data_understanding_path": data_understanding_path,
         "analysis_plan_path": analysis_plan_path,
         "explanation_path": explanation_path,
+        "quality_review_path": quality_review_path,
         "effective_max_retries": max_retries,
         "timeout_seconds": timeout_seconds,
         "events": events,
@@ -850,6 +897,7 @@ def _normalize_status_payload(data: dict[str, Any]) -> dict[str, Any]:
             "data_understanding_path": _existing_or_none(data.get("data_understanding_path"), job_dir / "data_understanding.json"),
             "analysis_plan_path": _existing_or_none(data.get("analysis_plan_path"), job_dir / "analysis_plan.json"),
             "explanation_path": _existing_or_none(data.get("explanation_path"), job_dir / "explanation.json"),
+            "quality_review_path": _existing_or_none(data.get("quality_review_path"), job_dir / "quality_review.json"),
             "final_result_path": _existing_or_none(data.get("final_result_path"), job_dir / "analysis_result.json"),
             "final_report_data_path": _existing_or_none(data.get("final_report_data_path"), job_dir / "report_data.json"),
             "final_validation_result_path": _existing_or_none(data.get("final_validation_result_path"), job_dir / "validation_result.json"),
@@ -869,6 +917,7 @@ def _normalize_status_payload(data: dict[str, Any]) -> dict[str, Any]:
         "data_understanding_path": data.get("data_understanding_path"),
         "analysis_plan_path": data.get("analysis_plan_path"),
         "explanation_path": data.get("explanation_path"),
+        "quality_review_path": data.get("quality_review_path"),
         "effective_max_retries": data.get("effective_max_retries"),
         "events": _event_list(data.get("events")),
         "error": data.get("error") if isinstance(data.get("error"), dict) else None,
@@ -936,6 +985,7 @@ def _build_progress_execution_log(status_data: dict[str, Any]) -> dict[str, Any]
             "report_data": status_data.get("final_report_data_path"),
             "validation_result": status_data.get("final_validation_result_path"),
             "explanation": status_data.get("explanation_path"),
+            "quality_review": status_data.get("quality_review_path"),
             "rag_retrieval": status_data.get("rag_retrieval_path"),
         },
         "events": _event_list(status_data.get("events")),
@@ -1053,4 +1103,6 @@ def _build_static_safety_failure_result(
             "safety_issues": issues,
         },
     }
+
+
 

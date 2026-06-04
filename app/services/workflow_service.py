@@ -8,8 +8,15 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.agents.chart_code_refiner_agent import create_refined_chart_script
+from app.agents.chart_config_agent import create_chart_config
+from app.agents.chart_suggestion_agent import create_chart_refine_suggestions
 from app.agents.controller_agent import create_controller_plan
+from app.agents.preflight_agent import create_preflight_assessment
+from app.agents.roadmap_agent import create_analysis_roadmap
 from app.agents.vision_parsing_agent import VisionParsingAgent, write_visual_extracted_csv
+from app.sandbox.code_safety import validate_script_static_safety
+from app.sandbox.local_executor import LocalSubprocessSandboxExecutor
 from app.services.auto_repair_analysis import run_auto_repair_analysis_job
 from app.services.dataset_profile import generate_dataset_profile
 from app.services.dataset_reader import find_uploaded_image_file, get_dataset_dir, get_uploaded_asset_type, load_uploaded_dataset
@@ -24,6 +31,8 @@ MAX_RETRIES = 3
 PREDICTION_TASK_TYPE = "what_if_prediction"
 ANALYSIS_WORKFLOW_TYPE = "auto_repair"
 IMAGE_ASSET_TYPE = "image"
+ROADMAP_FILENAME = "analysis_roadmap.json"
+QUALITY_REVIEW_FILENAME = "quality_review.json"
 
 
 def create_workflow_job_record(
@@ -36,7 +45,7 @@ def create_workflow_job_record(
     job_id = uuid4().hex
     job_dir = (JOB_ROOT / job_id).resolve()
     job_dir.mkdir(parents=True, exist_ok=False)
-    events = [create_event("queued", "pending", "Unified workflow job created.")]
+    events = [create_event("queued", "pending", "统一分析任务已创建。")]
     asset_type = _safe_asset_type(dataset_id)
     return _write_workflow_status(
         job_dir=job_dir,
@@ -53,6 +62,208 @@ def create_workflow_job_record(
         max_retries=effective_max_retries,
         timeout_seconds=timeout_seconds,
     )
+
+
+
+def create_workflow_preflight(dataset_id: str, user_goal: str) -> dict[str, Any]:
+    asset_type = _safe_asset_type(dataset_id)
+    if asset_type == IMAGE_ASSET_TYPE:
+        return {
+            "dataset_id": dataset_id,
+            "user_goal": user_goal,
+            "asset_type": asset_type,
+            "preflight_path": None,
+            "intent_type": "ambiguous",
+            "is_task_clear": False,
+            "clarity_score": 0.35,
+            "detected_fields": [],
+            "data_quality_report": {
+                "row_count": 0,
+                "column_count": 0,
+                "missing_fields": [],
+                "warnings": ["图片输入需要先进入视觉解析 Agent，抽取结构化数据后再进行意图识别。"],
+            },
+            "clarifying_questions": ["请确认图片中希望优先识别表格、图表，还是业务看板指标。"],
+            "intent_questions": [
+                {
+                    "question_id": "image_scope",
+                    "question": "希望优先从图片中识别哪类内容？",
+                    "options": [
+                        {"value": "table", "label": "表格数据", "append_text": "请优先识别图片中的表格并抽取为结构化数据。"},
+                        {"value": "chart", "label": "图表数据", "append_text": "请优先识别图片中的图表坐标、图例和数值。"},
+                        {"value": "dashboard", "label": "看板指标", "append_text": "请优先抽取看板中的核心指标、维度和时间信息。"},
+                        {"value": "auto", "label": "让 AI 自动判断", "append_text": "请自动选择最可靠的结构化数据来源。"},
+                    ],
+                }
+            ],
+            "suggested_goals": ["请从图片中抽取结构化数据，并生成趋势或分组对比图。"],
+            "optimized_goal": "请从图片中抽取可靠的结构化数据，优先生成趋势或分组对比图，并说明图片识别可能带来的限制。",
+            "next_action": "needs_user_choice",
+            "data_understanding": {},
+        }
+
+    load_uploaded_dataset(dataset_id)
+    dataset_profile = generate_dataset_profile(dataset_id)
+    preflight = create_preflight_assessment(user_goal=user_goal, dataset_profile=dataset_profile)
+    dataset_dir = get_dataset_dir(dataset_id)
+    preflight_path = dataset_dir / "preflight_assessment.json"
+    _write_json(preflight_path, preflight)
+    return {
+        "dataset_id": dataset_id,
+        "user_goal": user_goal,
+        "asset_type": asset_type,
+        "preflight_path": str(preflight_path),
+        **preflight,
+    }
+
+
+def create_workflow_chart_config(
+    job_id: str,
+    instruction: str,
+    current_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    workflow_type = _workflow_type_for_job_dir(job_dir)
+    dataset_profile = _read_json_if_exists(job_dir / "dataset_profile.json") or {}
+    result_filename = "prediction_result.json" if workflow_type == PREDICTION_TASK_TYPE else "analysis_result.json"
+    result_payload = _read_json_if_exists(job_dir / result_filename) or _read_json_if_exists(job_dir / "report_data.json") or {}
+    if not result_payload:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="当前任务还没有可用于生成图表配置的分析结果。",
+        )
+    chart_config = create_chart_config(
+        instruction=instruction,
+        result_payload=result_payload,
+        dataset_profile=dataset_profile,
+        current_config=current_config,
+    )
+    config_dir = job_dir / "chart_configs"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / f"chart_config_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}.json"
+    _write_json(config_path, chart_config)
+    return {**chart_config, "config_path": str(config_path)}
+
+
+
+def create_workflow_chart_suggestions(job_id: str, chart_path: str) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    status_data = get_workflow_job_status(job_id)
+    workflow_type = str(status_data.get("workflow_type") or _workflow_type_for_job_dir(job_dir))
+    dataset_profile = _read_json_if_exists(job_dir / "dataset_profile.json") or {}
+    result_filename = "prediction_result.json" if workflow_type == PREDICTION_TASK_TYPE else "analysis_result.json"
+    result_payload = _read_json_if_exists(job_dir / result_filename) or _read_json_if_exists(job_dir / "report_data.json") or {}
+    visual_parse_result = _read_json_if_exists(job_dir / "visual_parse_result.json")
+    suggestions = create_chart_refine_suggestions(
+        user_goal=str(status_data.get("user_goal") or ""),
+        chart_path=chart_path,
+        dataset_profile=dataset_profile,
+        result_payload=result_payload,
+        workflow_type=workflow_type,
+        visual_parse_result=visual_parse_result,
+    )
+    return {
+        "job_id": job_id,
+        "chart_path": chart_path,
+        "suggestions": suggestions,
+    }
+
+def refine_workflow_chart(
+    job_id: str,
+    chart_path: str,
+    instruction: str,
+    timeout_seconds: int = 90,
+) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    status_data = get_workflow_job_status(job_id)
+    if status_data.get("status") != "success":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="请等待当前分析完成后再调整图表。",
+        )
+    dataset_id = str(status_data.get("dataset_id") or "")
+    if not dataset_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前任务缺少数据集信息。")
+
+    workflow_type = str(status_data.get("workflow_type") or _workflow_type_for_job_dir(job_dir))
+    result_filename = "prediction_result.json" if workflow_type == PREDICTION_TASK_TYPE else "analysis_result.json"
+    result_payload = _read_json_if_exists(job_dir / result_filename) or {}
+    dataset_profile = _read_json_if_exists(job_dir / "dataset_profile.json") or {}
+    source_script_path = _latest_existing_script_path(status_data)
+    if source_script_path is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="当前任务缺少可用于调整图表的脚本。")
+
+    input_file, _ = load_uploaded_dataset(dataset_id)
+    original_script = source_script_path.read_text(encoding="utf-8")
+    refined_script = create_refined_chart_script(
+        input_file=str(input_file.resolve()),
+        output_dir=str(job_dir),
+        original_script=original_script,
+        target_chart_path=chart_path,
+        instruction=instruction,
+        dataset_profile=dataset_profile,
+        result_payload=result_payload,
+        workflow_type=workflow_type,
+    )
+
+    refinements_dir = job_dir / "chart_refinements"
+    refinements_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    refined_script_path = refinements_dir / f"refined_chart_{timestamp}.py"
+    refined_script_path.write_text(refined_script, encoding="utf-8")
+
+    safety_issues = validate_script_static_safety(
+        refined_script_path,
+        input_file=input_file.resolve(),
+        output_dir=job_dir,
+    )
+    if safety_issues:
+        result = {
+            "success": False,
+            "message": "图表调整脚本未通过安全检查。",
+            "job_id": job_id,
+            "chart_path": chart_path,
+            "instruction": instruction,
+            "source_script_path": str(source_script_path),
+            "refined_script_path": str(refined_script_path),
+            "execution_result_path": None,
+            "chart_paths": _collect_chart_paths(job_dir, workflow_type),
+            "safety_issues": safety_issues,
+        }
+        _write_json(refinements_dir / f"refinement_result_{timestamp}.json", result)
+        return result
+
+    before_chart_files = _chart_file_set(job_dir)
+    execution_result = LocalSubprocessSandboxExecutor().execute(
+        generated_script_path=str(refined_script_path),
+        input_file=str(input_file.resolve()),
+        output_dir=str(job_dir),
+        timeout_seconds=timeout_seconds,
+    )
+    if execution_result.get("success"):
+        _replace_target_chart_if_new_chart_created(
+            job_dir=job_dir,
+            job_id=job_id,
+            chart_path=chart_path,
+            before_chart_files=before_chart_files,
+        )
+    execution_result_path = refinements_dir / f"refinement_execution_{timestamp}.json"
+    _write_json(execution_result_path, execution_result)
+    chart_paths = _collect_chart_paths(job_dir, workflow_type)
+    result = {
+        "success": bool(execution_result.get("success")),
+        "message": "图表已按要求重新渲染。" if execution_result.get("success") else "图表调整脚本执行失败，请修改要求后重试。",
+        "job_id": job_id,
+        "chart_path": chart_path,
+        "instruction": instruction,
+        "source_script_path": str(source_script_path),
+        "refined_script_path": str(refined_script_path),
+        "execution_result_path": str(execution_result_path),
+        "chart_paths": chart_paths,
+        "safety_issues": [],
+    }
+    _write_json(refinements_dir / f"refinement_result_{timestamp}.json", result)
+    return result
 
 
 def run_workflow_job_background(
@@ -74,7 +285,7 @@ def run_workflow_job_background(
         job_dir = (JOB_ROOT / job_id).resolve()
         current_status = _read_json_if_exists(job_dir / WORKFLOW_STATUS_FILENAME) or {}
         events = _event_list(current_status.get("events"))
-        events.append(create_event("failed", "failed", f"Unified workflow failed: {exc}"))
+        events.append(create_event("failed", "failed", f"统一分析任务执行失败：{exc}"))
         _write_workflow_status(
             job_dir=job_dir,
             job_id=job_id,
@@ -111,10 +322,10 @@ def run_workflow_job(
     current_status = _read_json_if_exists(job_dir / WORKFLOW_STATUS_FILENAME) or {}
     events = _event_list(current_status.get("events"))
     if not events:
-        events.append(create_event("queued", "pending", "Unified workflow job created."))
+        events.append(create_event("queued", "pending", "统一分析任务已创建。"))
     asset_type = _safe_asset_type(dataset_id)
 
-    events.append(create_event("loading_dataset", "running", "Loading uploaded dataset and profile."))
+    events.append(create_event("loading_dataset", "running", "正在读取数据并生成字段画像。"))
     _write_workflow_status(
         job_dir=job_dir,
         job_id=job_id,
@@ -135,7 +346,7 @@ def run_workflow_job(
     visual_extracted_dataset_path = None
     visual_extraction_confidence = None
     if asset_type == IMAGE_ASSET_TYPE:
-        events.append(create_event("visual_parsing", "running", "Vision Parsing Agent is extracting structured data from the image."))
+        events.append(create_event("visual_parsing", "running", "视觉解析 Agent 正在从图片中抽取结构化数据。"))
         _write_workflow_status(
             job_dir=job_dir,
             job_id=job_id,
@@ -159,7 +370,7 @@ def run_workflow_job(
         _write_json(job_dir / "visual_parse_result.json", parse_result)
         visual_extraction_confidence = parse_result.get("confidence")
         if not parse_result.get("success"):
-            events.append(create_event("visual_parsing", "failed", "Vision Parsing Agent could not extract reliable structured data."))
+            events.append(create_event("visual_parsing", "failed", "视觉解析 Agent 未能从图片中抽取可靠结构化数据。"))
             return _write_workflow_status(
                 job_dir=job_dir,
                 job_id=job_id,
@@ -185,23 +396,34 @@ def run_workflow_job(
         extracted_path = get_dataset_dir(dataset_id) / "visual_extracted.csv"
         write_visual_extracted_csv(parse_result, extracted_path)
         visual_extracted_dataset_path = str(extracted_path)
-        events.append(create_event("visual_parsing", "success", "Vision Parsing Agent extracted structured data from the image."))
+        events.append(create_event("visual_parsing", "success", "视觉解析 Agent 已完成图片结构化抽取。"))
 
     load_uploaded_dataset(dataset_id)
     dataset_profile = generate_dataset_profile(dataset_id)
     _write_json(job_dir / "dataset_profile.json", dataset_profile)
 
-    events.append(create_event("rag_retrieval", "running", "Retrieving business knowledge for controller routing."))
+    events.append(create_event("rag_retrieval", "running", "正在检索业务知识，为主控分流提供参考。"))
     rag_search_result = get_rag_service().search(query=user_goal, dataset_profile=dataset_profile)
     rag_context = format_rag_context(rag_search_result)
     _write_json(job_dir / "rag_retrieval.json", rag_search_result)
 
-    events.append(create_event("controller", "running", "Controller Agent is choosing the workflow."))
+    events.append(create_event("controller", "running", "主控 Agent 正在选择分析工作流。"))
     controller_plan = create_controller_plan(user_goal, dataset_profile, rag_context=rag_context)
     task_type = str(controller_plan.get("task_type") or "general_data_analysis")
     workflow_type = PREDICTION_TASK_TYPE if task_type == PREDICTION_TASK_TYPE else ANALYSIS_WORKFLOW_TYPE
     _write_json(job_dir / "controller_plan.json", controller_plan)
-    events.append(create_event("controller", "success", f"Controller selected {task_type}."))
+    events.append(create_event("controller", "success", f"主控 Agent 已选择任务类型：{task_type}。"))
+
+    events.append(create_event("roadmap", "running", "路线图 Agent 正在生成可视化分析路线。"))
+    roadmap = create_analysis_roadmap(
+        user_goal=user_goal,
+        dataset_profile=dataset_profile,
+        controller_plan=controller_plan,
+        workflow_type=workflow_type,
+    )
+    analysis_roadmap_path = str(job_dir / ROADMAP_FILENAME)
+    _write_json(job_dir / ROADMAP_FILENAME, roadmap)
+    events.append(create_event("roadmap", "success", "路线图 Agent 已生成可视化分析路线。"))
     _write_workflow_status(
         job_dir=job_dir,
         job_id=job_id,
@@ -219,6 +441,7 @@ def run_workflow_job(
         controller_plan_path=str(job_dir / "controller_plan.json"),
         rag_retrieval_path=str(job_dir / "rag_retrieval.json"),
         dataset_profile_path=str(job_dir / "dataset_profile.json"),
+        analysis_roadmap_path=analysis_roadmap_path,
         visual_parse_result_path=visual_parse_result_path,
         visual_extracted_dataset_path=visual_extracted_dataset_path,
         visual_extraction_confidence=_float_or_none(visual_extraction_confidence),
@@ -307,7 +530,17 @@ def delete_workflow_job(job_id: str) -> dict[str, Any]:
 
 def get_workflow_job_status(job_id: str) -> dict[str, Any]:
     job_dir = _get_job_dir(job_id)
+    workflow_status = _read_json_if_exists(job_dir / WORKFLOW_STATUS_FILENAME)
     prediction_status = _read_json_if_exists(job_dir / "prediction_task_status.json")
+    analysis_status = _read_json_if_exists(job_dir / "task_status.json")
+
+    if _is_authoritative_workflow_failure(workflow_status, prediction_status, analysis_status):
+        return _normalize_workflow_status(
+            workflow_status or {},
+            workflow_type=(workflow_status or {}).get("workflow_type") or _workflow_type_for_job_dir(job_dir),
+            task_type=(workflow_status or {}).get("task_type") or _controller_task_type(job_dir),
+        )
+
     if prediction_status is not None:
         return _normalize_workflow_status(
             prediction_status,
@@ -315,7 +548,6 @@ def get_workflow_job_status(job_id: str) -> dict[str, Any]:
             task_type=_controller_task_type(job_dir) or PREDICTION_TASK_TYPE,
         )
 
-    analysis_status = _read_json_if_exists(job_dir / "task_status.json")
     if analysis_status is not None:
         return _normalize_workflow_status(
             analysis_status,
@@ -323,7 +555,6 @@ def get_workflow_job_status(job_id: str) -> dict[str, Any]:
             task_type=_controller_task_type(job_dir) or "general_data_analysis",
         )
 
-    workflow_status = _read_json_if_exists(job_dir / WORKFLOW_STATUS_FILENAME)
     if workflow_status is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow status not found.")
     return _normalize_workflow_status(
@@ -349,7 +580,10 @@ def get_workflow_job_log(job_id: str) -> dict[str, Any]:
             "validation_results": [],
             "retry_count": 0,
             "max_retries": int(status_data.get("effective_max_retries") or 0),
-            "artifacts": {},
+            "artifacts": {
+                "analysis_roadmap": status_data.get("analysis_roadmap_path"),
+                "quality_review": status_data.get("quality_review_path"),
+            },
             "events": status_data.get("events") or [],
         }
     log_data = {
@@ -364,6 +598,8 @@ def get_workflow_job_log(job_id: str) -> dict[str, Any]:
         "visual_parse_result": status_data.get("visual_parse_result_path"),
         "visual_extracted_dataset": status_data.get("visual_extracted_dataset_path"),
         "charts": status_data.get("chart_paths") or [],
+        "analysis_roadmap": status_data.get("analysis_roadmap_path"),
+        "quality_review": status_data.get("quality_review_path"),
     }
     if log_data["workflow_type"] == PREDICTION_TASK_TYPE:
         log_data.setdefault("prediction_plan", _read_json_if_exists(Path(str(status_data.get("prediction_plan_path") or ""))))
@@ -416,6 +652,8 @@ def _write_workflow_status(
     controller_plan_path: str | None = None,
     rag_retrieval_path: str | None = None,
     dataset_profile_path: str | None = None,
+    analysis_roadmap_path: str | None = None,
+    quality_review_path: str | None = None,
     visual_parse_result_path: str | None = None,
     visual_extracted_dataset_path: str | None = None,
     visual_extraction_confidence: float | None = None,
@@ -435,6 +673,8 @@ def _write_workflow_status(
         "controller_plan_path": controller_plan_path,
         "rag_retrieval_path": rag_retrieval_path,
         "dataset_profile_path": dataset_profile_path,
+        "analysis_roadmap_path": analysis_roadmap_path,
+        "quality_review_path": quality_review_path,
         "visual_parse_result_path": visual_parse_result_path,
         "visual_extracted_dataset_path": visual_extracted_dataset_path,
         "visual_extraction_confidence": visual_extraction_confidence,
@@ -459,7 +699,10 @@ def _write_workflow_status(
             "validation_results": [],
             "retry_count": 0,
             "max_retries": max_retries,
-            "artifacts": {},
+            "artifacts": {
+                "analysis_roadmap": analysis_roadmap_path,
+                "quality_review": quality_review_path,
+            },
             "visual_parse_result": visual_parse_result_path,
             "visual_extracted_dataset": visual_extracted_dataset_path,
             "events": events,
@@ -481,6 +724,8 @@ def _normalize_workflow_status(
             "controller_plan_path": _existing_or_none(data.get("controller_plan_path"), job_dir / "controller_plan.json"),
             "rag_retrieval_path": _existing_or_none(data.get("rag_retrieval_path"), job_dir / "rag_retrieval.json"),
             "dataset_profile_path": _existing_or_none(data.get("dataset_profile_path"), job_dir / "dataset_profile.json"),
+            "analysis_roadmap_path": _existing_or_none(data.get("analysis_roadmap_path"), job_dir / ROADMAP_FILENAME),
+            "quality_review_path": _existing_or_none(data.get("quality_review_path"), job_dir / QUALITY_REVIEW_FILENAME),
             "visual_parse_result_path": _existing_or_none(data.get("visual_parse_result_path"), job_dir / "visual_parse_result.json"),
             "visual_extracted_dataset_path": data.get("visual_extracted_dataset_path"),
             "data_understanding_path": _existing_or_none(data.get("data_understanding_path"), job_dir / "data_understanding.json"),
@@ -512,6 +757,8 @@ def _normalize_workflow_status(
         "controller_plan_path": data.get("controller_plan_path"),
         "rag_retrieval_path": data.get("rag_retrieval_path"),
         "dataset_profile_path": data.get("dataset_profile_path"),
+        "analysis_roadmap_path": data.get("analysis_roadmap_path"),
+        "quality_review_path": data.get("quality_review_path"),
         "visual_parse_result_path": data.get("visual_parse_result_path"),
         "visual_extracted_dataset_path": _visual_extracted_path(data, job_dir),
         "visual_extraction_confidence": data.get("visual_extraction_confidence") if data.get("visual_extraction_confidence") is not None else _visual_confidence(job_dir),
@@ -535,12 +782,31 @@ def _normalize_workflow_status(
 
 
 def _history_status_data(job_dir: Path) -> dict[str, Any] | None:
-    for filename in ("prediction_task_status.json", "task_status.json", WORKFLOW_STATUS_FILENAME):
-        data = _read_json_if_exists(job_dir / filename)
+    prediction_status = _read_json_if_exists(job_dir / "prediction_task_status.json")
+    analysis_status = _read_json_if_exists(job_dir / "task_status.json")
+    workflow_status = _read_json_if_exists(job_dir / WORKFLOW_STATUS_FILENAME)
+    if _is_authoritative_workflow_failure(workflow_status, prediction_status, analysis_status):
+        return workflow_status
+    for data in (prediction_status, analysis_status, workflow_status):
         if data:
             return data
     return None
 
+
+
+def _is_authoritative_workflow_failure(
+    workflow_status: dict[str, Any] | None,
+    prediction_status: dict[str, Any] | None,
+    analysis_status: dict[str, Any] | None,
+) -> bool:
+    if not workflow_status or workflow_status.get("status") != "failed" or not workflow_status.get("error"):
+        return False
+    branch_status = prediction_status or analysis_status
+    if branch_status is None:
+        return True
+    if branch_status.get("status") in {"success", "failed"}:
+        return False
+    return True
 
 
 
@@ -631,18 +897,117 @@ def _get_job_dir(job_id: str) -> Path:
 
 
 
+def _latest_existing_script_path(status_data: dict[str, Any]) -> Path | None:
+    attempts = _dict_list(status_data.get("attempts"))
+    for attempt in reversed(attempts):
+        script_path = Path(str(attempt.get("script_path") or ""))
+        if script_path.exists() and script_path.is_file():
+            return script_path
+    return None
+
+def _chart_file_set(job_dir: Path) -> set[Path]:
+    charts_dir = job_dir / "charts"
+    if not charts_dir.exists():
+        return set()
+    return {path.resolve() for path in charts_dir.glob("*.png") if path.is_file()}
+
+
+def _replace_target_chart_if_new_chart_created(
+    *,
+    job_dir: Path,
+    job_id: str,
+    chart_path: str,
+    before_chart_files: set[Path],
+) -> None:
+    after_chart_files = _chart_file_set(job_dir)
+    new_chart_files = after_chart_files - before_chart_files
+    if not new_chart_files:
+        return
+    try:
+        target_file = _resolve_chart_file(job_dir, job_id, chart_path).resolve()
+    except HTTPException:
+        return
+    if target_file in new_chart_files or not target_file.exists():
+        return
+
+    ordered_new_files = sorted(
+        new_chart_files,
+        key=lambda path: path.stat().st_mtime if path.exists() else 0.0,
+        reverse=True,
+    )
+    refined_file = ordered_new_files[0]
+    try:
+        shutil.copyfile(refined_file, target_file)
+    except OSError:
+        return
+
+    for new_file in ordered_new_files:
+        try:
+            if new_file.exists() and new_file.resolve() != target_file:
+                new_file.unlink()
+        except OSError:
+            pass
+
+    for filename in ("analysis_result.json", "prediction_result.json", "report_data.json"):
+        artifact_path = job_dir / filename
+        artifact_data = _read_json_if_exists(artifact_path)
+        if not artifact_data:
+            continue
+        updated_data, changed = _replace_refined_chart_refs(artifact_data, target_file, ordered_new_files, job_dir)
+        if changed:
+            _write_json(artifact_path, updated_data)
+
+
+def _replace_refined_chart_refs(
+    data: dict[str, Any],
+    target_file: Path,
+    refined_files: list[Path],
+    job_dir: Path,
+) -> tuple[dict[str, Any], bool]:
+    updated = dict(data)
+    changed = False
+    target_entry = _chart_storage_path(job_dir, target_file)
+    for key in ("charts", "chart_paths"):
+        value = updated.get(key)
+        if not isinstance(value, list):
+            continue
+        filtered = []
+        target_present = False
+        for item in value:
+            raw_path = _chart_entry_path(item)
+            if raw_path and any(_same_chart_path(raw_path, refined_file, job_dir) for refined_file in refined_files):
+                changed = True
+                continue
+            if raw_path and _same_chart_path(raw_path, target_file, job_dir):
+                target_present = True
+            filtered.append(item)
+        if not target_present:
+            filtered.append(target_entry)
+            changed = True
+        updated[key] = filtered
+    return updated, changed
+
+
+
 def _collect_chart_paths(job_dir: Path, workflow_type: str) -> list[str]:
     if not job_dir.exists():
         return []
 
     result_filename = "prediction_result.json" if workflow_type == PREDICTION_TASK_TYPE else "analysis_result.json"
-    result_data = _read_json_if_exists(job_dir / result_filename) or {}
-    paths = _extract_chart_paths(result_data.get("charts"), job_dir)
-    if not paths:
-        charts_dir = job_dir / "charts"
-        paths = [str(path) for path in sorted(charts_dir.glob("*.png")) if path.is_file() and path.stat().st_size > 0] if charts_dir.exists() else []
-    return _deduplicate_strings(paths)
+    paths: list[str] = []
+    for filename in (result_filename, "report_data.json"):
+        result_data = _read_json_if_exists(job_dir / filename) or {}
+        paths.extend(_extract_chart_paths(result_data.get("charts"), job_dir))
+        paths.extend(_extract_chart_paths(result_data.get("chart_paths"), job_dir))
 
+    charts_dir = job_dir / "charts"
+    if charts_dir.exists():
+        paths.extend(
+            str(path)
+            for path in sorted(charts_dir.glob("*.png"))
+            if path.is_file() and path.stat().st_size > 0
+        )
+    return _deduplicate_strings(paths)
 
 def _extract_chart_paths(value: Any, job_dir: Path) -> list[str]:
     if not isinstance(value, list):
@@ -876,4 +1241,7 @@ def _event_list(value: Any) -> list[dict[str, Any]]:
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+
 
