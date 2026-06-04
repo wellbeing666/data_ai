@@ -188,26 +188,85 @@ def _normalize(result: Any, user_goal: str, dataset_profile: dict[str, Any]) -> 
 
 
 def _extract_change_value(text: str) -> float:
+    bedroom_change = _extract_bedroom_change(text)
+    if bedroom_change is not None:
+        return bedroom_change
+    quality_change = _extract_quality_level_change(text)
+    if quality_change is not None:
+        return quality_change
     distance_change = _extract_from_to_distance_change(text)
     if distance_change is not None:
         return distance_change
     match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*%", text)
     if match:
         return float(match.group(1)) / 100.0
-    match = re.search(r"(增加|提升|提高|减少|降低|下降|缩短|拉近|延长|扩大)\s*([+-]?\d+(?:\.\d+)?)", text)
+    match = re.search(r"(增加|提升|提高|减少|降低|下降|缩短|拉近|延长|扩大|新增)\s*([+-]?\d+(?:\.\d+)?)", text)
     if match:
         value = float(match.group(2))
         if match.group(1) in {"减少", "降低", "下降", "缩短", "拉近"}:
             value = -value
         return value
     match = re.search(
-        r"([+-]?\d+(?:\.\d+)?)\s*(平方米|平米|㎡|m2|m\^2|平方英尺|sq\.?\s*ft|sqft|公里|千米|km|米|m)",
+        r"([+-]?\d+(?:\.\d+)?)\s*(平方米|平米|㎡|m2|m\^2|平方英尺|sq\.?\s*ft|sqft|公里|千米|km|米|m|年|层|档|级|间)",
         text,
         flags=re.IGNORECASE,
     )
     if match:
         return float(match.group(1))
     return 0.0
+
+
+def _extract_bedroom_change(text: str) -> float | None:
+    pattern = re.compile(
+        r"(?:从)?\s*([一二两三四五六七八九十\d]+)\s*(?:居|室|房|卧|间)\s*"
+        r"(?:变为|变成|调整为|改为|增加到|增加至|到|至)\s*"
+        r"([一二两三四五六七八九十\d]+)\s*(?:居|室|房|卧|间)",
+    )
+    match = pattern.search(text)
+    if not match:
+        return None
+    start = _chinese_number_to_float(match.group(1))
+    end = _chinese_number_to_float(match.group(2))
+    if start is None or end is None:
+        return None
+    return float(end - start)
+
+
+def _extract_quality_level_change(text: str) -> float | None:
+    if not any(token in text for token in ("装修", "精装", "简装", "普通", "质量", "等级")):
+        return None
+    if any(token in text for token in ("普通变为精装修", "普通变成精装修", "普通到精装修", "普通提升为精装修", "普通改为精装修")):
+        return 1.0
+    if any(token in text for token in ("普通变为豪华", "普通变成豪华", "普通到豪华")):
+        return 2.0
+    if any(token in text for token in ("精装修变为普通", "精装修变成普通", "精装修到普通")):
+        return -1.0
+    if any(token in text for token in ("简装变为普通", "简装变成普通", "简装到普通")):
+        return 1.0
+    if any(token in text for token in ("普通变为简装", "普通变成简装", "普通到简装")):
+        return -1.0
+    return None
+
+
+def _chinese_number_to_float(value: str) -> float | None:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    mapping = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if value in mapping:
+        return float(mapping[value])
+    if value == "十":
+        return 10.0
+    if "十" in value:
+        left, _, right = value.partition("十")
+        tens = mapping.get(left, 1 if left == "" else 0)
+        ones = mapping.get(right, 0) if right else 0
+        return float(tens * 10 + ones)
+    return None
 
 
 def _extract_from_to_distance_change(text: str) -> float | None:
@@ -240,6 +299,12 @@ def _extract_unit(text: str) -> str:
         return "平方米"
     if any(token in text for token in ("平方英尺",)) or any(token in lowered for token in ("sqft", "sq ft", "square foot", "square feet")):
         return "平方英尺"
+    if any(token in text for token in ("装修", "精装", "等级", "档")):
+        return "等级"
+    if any(token in text for token in ("两居", "二居", "三居", "卧室", "居室", "户型")) or any(token in lowered for token in ("bedroom", "bedrooms")):
+        return "间"
+    if "年" in text or any(token in lowered for token in ("year", "years")):
+        return "年"
     if any(token in text for token in ("公里", "千米", "米")) or re.search(r"\b(km|m)\b", lowered):
         return "米"
     return ""
@@ -259,17 +324,44 @@ def _target_phrase(text: str) -> str:
 
 
 def _entity_phrase(text: str) -> str:
-    candidates = ["某套房", "房屋", "房子", "住宅", "房源", "商品", "产品", "班级", "学生", "区域", "渠道", "品类", "客户"]
+    candidates = ["同一套房", "某套房", "房屋", "房子", "住宅", "房源", "小区", "区域", "周边", "商品", "产品", "班级", "学生", "渠道", "品类", "客户"]
     return next((item for item in candidates if item in text), "")
 
 
 def _intervention_variable(text: str) -> str:
     candidates = [
+        "房屋年龄",
+        "建筑年龄",
+        "房龄",
+        "楼龄",
+        "建成年份",
+        "建筑年份",
+        "建造年份",
+        "YearBuilt",
         "距离地铁",
         "地铁距离",
         "距地铁距离",
         "距地铁",
+        "地铁站",
+        "地铁",
         "距离",
+        "贷款利率",
+        "按揭利率",
+        "房贷利率",
+        "利率",
+        "楼层",
+        "低层",
+        "中高层",
+        "装修等级",
+        "装修",
+        "精装修",
+        "普通装修",
+        "卧室数",
+        "居室数",
+        "两居",
+        "二居",
+        "三居",
+        "户型",
         "营销预算",
         "预算",
         "面积",
@@ -280,8 +372,14 @@ def _intervention_variable(text: str) -> str:
     for candidate in candidates:
         if candidate in text:
             return candidate
+    if "house age" in lowered or "building age" in lowered:
+        return "房龄"
+    if "yearbuilt" in lowered or "year built" in lowered:
+        return "建造年份"
     if "subway" in lowered or "metro" in lowered:
         return "距离地铁"
+    if "bedroom" in lowered:
+        return "卧室数"
     return text
 
 
@@ -338,6 +436,26 @@ def _column_matches_phrase(column: str, phrase: str) -> bool:
     return False
 
 
+def _house_age_aliases() -> list[str]:
+    return [
+        "HouseAge",
+        "house_age",
+        "BuildingAge",
+        "building_age",
+        "房龄",
+        "房屋年龄",
+        "建筑年龄",
+        "楼龄",
+        "YearBuilt",
+        "year_built",
+        "BuiltYear",
+        "Built_Year",
+        "建成年份",
+        "建造年份",
+        "建筑年份",
+    ]
+
+
 def _column_aliases() -> dict[str, list[str]]:
     distance_aliases = [
         "DistanceToMetro",
@@ -365,9 +483,35 @@ def _column_aliases() -> dict[str, list[str]]:
         "地铁": distance_aliases,
         "subway": distance_aliases,
         "metro": distance_aliases,
+        "房龄": _house_age_aliases(),
+        "房屋年龄": _house_age_aliases(),
+        "建筑年龄": _house_age_aliases(),
+        "楼龄": _house_age_aliases(),
+        "建成年份": ["YearBuilt", "year_built", "BuiltYear", "Built_Year", "建成年份", "建造年份", "建筑年份"],
+        "建造年份": ["YearBuilt", "year_built", "BuiltYear", "Built_Year", "建成年份", "建造年份", "建筑年份"],
+        "建筑年份": ["YearBuilt", "year_built", "BuiltYear", "Built_Year", "建成年份", "建造年份", "建筑年份"],
+        "yearbuilt": ["YearBuilt", "year_built", "BuiltYear", "Built_Year"],
         "面积": ["GrLivArea", "LivingArea", "TotalBsmtSF", "1stFlrSF", "2ndFlrSF", "LotArea", "GarageArea", "面积", "Area", "SF"],
         "平方米": ["GrLivArea", "LivingArea", "TotalBsmtSF", "1stFlrSF", "2ndFlrSF", "LotArea", "GarageArea", "面积", "Area", "SF"],
         "平米": ["GrLivArea", "LivingArea", "TotalBsmtSF", "1stFlrSF", "2ndFlrSF", "LotArea", "GarageArea", "面积", "Area", "SF"],
+        "装修等级": ["OverallQual", "KitchenQual", "ExterQual", "OverallCond", "装修等级", "装修", "quality"],
+        "装修": ["OverallQual", "KitchenQual", "ExterQual", "OverallCond", "装修等级", "装修", "quality"],
+        "精装修": ["OverallQual", "KitchenQual", "ExterQual", "OverallCond", "装修等级", "装修", "quality"],
+        "普通装修": ["OverallQual", "KitchenQual", "ExterQual", "OverallCond", "装修等级", "装修", "quality"],
+        "卧室数": ["BedroomAbvGr", "Bedrooms", "Bedroom", "卧室数", "居室数", "居室", "户型", "TotRmsAbvGrd"],
+        "居室数": ["BedroomAbvGr", "Bedrooms", "Bedroom", "卧室数", "居室数", "居室", "户型", "TotRmsAbvGrd"],
+        "两居": ["BedroomAbvGr", "Bedrooms", "Bedroom", "卧室数", "居室数", "居室", "户型", "TotRmsAbvGrd"],
+        "二居": ["BedroomAbvGr", "Bedrooms", "Bedroom", "卧室数", "居室数", "居室", "户型", "TotRmsAbvGrd"],
+        "三居": ["BedroomAbvGr", "Bedrooms", "Bedroom", "卧室数", "居室数", "居室", "户型", "TotRmsAbvGrd"],
+        "户型": ["BedroomAbvGr", "Bedrooms", "Bedroom", "卧室数", "居室数", "居室", "户型", "TotRmsAbvGrd"],
+        "贷款利率": ["InterestRate", "MortgageRate", "LoanRate", "贷款利率", "房贷利率", "按揭利率", "利率"],
+        "按揭利率": ["InterestRate", "MortgageRate", "LoanRate", "贷款利率", "房贷利率", "按揭利率", "利率"],
+        "房贷利率": ["InterestRate", "MortgageRate", "LoanRate", "贷款利率", "房贷利率", "按揭利率", "利率"],
+        "利率": ["InterestRate", "MortgageRate", "LoanRate", "贷款利率", "房贷利率", "按揭利率", "利率"],
+        "楼层": ["Floor", "FloorLevel", "楼层", "所在楼层", "floor"],
+        "低层": ["Floor", "FloorLevel", "楼层", "所在楼层", "floor"],
+        "中高层": ["Floor", "FloorLevel", "楼层", "所在楼层", "floor"],
+        "同一套房": ["Id", "房屋编号", "编号", "house_id", "ID", "id"],
         "某套房": ["Id", "房屋编号", "编号", "house_id", "ID", "id"],
         "房屋": ["Id", "房屋编号", "编号", "house_id", "ID", "id"],
         "房子": ["Id", "房屋编号", "编号", "house_id", "ID", "id"],
@@ -400,3 +544,5 @@ def _columns(dataset_profile: dict[str, Any]) -> list[str]:
 
 def _list(value: Any) -> list[str]:
     return [str(item) for item in value] if isinstance(value, list) else []
+
+

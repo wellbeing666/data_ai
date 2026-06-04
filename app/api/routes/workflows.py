@@ -2,12 +2,13 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Query
 
-from app.schemas.workflow import WorkflowJobRequest, WorkflowJobResponse, WorkflowLogResponse
+from app.schemas.workflow import WorkflowJobListResponse, WorkflowJobRequest, WorkflowJobResponse, WorkflowLogResponse
 from app.services.workflow_service import (
     create_workflow_job_record,
     delete_workflow_chart,
     get_workflow_job_log,
     get_workflow_job_status,
+    list_workflow_jobs,
     run_workflow_job_background,
 )
 
@@ -35,6 +36,13 @@ def create_workflow_job_async(
         request.timeout_seconds,
     )
     return WorkflowJobResponse(**result)
+
+
+
+
+@router.get("/jobs", response_model=WorkflowJobListResponse)
+def read_workflow_job_list(limit: int = Query(default=30, ge=1, le=100)) -> WorkflowJobListResponse:
+    return WorkflowJobListResponse(**list_workflow_jobs(limit=limit))
 
 
 @router.get("/jobs/{job_id}", response_model=WorkflowJobResponse)

@@ -9,7 +9,9 @@ SYSTEM_PROMPT = """You are the Prediction Planning Agent for a what-if simulatio
 Create a practical prediction/simulation plan from the user goal, dataset profile, and parsed hypothesis.
 Return only one valid JSON object. Do not output markdown or explanation.
 Use only fields that exist in dataset_profile.columns.
-If the intervention variable described by the user is not represented by any dataset column, keep intervention.column empty and explain the limitation. Do not substitute another numeric column.
+If the intervention variable described by the user is not represented by any dataset column, keep intervention.column empty and explain the limitation. Do not substitute another numeric column or a loose proxy.
+For example, do not use HouseStyle as the field for a floor-level question, and do not use Neighborhood, Condition1, or road-related fields as the field for a subway/metro-station question unless the column directly measures subway/metro distance or station access.
+All user-facing text in prediction_goal, fallback_strategy, charts, and limitations must be Simplified Chinese.
 
 Required schema:
 {
@@ -41,7 +43,7 @@ def build_user_prompt(
     hypothesis_plan: dict[str, Any],
     rag_context: list[dict[str, Any]] | None = None,
 ) -> str:
-    return """Create a prediction plan.
+    return """请创建情景预测计划。
 
 User goal:
 {user_goal}
@@ -56,8 +58,13 @@ Retrieved business knowledge JSON:
 {rag_context}
 
 Use only dataset_profile.columns for target_metric, intervention.column, entity_dimension, and feature_columns.
-If the request uses a unit such as 平方米, keep it in intervention.unit.
-If hypothesis_plan.intervention.matched_column is empty, do not choose a different numeric intervention column unless its name directly matches the user's intervention phrase.
+If the request uses a unit such as 平方米 or 年, keep it in intervention.unit.
+If the request says 房龄/房屋年龄/楼龄 and dataset_profile has HouseAge, use HouseAge as the intervention column. If HouseAge is absent but YearBuilt exists, use YearBuilt and let the execution script apply the age direction as the inverse of build year.
+If hypothesis_plan.intervention.matched_column is empty, do not choose a different numeric intervention column unless its name directly matches the user's intervention phrase or is a documented transformable field such as 房龄 -> YearBuilt.
+装修等级/精装修/普通装修类问题优先使用可量化的总体质量字段，例如 OverallQual；不要把 ExterQual 或 KitchenQual 这类分项文字等级当作总体装修等级，除非没有可量化总体质量字段且计划明确说明如何做有序映射。
+楼层问题必须有楼层字段；HouseStyle 是建筑样式/层数形态，不等同于房源所在楼层。
+地铁问题必须有地铁站、地铁距离或轨道交通可达性字段；区域、道路条件、邻里字段不能作为地铁变量代理。
+所有可展示文本使用中文。
 """.format(
         user_goal=user_goal,
         dataset_profile=json.dumps(dataset_profile, ensure_ascii=False, indent=2),
@@ -144,14 +151,14 @@ def create_rule_based_prediction_plan(
     limitations = []
     if not target:
         unsupported_reason = "当前数据集中未识别到可用于预测的目标指标字段。"
-        limitations.append("No numeric target metric was identified; prediction cannot be computed from the uploaded data.")
+        limitations.append("未识别到可用于预测的数值型目标指标，无法基于当前上传数据计算预测。")
     if not intervention_column:
         raw_intervention = str(hypothesis_intervention.get("raw_text") or hypothesis_intervention.get("variable") or user_goal)
         reason = f"当前数据集中未找到与情景变量“{raw_intervention}”对应的字段，不能用其他数值字段替代模拟。"
         unsupported_reason = unsupported_reason or reason
         limitations.append(reason)
     if not entity:
-        limitations.append("No entity dimension was identified; only aggregate output can be shown when prediction is supported.")
+        limitations.append("未识别到对象维度；如果其他字段满足预测条件，只能展示总体汇总结果。")
 
     is_supported = bool(target and intervention_column)
     return {
@@ -169,9 +176,9 @@ def create_rule_based_prediction_plan(
         "feature_columns": feature_columns[:12] if is_supported else [],
         "model_candidates": ["ridge_regression", "linear_regression", "rule_based_simulation"] if is_supported else ["unsupported_missing_required_column"],
         "fallback_strategy": (
-            "Use rule-based simulation when sklearn is unavailable, sample size is too small, or required fields are missing."
+            "当机器学习库不可用、样本量不足或字段条件不充分时，使用可审计的规则化模拟。"
             if is_supported
-            else "Do not run a predictive simulation when the requested intervention variable is absent from the dataset."
+            else "当请求的情景变量在数据集中不存在时，不运行预测模拟，避免输出误导性数值。"
         ),
         "charts": ["change_summary_bar", "baseline_vs_predicted_scatter"] if is_supported else [],
         "limitations": limitations,
@@ -192,7 +199,13 @@ def _normalize(
     columns = set(_columns(dataset_profile))
     intervention = result.get("intervention") if isinstance(result.get("intervention"), dict) else {}
     candidate_intervention = _existing(intervention.get("column"), columns)
-    accepted_intervention = _accept_intervention_column(candidate_intervention, user_goal, hypothesis_plan, fallback)
+    accepted_intervention = _accept_intervention_column(
+        candidate_intervention,
+        user_goal,
+        hypothesis_plan,
+        fallback,
+        dataset_profile,
+    )
 
     normalized = {
         **fallback,
@@ -223,6 +236,14 @@ def _normalize(
         normalized["charts"] = []
         normalized["model_candidates"] = ["unsupported_missing_required_column"]
     normalized["is_supported"] = bool(normalized["target_metric"] and normalized["intervention"]["column"])
+    if normalized["is_supported"]:
+        if normalized["model_candidates"] == ["unsupported_missing_required_column"]:
+            normalized["model_candidates"] = fallback["model_candidates"]
+        normalized["limitations"] = [
+            item
+            for item in normalized["limitations"]
+            if "未找到" not in str(item) and "missing required" not in str(item).lower()
+        ] or fallback.get("limitations", [])
     if not normalized["is_supported"]:
         normalized["unsupported_reason"] = fallback.get("unsupported_reason") or "当前数据不包含完成该情景预测所需的字段。"
         if normalized["unsupported_reason"] not in normalized["limitations"]:
@@ -257,6 +278,15 @@ def _mentions_area_change(user_goal: str) -> bool:
 
 def _choose_intervention(user_goal: str, numeric: list[str], columns: list[str], target: str) -> str:
     lowered = user_goal.lower()
+    if _mentions_house_age(user_goal):
+        column = _choose_existing_by_alias(
+            columns,
+            _house_age_aliases(),
+            numeric_required=True,
+            numeric_columns=numeric,
+        )
+        if column and column != target:
+            return column
     if any(keyword in user_goal for keyword in ("面积", "平方米", "平米", "㎡")) or any(keyword in lowered for keyword in ("area", "m2", "m^2")):
         column = _choose_existing_by_alias(
             columns,
@@ -290,6 +320,24 @@ def _choose_intervention(user_goal: str, numeric: list[str], columns: list[str],
         )
         if column and column != target:
             return column
+    if any(keyword in user_goal for keyword in ("装修", "精装修", "普通装修", "质量等级", "装修等级")) or any(keyword in lowered for keyword in ("quality", "finish")):
+        column = _choose_existing_by_alias(
+            columns,
+            ["OverallQual", "KitchenQual", "ExterQual", "OverallCond", "装修等级", "装修", "quality"],
+            numeric_required=True,
+            numeric_columns=numeric,
+        )
+        if column and column != target:
+            return column
+    if any(keyword in user_goal for keyword in ("两居", "二居", "三居", "卧室", "居室", "户型")) or any(keyword in lowered for keyword in ("bedroom", "bedrooms")):
+        column = _choose_existing_by_alias(
+            columns,
+            ["BedroomAbvGr", "Bedrooms", "Bedroom", "卧室数", "居室数", "居室", "户型", "TotRmsAbvGrd"],
+            numeric_required=True,
+            numeric_columns=numeric,
+        )
+        if column and column != target:
+            return column
     for column in numeric:
         if column != target and not _is_identifier_column(column):
             return column
@@ -297,11 +345,15 @@ def _choose_intervention(user_goal: str, numeric: list[str], columns: list[str],
 
 
 def _choose_dimension(user_goal: str, dataset_profile: dict[str, Any], columns: list[str]) -> str:
-    if any(keyword in user_goal for keyword in ("某套房", "房屋", "房子", "住宅", "房源")):
+    if any(keyword in user_goal for keyword in ("同一套房", "某套房", "房屋", "房子", "住宅", "房源")):
         column = _choose_existing_by_alias(columns, ["Id", "房屋编号", "编号", "house_id", "ID", "id"])
         if column:
             return column
-    for keyword in ("商品", "产品", "SKU", "班级", "区域", "渠道", "品类"):
+    if any(keyword in user_goal for keyword in ("区域", "小区", "周边", "地段")):
+        column = _choose_existing_by_alias(columns, ["Neighborhood", "小区", "区域", "地区", "MSZoning", "Location"])
+        if column:
+            return column
+    for keyword in ("商品", "产品", "SKU", "班级", "渠道", "品类"):
         if keyword in user_goal:
             for column in columns:
                 if keyword.lower() in column.lower():
@@ -315,17 +367,50 @@ def _choose_dimension(user_goal: str, dataset_profile: dict[str, Any], columns: 
     return ""
 
 
-def _accept_intervention_column(candidate: str, user_goal: str, hypothesis_plan: dict[str, Any], fallback: dict[str, Any]) -> str:
+def _accept_intervention_column(
+    candidate: str,
+    user_goal: str,
+    hypothesis_plan: dict[str, Any],
+    fallback: dict[str, Any],
+    dataset_profile: dict[str, Any],
+) -> str:
     fallback_column = str(fallback.get("intervention", {}).get("column") or "")
     if fallback_column:
         if not candidate:
             return fallback_column
-        if candidate == fallback_column or _column_matches_intervention(candidate, user_goal, hypothesis_plan):
+        if candidate == fallback_column:
+            return candidate
+        if _should_prefer_fallback_intervention(fallback_column, candidate, user_goal, hypothesis_plan, dataset_profile):
+            return fallback_column
+        if _column_matches_intervention(candidate, user_goal, hypothesis_plan):
             return candidate
         return fallback_column
     if candidate and _column_matches_intervention(candidate, user_goal, hypothesis_plan):
         return candidate
     return ""
+
+
+def _should_prefer_fallback_intervention(
+    fallback_column: str,
+    candidate: str,
+    user_goal: str,
+    hypothesis_plan: dict[str, Any],
+    dataset_profile: dict[str, Any],
+) -> bool:
+    intervention = hypothesis_plan.get("intervention") if isinstance(hypothesis_plan.get("intervention"), dict) else {}
+    text = " ".join(str(part or "") for part in (user_goal, intervention.get("raw_text"), intervention.get("variable"))).lower()
+    if _is_profile_numeric(fallback_column, dataset_profile) and not _is_profile_numeric(candidate, dataset_profile):
+        return True
+    if any(keyword in text for keyword in ("装修", "精装修", "普通装修", "装修等级", "质量", "quality", "finish")):
+        return fallback_column.lower() == "overallqual"
+    if "楼层" in text and candidate.lower() == "housestyle":
+        return True
+    return False
+
+
+def _is_profile_numeric(column: str, dataset_profile: dict[str, Any]) -> bool:
+    numeric_summary = dataset_profile.get("numeric_summary")
+    return isinstance(numeric_summary, dict) and column in numeric_summary
 
 
 def _column_matches_intervention(column: str, user_goal: str, hypothesis_plan: dict[str, Any]) -> bool:
@@ -353,7 +438,10 @@ def _column_matches_intervention(column: str, user_goal: str, hypothesis_plan: d
                 "subway",
             ],
         ),
+        (("房龄", "房屋年龄", "建筑年龄", "楼龄", "house age", "building age"), ["houseage", "buildingage", "yearbuilt", "builtyear", "房龄", "房屋年龄", "建成年份", "建造年份", "建筑年份"]),
         (("面积", "平方米", "平米", "㎡", "area"), ["grlivarea", "livingarea", "totalbsmtsf", "lotarea", "garagearea", "area", "sf", "面积"]),
+        (("装修", "精装修", "普通装修", "装修等级", "质量", "quality", "finish"), ["overallqual", "kitchenqual", "exterqual", "overallcond", "装修", "quality"]),
+        (("两居", "二居", "三居", "卧室", "居室", "户型", "bedroom"), ["bedroomabvgr", "bedrooms", "bedroom", "卧室", "居室", "户型", "totrmsabvgrd"]),
         (("预算", "营销", "投放", "budget", "marketing"), ["预算", "营销", "投放", "budget", "marketing"]),
         (("价格", "房价", "售价", "总价", "price"), ["price", "saleprice", "房价", "价格", "售价", "总价"]),
     ]
@@ -372,6 +460,33 @@ def _has_explicit_unmatched_intervention(intervention: dict[str, Any], user_goal
     if raw_text:
         return True
     return any(marker in user_goal for marker in ("如果", "假设", "当"))
+
+
+def _mentions_house_age(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(token in str(text or "") for token in ("房龄", "房屋年龄", "建筑年龄", "楼龄")) or any(
+        token in lowered for token in ("house age", "building age")
+    )
+
+
+def _house_age_aliases() -> list[str]:
+    return [
+        "HouseAge",
+        "house_age",
+        "BuildingAge",
+        "building_age",
+        "房龄",
+        "房屋年龄",
+        "建筑年龄",
+        "楼龄",
+        "YearBuilt",
+        "year_built",
+        "BuiltYear",
+        "Built_Year",
+        "建成年份",
+        "建造年份",
+        "建筑年份",
+    ]
 
 
 def _choose_existing_by_alias(

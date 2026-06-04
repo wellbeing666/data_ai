@@ -15,6 +15,7 @@ import {
   fetchKnowledgeDocuments,
   fetchPredictionJobStatus,
   fetchPredictionLog,
+  fetchWorkflowJobs,
   fetchWorkflowJobStatus,
   fetchWorkflowLog,
   generateReport,
@@ -44,6 +45,7 @@ import type {
   ReportGenerateResponse,
   ValidationAttemptLog,
   VisualParseResult,
+  WorkflowJobListItem,
   WorkflowJobResponse,
   WorkflowLogResponse
 } from "./types";
@@ -162,6 +164,9 @@ export default function App() {
   const [hiddenChartPaths, setHiddenChartPaths] = useState<string[]>([]);
   const [chartPreviewPath, setChartPreviewPath] = useState<string | null>(null);
   const [chartMessage, setChartMessage] = useState("");
+  const [workflowHistory, setWorkflowHistory] = useState<WorkflowJobListItem[]>([]);
+  const [historyMessage, setHistoryMessage] = useState("");
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   useEffect(() => {
     fetchHealthStatus()
@@ -179,6 +184,7 @@ export default function App() {
 
   useEffect(() => {
     refreshKnowledgeDocuments();
+    refreshWorkflowHistory();
   }, []);
 
   useEffect(() => {
@@ -320,6 +326,63 @@ export default function App() {
     }
   }
 
+  async function refreshWorkflowHistory() {
+    setLoadingHistory(true);
+    try {
+      const response = await fetchWorkflowJobs(30);
+      setWorkflowHistory(response.jobs);
+      setHistoryMessage("");
+    } catch (error) {
+      setHistoryMessage(error instanceof Error ? error.message : "读取历史分析列表失败。");
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
+  async function handleOpenHistoryJob(jobId: string) {
+    setHistoryMessage("正在载入历史分析结果。");
+    const historyItem = workflowHistory.find((item) => item.job_id === jobId) ?? null;
+    setJob(null);
+    setExecutionLog(null);
+    setAnalysisResult(null);
+    setControllerPlan(null);
+    setRagRetrieval(null);
+    setDataUnderstanding(null);
+    setAnalysisPlan(null);
+    setVisualParseResult(null);
+    setExplanation(emptyExplanation);
+    setReport(null);
+    setReportGeneratedFor("");
+    setPredictionJob(null);
+    setPredictionLog(null);
+    setPredictionResult(null);
+    setPredictionExplanation(emptyPredictionExplanation);
+    setHypothesisPlan(null);
+    setPredictionPlan(null);
+    setHiddenChartPaths([]);
+    setChartPreviewPath(null);
+    setChartMessage("");
+    if (historyItem?.dataset_id) {
+      setUploadInfo({
+        dataset_id: historyItem.dataset_id,
+        filename: historyItem.dataset_filename || "历史数据集",
+        file_type: historyItem.file_type || "",
+        file_path: "",
+        asset_type: historyItem.asset_type === "image" ? "image" : "tabular",
+        preview_url: null
+      });
+    }
+    try {
+      const latest = await fetchWorkflowJobStatus(jobId);
+      setStatus(statusFromJob(latest.status));
+      await applyJobUpdate(latest);
+      setActivePage("process");
+      setHistoryMessage("已载入历史分析结果。");
+    } catch (error) {
+      setHistoryMessage(error instanceof Error ? error.message : "载入历史分析失败。");
+    }
+  }
+
   async function handleKnowledgeUpload() {
     if (!knowledgeFile) {
       setKnowledgeMessage("请先选择 .txt 或 .md 知识文档。");
@@ -413,6 +476,10 @@ export default function App() {
       refreshPredictionResult(nextJob.final_prediction_result_path),
       refreshPredictionExplanation(nextJob.prediction_explanation_path)
     ]);
+
+    if (terminalStatuses.has(nextJob.status)) {
+      void refreshWorkflowHistory();
+    }
   }
 
   async function refreshPredictionLog(jobId: string) {
@@ -573,6 +640,10 @@ export default function App() {
       refreshPredictionResult(nextJob.final_prediction_result_path),
       refreshPredictionExplanation(nextJob.prediction_explanation_path)
     ]);
+
+    if (terminalStatuses.has(nextJob.status)) {
+      void refreshWorkflowHistory();
+    }
   }
 
   async function refreshExecutionLog(jobId: string) {
@@ -741,6 +812,15 @@ export default function App() {
               </div>
             </section>
           ) : null}
+
+          <HistoryPanel
+            items={workflowHistory}
+            activeJobId={job?.job_id ?? null}
+            loading={loadingHistory}
+            message={historyMessage}
+            onRefresh={refreshWorkflowHistory}
+            onOpen={handleOpenHistoryJob}
+          />
         </aside>
 
         <section className="content-panel">
@@ -806,6 +886,8 @@ export default function App() {
               analysisResult={analysisResult}
               chartPaths={chartPaths}
               job={job}
+              predictionResult={isPredictionWorkflow ? predictionResult : null}
+              isPredictionWorkflow={isPredictionWorkflow}
               message={chartMessage}
               onOpenChart={setChartPreviewPath}
               onDeleteChart={handleDeleteChart}
@@ -877,6 +959,57 @@ function SetupPage({
           </div>
         ) : null}
       </dl>
+    </section>
+  );
+}
+
+function HistoryPanel({
+  items,
+  activeJobId,
+  loading,
+  message,
+  onRefresh,
+  onOpen
+}: {
+  items: WorkflowJobListItem[];
+  activeJobId: string | null;
+  loading: boolean;
+  message: string;
+  onRefresh: () => void;
+  onOpen: (jobId: string) => void;
+}) {
+  return (
+    <section className="panel history-panel">
+      <div className="panel-header">
+        <h2>分析对话列表</h2>
+        <button className="text-button" type="button" disabled={loading} onClick={onRefresh}>
+          {loading ? "刷新中" : "刷新"}
+        </button>
+      </div>
+      {message ? <p className="history-message">{message}</p> : null}
+      {items.length ? (
+        <div className="history-list">
+          {items.map((item) => {
+            const active = item.job_id === activeJobId;
+            return (
+              <button
+                className={`history-item ${active ? "active" : ""}`}
+                key={item.job_id}
+                type="button"
+                onClick={() => onOpen(item.job_id)}
+              >
+                <span className="history-item-title">{workflowLabel(item.workflow_type || item.task_type)}</span>
+                <span className="history-item-goal">{item.user_goal || "未记录分析目标"}</span>
+                <span className="history-item-meta">
+                  {item.dataset_filename || item.dataset_id || "未知数据集"} · {statusLabel(item.status)} · {formatDateTime(item.updated_at || item.created_at || "")}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="history-empty">暂无可复看的分析对话。</p>
+      )}
     </section>
   );
 }
@@ -1540,8 +1673,9 @@ function HypothesisArtifactSummary({ value }: { value: AnyRecord }) {
     <div className="artifact-summary">
       <KeyValueGrid
         items={[
-          ["目标指标", stringValue(value.target_metric, "-")],
-          ["对象维度", stringValue(value.entity_dimension, "-")],
+          ["目标指标", structuredFieldValue(value.target_metric)],
+          ["对象维度", structuredFieldValue(value.entity_dimension)],
+          ["干预变量", interventionDisplay(value.intervention)],
           ["干预方向", stringValue(value.intervention_direction, "-")]
         ]}
       />
@@ -1558,6 +1692,7 @@ function PredictionPlanArtifactSummary({ value }: { value: AnyRecord }) {
         items={[
           ["目标指标", stringValue(value.target_metric, "-")],
           ["对象维度", stringValue(value.entity_dimension, "-")],
+          ["干预字段", interventionDisplay(value.intervention)],
           ["候选模型", arrayValue(value.model_candidates).join("、") || "-"]
         ]}
       />
@@ -1722,6 +1857,8 @@ function ChartsPage({
   analysisResult,
   chartPaths,
   job,
+  predictionResult,
+  isPredictionWorkflow,
   message,
   onOpenChart,
   onDeleteChart
@@ -1729,11 +1866,14 @@ function ChartsPage({
   analysisResult: AnalysisResult | null;
   chartPaths: string[];
   job: WorkflowJobResponse | null;
+  predictionResult: PredictionResult | null;
+  isPredictionWorkflow: boolean;
   message: string;
   onOpenChart: (chartPath: string) => void;
   onDeleteChart: (chartPath: string) => void;
 }) {
   const resultChartCount = Array.isArray(analysisResult?.charts) ? analysisResult.charts.length : 0;
+  const noChartReason = chartPaths.length ? "" : buildNoChartReason(isPredictionWorkflow, predictionResult, analysisResult);
   return (
     <section className="page-section">
       <div className="section-heading">
@@ -1767,7 +1907,10 @@ function ChartsPage({
           ))}
         </div>
       ) : (
-        <EmptyState title="暂无图表" text="分析脚本完成并通过验证后，图表会自动出现在这里。" />
+        <EmptyState
+          title={noChartReason ? "本次无需图表" : "暂无图表"}
+          text={noChartReason || "分析脚本完成并通过验证后，图表会自动出现在这里。"}
+        />
       )}
     </section>
   );
@@ -2719,9 +2862,9 @@ function hypothesisEvidence(plan: AnyRecord | null): string[] {
     return ["等待假设解析。"];
   }
   return [
-    `目标指标：${stringValue(plan.target_metric, "-")}`,
-    `对象维度：${stringValue(plan.entity_dimension, "-")}`,
-    `干预变量：${stringValue(plan.intervention_variable, stringValue(plan.intervention, "-"))}`
+    `目标指标：${structuredFieldValue(plan.target_metric)}`,
+    `对象维度：${structuredFieldValue(plan.entity_dimension)}`,
+    `干预变量：${stringValue(plan.intervention_variable, interventionDisplay(plan.intervention))}`
   ];
 }
 
@@ -2732,6 +2875,7 @@ function predictionEvidence(plan: AnyRecord | null): string[] {
   return [
     `目标指标：${stringValue(plan.target_metric, "-")}`,
     `对象维度：${stringValue(plan.entity_dimension, "-")}`,
+    `干预字段：${interventionDisplay(plan.intervention)}`,
     `候选模型：${arrayValue(plan.model_candidates).join("、") || "-"}`
   ];
 }
@@ -2961,7 +3105,7 @@ function formatListItem(value: unknown): string {
     return "";
   }
   if (typeof value === "string") {
-    return value.trim();
+    return localizeUiText(value.trim());
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
@@ -3164,7 +3308,7 @@ function formatPercent(value: number): string {
 
 function stringValue(value: unknown, fallback: string): string {
   if (typeof value === "string" && value) {
-    return value;
+    return localizeUiText(value);
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
@@ -3173,7 +3317,105 @@ function stringValue(value: unknown, fallback: string): string {
 }
 
 function arrayValue(value: unknown): string[] {
-  return Array.isArray(value) ? value.map((item) => String(item)) : [];
+  return Array.isArray(value) ? value.map((item) => formatListItem(item)).filter(Boolean) : [];
+}
+
+function structuredFieldValue(value: unknown, fallback = "-"): string {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return stringValue(value, fallback);
+  }
+  if (value && typeof value === "object") {
+    const record = value as AnyRecord;
+    return (
+      stringValue(record.matched_column, "") ||
+      stringValue(record.column, "") ||
+      stringValue(record.variable, "") ||
+      stringValue(record.raw_text, "") ||
+      fallback
+    );
+  }
+  return fallback;
+}
+
+function interventionDisplay(value: unknown): string {
+  if (!value || typeof value !== "object") {
+    return structuredFieldValue(value);
+  }
+  const record = value as AnyRecord;
+  const variable = stringValue(record.variable ?? record.raw_text, "");
+  const column = stringValue(record.column ?? record.matched_column, "");
+  const changeType = stringValue(record.change_type, "");
+  const changeValue = stringValue(record.change_value, "");
+  const unit = stringValue(record.unit, "");
+  const pieces = [variable || column || "-", column ? `字段：${column}` : "", changeValue ? `${changeType || "变化"} ${changeValue}${unit}` : ""].filter(Boolean);
+  return pieces.join("；");
+}
+
+function buildNoChartReason(
+  isPredictionWorkflow: boolean,
+  predictionResult: PredictionResult | null,
+  analysisResult: AnalysisResult | null
+): string {
+  if (isPredictionWorkflow && predictionResult?.status === "unsupported") {
+    return stringValue(
+      predictionResult.no_chart_reason ?? predictionResult.chart_notice ?? predictionResult.unsupported_reason,
+      "当前情景变量字段缺失，无法生成基于预测数值的图表；图表模块无需绘制文字拼装图片。"
+    );
+  }
+  if (isPredictionWorkflow && predictionResult) {
+    return stringValue(
+      predictionResult.no_chart_reason ?? predictionResult.chart_notice,
+      "本次情景预测结果未生成可解释图表，系统仅展示结论报告和执行日志。"
+    );
+  }
+  if (analysisResult) {
+    return stringValue(
+      analysisResult.no_chart_reason ?? analysisResult.chart_notice,
+      "本次分析未生成图表，系统仅展示结论报告和执行日志。"
+    );
+  }
+  return "";
+}
+
+function localizeUiText(value: string): string {
+  let text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  const compact = text.replace(/\s+/g, " ");
+  const exact: Record<string, string> = {
+    "Knowledge base is empty or no document is indexed.": "知识库为空或尚未索引任何文档。",
+    "No column representing floor level(楼层) exists in the dataset. Thus, the direct what-if intervention of changing floor from low to mid-high cannot be modeled. Predictions will be based on available features without this intervention.": "当前数据集中没有表示房源所在楼层高低的字段，因此无法直接模拟“从低层调整为中高层”这一情景。系统不会用其他不等价字段替代该变量。",
+    "unsupported_missing_required_column": "缺少情景变量字段"
+  };
+  if (exact[compact]) {
+    return exact[compact];
+  }
+  const replacements: Array<[RegExp, string]> = [
+    [/Knowledge base is empty or no document is indexed\./g, "知识库为空或尚未索引任何文档。"],
+    [/unsupported_missing_required_column/g, "缺少情景变量字段"],
+    [/linear_regression/g, "线性回归"],
+    [/ridge_regression/g, "岭回归"],
+    [/rule_based_simulation/g, "规则化模拟"],
+    [/random_forest/g, "随机森林"],
+    [/No numeric target metric was identified; prediction cannot be computed from the uploaded data\./g, "未识别到可用于预测的数值型目标指标，无法基于当前上传数据计算预测。"],
+    [/No entity dimension was identified; only aggregate output can be shown when prediction is supported\./g, "未识别到对象维度；如果其他字段满足预测条件，只能展示总体汇总结果。"]
+  ];
+  replacements.forEach(([pattern, replacement]) => {
+    text = text.replace(pattern, replacement);
+  });
+  return text;
+}
+
+function formatDateTime(value: string): string {
+  if (!value) {
+    return "-";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
 }
 
 function shortPath(path: string): string {
@@ -3206,7 +3448,3 @@ function lastItem<T>(items: T[] | undefined): T | undefined {
   }
   return items[items.length - 1];
 }
-
-
-
-

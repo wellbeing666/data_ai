@@ -14,6 +14,7 @@ import type {
   PredictionJobResponse,
   PredictionLogResponse,
   ReportGenerateResponse,
+  WorkflowJobListResponse,
   WorkflowJobResponse,
   WorkflowLogResponse
 } from "./types";
@@ -168,6 +169,12 @@ export async function createWorkflowJobAsync(
   return parseResponse<WorkflowJobResponse>(response);
 }
 
+export async function fetchWorkflowJobs(limit = 30): Promise<WorkflowJobListResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const response = await fetch(`/api/workflows/jobs?${params.toString()}`);
+  return parseResponse<WorkflowJobListResponse>(response);
+}
+
 export async function fetchWorkflowJobStatus(jobId: string): Promise<WorkflowJobResponse> {
   const response = await fetch(`/api/workflows/jobs/${jobId}`);
   return parseResponse<WorkflowJobResponse>(response);
@@ -277,4 +284,3 @@ export function toStorageUrl(path: string): string {
   }
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
-

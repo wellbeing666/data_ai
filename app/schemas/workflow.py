@@ -24,6 +24,8 @@ class WorkflowAttemptResult(BaseModel):
 
 class WorkflowJobResponse(BaseModel):
     job_id: str
+    dataset_id: str | None = None
+    user_goal: str | None = None
     status: str
     current_stage: str | None = None
     workflow_type: str | None = None
@@ -53,6 +55,26 @@ class WorkflowJobResponse(BaseModel):
     error: dict[str, Any] | None = None
 
 
+class WorkflowJobListItem(BaseModel):
+    job_id: str
+    dataset_id: str | None = None
+    dataset_filename: str | None = None
+    file_type: str | None = None
+    user_goal: str = ""
+    status: str
+    current_stage: str | None = None
+    workflow_type: str | None = None
+    task_type: str | None = None
+    asset_type: str | None = None
+    chart_count: int = 0
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class WorkflowJobListResponse(BaseModel):
+    jobs: list[WorkflowJobListItem] = Field(default_factory=list)
+
+
 class WorkflowLogResponse(BaseModel):
     job_id: str
     dataset_id: str | None = None
@@ -71,4 +93,3 @@ class WorkflowLogResponse(BaseModel):
     max_retries: int = 0
     artifacts: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list)
-

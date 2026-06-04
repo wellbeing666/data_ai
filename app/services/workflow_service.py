@@ -1,5 +1,6 @@
 import json
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -242,6 +243,45 @@ def run_workflow_job(
     return _normalize_workflow_status(result, workflow_type=ANALYSIS_WORKFLOW_TYPE, task_type=task_type)
 
 
+def list_workflow_jobs(limit: int = 30) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit), 100))
+    if not JOB_ROOT.exists():
+        return {"jobs": []}
+
+    job_dirs = [path for path in JOB_ROOT.iterdir() if path.is_dir()]
+    job_dirs.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0.0, reverse=True)
+    jobs: list[dict[str, Any]] = []
+    for job_dir in job_dirs:
+        status_data = _history_status_data(job_dir)
+        if not status_data:
+            continue
+        workflow_type = _workflow_type_for_job_dir(job_dir)
+        task_type = _controller_task_type(job_dir) or str(status_data.get("task_type") or "")
+        normalized = _normalize_workflow_status(status_data, workflow_type=workflow_type, task_type=task_type)
+        dataset_id = str(status_data.get("dataset_id") or normalized.get("dataset_id") or "")
+        dataset_filename, file_type = _dataset_file_info(dataset_id)
+        jobs.append(
+            {
+                "job_id": str(normalized.get("job_id") or job_dir.name),
+                "dataset_id": dataset_id or None,
+                "dataset_filename": dataset_filename,
+                "file_type": file_type,
+                "user_goal": str(status_data.get("user_goal") or normalized.get("user_goal") or ""),
+                "status": str(normalized.get("status") or "pending"),
+                "current_stage": normalized.get("current_stage"),
+                "workflow_type": normalized.get("workflow_type"),
+                "task_type": normalized.get("task_type"),
+                "asset_type": normalized.get("asset_type"),
+                "chart_count": len(normalized.get("chart_paths") or []),
+                "created_at": _iso_from_timestamp(job_dir.stat().st_ctime),
+                "updated_at": _iso_from_timestamp(job_dir.stat().st_mtime),
+            }
+        )
+        if len(jobs) >= safe_limit:
+            break
+    return {"jobs": jobs}
+
+
 def get_workflow_job_status(job_id: str) -> dict[str, Any]:
     job_dir = _get_job_dir(job_id)
     prediction_status = _read_json_if_exists(job_dir / "prediction_task_status.json")
@@ -437,6 +477,8 @@ def _normalize_workflow_status(
         }
     return {
         "job_id": str(data.get("job_id") or ""),
+        "dataset_id": str(data.get("dataset_id") or "") or None,
+        "user_goal": str(data.get("user_goal") or "") or None,
         "status": str(data.get("status") or "pending"),
         "current_stage": str(data.get("current_stage") or data.get("status") or "pending"),
         "workflow_type": str(workflow_type or data.get("workflow_type") or ""),
@@ -465,6 +507,35 @@ def _normalize_workflow_status(
         "events": _event_list(data.get("events")),
         "error": data.get("error") if isinstance(data.get("error"), dict) else None,
     }
+
+
+
+
+def _history_status_data(job_dir: Path) -> dict[str, Any] | None:
+    for filename in ("prediction_task_status.json", "task_status.json", WORKFLOW_STATUS_FILENAME):
+        data = _read_json_if_exists(job_dir / filename)
+        if data:
+            return data
+    return None
+
+
+def _dataset_file_info(dataset_id: str) -> tuple[str | None, str | None]:
+    if not dataset_id:
+        return None, None
+    try:
+        dataset_dir = get_dataset_dir(dataset_id)
+    except HTTPException:
+        return None, None
+    files = [path for path in dataset_dir.iterdir() if path.is_file()]
+    if not files:
+        return None, None
+    preferred = [path for path in files if path.suffix.lower() in {".csv", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".webp"}]
+    file_path = sorted(preferred or files, key=lambda path: path.name)[0]
+    return file_path.name, file_path.suffix.lower().lstrip(".") or None
+
+
+def _iso_from_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
 
 
 def _controller_task_type(job_dir: Path) -> str | None:
@@ -734,5 +805,3 @@ def _event_list(value: Any) -> list[dict[str, Any]]:
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
-
-

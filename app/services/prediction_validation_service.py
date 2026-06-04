@@ -46,11 +46,12 @@ def validate_prediction_outputs(job_id: str) -> dict[str, Any]:
                 _write_json(job_dir / "report_data.json", report_data)
         is_unsupported_result = _is_unsupported_prediction_result(prediction_result)
         _validate_prediction_result(prediction_result, issues, repair_suggestions)
+        if is_unsupported_result:
+            _validate_missed_transformable_intervention(job_dir, prediction_result, issues, repair_suggestions)
     if not isinstance(report_data, dict):
         _issue(issues, "invalid_report_data", "high", "report_data.json must be a JSON object.", "report_data.json")
 
-    if not is_unsupported_result:
-        _validate_charts(job_dir, issues, repair_suggestions)
+    _validate_charts(job_dir, issues, repair_suggestions, require_chart=not is_unsupported_result)
 
     severity = _overall_severity(issues)
     should_retry = severity in {"critical", "high"}
@@ -198,21 +199,89 @@ def _validate_unsupported_prediction_result(
     intervention = data.get("intervention") if isinstance(data.get("intervention"), dict) else {}
     if str(intervention.get("column") or "").strip():
         _issue(issues, "unsupported_has_intervention_column", "high", "Unsupported result must not assign a substitute intervention column.", "prediction_result.json")
+    charts = data.get("charts")
+    if not isinstance(charts, list):
+        _issue(issues, "invalid_unsupported_charts", "medium", "Unsupported prediction results should set charts to an array; an empty array is allowed when no numeric chart can be generated.", "prediction_result.json")
+    if not str(data.get("no_chart_reason") or data.get("chart_notice") or "").strip() and charts == []:
+        _issue(issues, "missing_no_chart_reason", "medium", "Unsupported prediction results without charts should explain why no chart is generated.", "prediction_result.json")
     model_info = data.get("model_info") if isinstance(data.get("model_info"), dict) else {}
     if model_info.get("method") != "unsupported_missing_required_column":
         _issue(issues, "invalid_unsupported_model_method", "medium", "model_info.method should be unsupported_missing_required_column.", "prediction_result.json")
+
+
+def _validate_missed_transformable_intervention(
+    job_dir: Path,
+    data: dict[str, Any],
+    issues: list[dict[str, str | None]],
+    repair_suggestions: list[dict[str, str]],
+) -> None:
+    dataset_profile = _read_json_if_exists(job_dir / "dataset_profile.json") or {}
+    hypothesis_plan = _read_json_if_exists(job_dir / "hypothesis_plan.json") or {}
+    prediction_plan = _read_json_if_exists(job_dir / "prediction_plan.json") or {}
+    columns = [str(column) for column in dataset_profile.get("columns", [])] if isinstance(dataset_profile, dict) else []
+    text = " ".join(
+        [
+            json.dumps(hypothesis_plan, ensure_ascii=False),
+            json.dumps(prediction_plan, ensure_ascii=False),
+            str(data.get("scenario_summary") or ""),
+            str(data.get("unsupported_reason") or ""),
+        ]
+    ).lower()
+
+    if not (_mentions_house_age(text) and _has_price_target(columns) and _has_house_age_source(columns)):
+        return
+
+    _issue(
+        issues,
+        "missed_transformable_intervention",
+        "high",
+        "当前数据包含房价目标和可转换的房龄来源字段，不能将房龄情景误判为缺少字段。",
+        "prediction_result.json",
+    )
+    _suggest(
+        repair_suggestions,
+        "将房龄映射为 HouseAge；若没有 HouseAge 但存在 YearBuilt/BuiltYear，则按建造年份反向变化执行模拟，并重新生成预测图表。",
+    )
+
+
+def _read_json_if_exists(path: Path) -> Any | None:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _mentions_house_age(text: str) -> bool:
+    return any(token in text for token in ("房龄", "房屋年龄", "建筑年龄", "楼龄", "house age", "building age"))
+
+
+def _has_price_target(columns: list[str]) -> bool:
+    return any(column.lower() == "saleprice" or column in {"房价", "总价", "售价", "价格"} for column in columns)
+
+
+def _has_house_age_source(columns: list[str]) -> bool:
+    return any(
+        column.lower().replace("_", "") in {"houseage", "buildingage", "yearbuilt", "builtyear"}
+        or column in {"房龄", "房屋年龄", "建筑年龄", "楼龄", "建成年份", "建造年份", "建筑年份"}
+        for column in columns
+    )
 
 
 def _validate_charts(
     job_dir: Path,
     issues: list[dict[str, str | None]],
     repair_suggestions: list[dict[str, str]],
+    *,
+    require_chart: bool = True,
 ) -> None:
     charts_dir = job_dir / "charts"
     charts = list(charts_dir.glob("*.png")) if charts_dir.exists() else []
-    if not [path for path in charts if path.is_file() and path.stat().st_size > 0]:
+    existing_charts = [path for path in charts if path.is_file() and path.stat().st_size > 0]
+    if not existing_charts and require_chart:
         _issue(issues, "missing_chart", "high", "No PNG chart generated under charts/.", str(charts_dir))
-        _suggest(repair_suggestions, "Generate at least one PNG chart under output_dir/charts.")
+        _suggest(repair_suggestions, "Generate at least one meaningful PNG chart under output_dir/charts for supported prediction scenarios.")
 
 
 def _load_json(
@@ -284,4 +353,3 @@ def _dedupe(suggestions: list[dict[str, str]]) -> list[dict[str, str]]:
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-

@@ -32,7 +32,7 @@ Hard requirements:
 - The code must write all outputs under OUTPUT_DIR.
 - The code must create OUTPUT_DIR / "prediction_result.json".
 - The code must create OUTPUT_DIR / "report_data.json".
-- The code must create at least one PNG chart under OUTPUT_DIR / "charts".
+- For supported simulations, create meaningful PNG charts under OUTPUT_DIR / "charts". For unsupported scenarios caused by a missing intervention field, do not create a text-only PNG; leave charts empty and write no_chart_reason in the JSON outputs.
 - The code must support CSV, XLSX, and XLS input files.
 - If sklearn is unavailable or fields are insufficient, use a rule-based simulation fallback.
 - Predictions are estimates, not causal proof.
@@ -46,6 +46,7 @@ Hard requirements:
 - Never read or write outside INPUT_FILE and OUTPUT_DIR.
 - For absolute interventions, add the scenario amount to the intervention column; do not convert an absolute amount into a percentage multiplier.
 - If the user states area in square meters/平方米/平米/㎡ and the dataset area column is in square feet such as GrLivArea, LotArea, TotalBsmtSF, 1stFlrSF, 2ndFlrSF, GarageArea, or another *SF column, convert 1 square meter to 10.76391041671 square feet before simulation.
+- If the user asks about 房龄/房屋年龄/楼龄 and the dataset uses YearBuilt rather than a direct HouseAge column, simulate 房龄增加 by decreasing YearBuilt by the same number of years.
 - Every item in top_impacted_entities must include entity, baseline_value, predicted_value, absolute_change, percent_change, direction, and explanation.
 - If the chosen model yields identical marginal changes for all rows, do not draw a misleading Top 20 bar chart with duplicated values. Draw a single scenario summary chart and explain that the linear marginal effect is constant.
 """
@@ -98,8 +99,8 @@ Scenario calculation requirements:
 - For absolute changes, add the scenario amount to the intervention column. For relative changes, multiply by 1 + change_value.
 - Preserve the original unit from hypothesis_plan.intervention.unit. If the user asks for square meters/平方米/平米/㎡ and the selected dataset area field is GrLivArea or another square-foot field, convert to square feet using 10.76391041671.
 - Put the actual scenario amount used in dataset units into model_info.scenario_change_in_data_units and include model_info.unit_conversion.
-- For house price data, prefer SalePrice as target, GrLivArea as intervention, and Id as the house identifier when those fields exist.
-- The result must answer the average total-price change and must not present 10 square meters as only 10 square feet.
+- For house price data, prefer SalePrice as target. For area scenarios prefer GrLivArea as intervention; for 房龄 scenarios prefer HouseAge when present, otherwise YearBuilt with inverse-year adjustment. Use Id as the house identifier when it exists.
+- The result must answer the average total-price change and must not present unit-converted values in the wrong data unit.
 
 Chinese chart requirements:
 - Configure matplotlib Chinese font before any figure is created.
@@ -108,7 +109,7 @@ Chinese chart requirements:
 
 Reliability requirements:
 - If model training fails or fields are insufficient, fall back inside the script to a simple rule-based simulation.
-- Treat validation feedback as mandatory. If validation reported missing artifacts or missing entity fields, the repaired script must write prediction_result.json, report_data.json, and at least one PNG chart before exiting.
+- Treat validation feedback as mandatory. For supported scenarios, the repaired script must write prediction_result.json, report_data.json, and at least one meaningful PNG chart before exiting. For unsupported missing-field scenarios, do not create text-only PNG charts; write charts as an empty list and explain no_chart_reason.
 - Prefer robust pandas operations, numeric coercion, Top 20 chart categories only when values are meaningfully different, and cautious limitations instead of crashing.
 - Use only the allowed imports from the system prompt.
 
@@ -140,6 +141,14 @@ class PredictionCodeAgent:
         previous_validation_result: dict[str, Any] | None = None,
     ) -> str:
         if _is_unsupported_prediction_plan(prediction_plan):
+            if _unsupported_plan_is_transformable(dataset_profile, hypothesis_plan, prediction_plan):
+                return self.rule_based_agent.generate_script(
+                    input_file=input_file,
+                    output_dir=output_dir,
+                    dataset_profile=dataset_profile,
+                    hypothesis_plan=hypothesis_plan,
+                    prediction_plan=prediction_plan,
+                )
             return self.rule_based_agent.generate_unsupported_script(
                 input_file=input_file,
                 output_dir=output_dir,
@@ -239,12 +248,14 @@ class RuleBasedPredictionCodeAgent:
 
 UNSUPPORTED_PREDICTION_SCRIPT_TEMPLATE = r'''
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
+from matplotlib import font_manager
 import matplotlib.pyplot as plt
 
 INPUT_FILE = Path(r"__INPUT_FILE__")
@@ -309,11 +320,63 @@ def baseline_summary(df, target):
     }
 
 
+def configure_matplotlib():
+    warnings.filterwarnings("ignore", category=UserWarning)
+    candidate_fonts = [
+        "Microsoft YaHei",
+        "SimHei",
+        "SimSun",
+        "Noto Sans CJK SC",
+        "Source Han Sans SC",
+        "WenQuanYi Micro Hei",
+        "Arial Unicode MS",
+    ]
+    available_fonts = []
+    for font_name in candidate_fonts:
+        try:
+            font_manager.findfont(font_name, fallback_to_default=False)
+            available_fonts.append(font_name)
+        except Exception:
+            pass
+    plt.rcParams["font.sans-serif"] = available_fonts + candidate_fonts + ["DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+def create_unsupported_chart(df, target, unsupported_reason):
+    CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+    configure_matplotlib()
+    available_preview = "、".join([str(column) for column in df.columns[:8]])
+    if len(df.columns) > 8:
+        available_preview += " 等"
+    target_text = target or "未识别"
+    lines = [
+        "无法计算该情景预测",
+        f"目标指标：{target_text}",
+        f"原因：{unsupported_reason}",
+        "系统不会用不相关字段替代情景变量。",
+        f"当前数据字段示例：{available_preview}",
+    ]
+    fig, ax = plt.subplots(figsize=(11, 5.6))
+    ax.axis("off")
+    ax.set_title("情景变量字段缺失说明", fontsize=18, pad=18)
+    y = 0.82
+    for index, line in enumerate(lines):
+        size = 14 if index == 0 else 11
+        weight = "bold" if index == 0 else "normal"
+        ax.text(0.04, y, line, transform=ax.transAxes, fontsize=size, fontweight=weight, va="top", wrap=True)
+        y -= 0.15 if index == 0 else 0.13
+    ax.text(0.04, 0.08, "建议：补充与情景变量直接对应的字段后重新运行预测。", transform=ax.transAxes, fontsize=11, va="bottom")
+    path = CHARTS_DIR / "unsupported_field_notice.png"
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return str(path)
+
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     CHARTS_DIR.mkdir(parents=True, exist_ok=True)
-    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei", "Arial Unicode MS", "DejaVu Sans"]
-    plt.rcParams["axes.unicode_minus"] = False
+    configure_matplotlib()
 
     df = load_data(INPUT_FILE)
     df.columns = [str(column) for column in df.columns]
@@ -330,6 +393,8 @@ def main():
         *list(PREDICTION_PLAN.get("limitations") or []),
         *list(HYPOTHESIS_PLAN.get("limitations") or []),
     ])
+    no_chart_reason = "本次问题对应的情景变量字段缺失，无法生成基于预测数值的图表"
+    chart_paths = []
     result = {
         "task_type": "what_if_prediction",
         "status": "unsupported",
@@ -360,8 +425,10 @@ def main():
             "available_columns": [str(column) for column in df.columns],
         },
         "limitations": limitations,
-        "charts": [],
+        "charts": chart_paths,
         "unsupported_reason": unsupported_reason,
+        "no_chart_reason": no_chart_reason,
+        "chart_notice": no_chart_reason,
     }
     report_data = {
         "summary": unsupported_reason,
@@ -382,7 +449,9 @@ def main():
             "补充字段后应确认变量单位，并与目标指标在同一对象粒度下对应。",
         ],
         "limitations": limitations,
-        "charts": [],
+        "charts": chart_paths,
+        "no_chart_reason": no_chart_reason,
+        "chart_notice": no_chart_reason,
     }
     (OUTPUT_DIR / "prediction_result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     (OUTPUT_DIR / "report_data.json").write_text(json.dumps(report_data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -552,16 +621,63 @@ def choose_target(df):
 
 def choose_intervention(df, target):
     planned = find_existing_column(df, get_nested(PREDICTION_PLAN, "intervention", "column"))
-    if planned and planned != target:
-        return planned
     matched = find_existing_column(df, get_nested(HYPOTHESIS_PLAN, "intervention", "matched_column"))
-    if matched and matched != target:
-        return matched
     text = all_plan_text().lower()
+    scenario_text = " ".join([
+        normalize_text(PREDICTION_PLAN.get("prediction_goal")),
+        normalize_text(HYPOTHESIS_PLAN.get("scenario_summary")),
+        normalize_text(get_nested(PREDICTION_PLAN, "intervention", "variable")),
+        normalize_text(get_nested(HYPOTHESIS_PLAN, "intervention", "variable")),
+        normalize_text(get_nested(HYPOTHESIS_PLAN, "intervention", "raw_text")),
+    ]).lower()
+    if planned and planned != target and numeric_non_null_count(df, planned) > 0:
+        return planned
+    if matched and matched != target and numeric_non_null_count(df, matched) > 0:
+        return matched
+    quality_requested = any(keyword in scenario_text for keyword in ["装修", "精装修", "普通装修", "装修等级", "质量", "overallqual", "quality", "finish"])
+    if quality_requested:
+        quality_column = choose_by_alias(
+            df,
+            ["OverallQual", "OverallCond", "装修等级", "装修", "quality"],
+            numeric_required=True,
+        )
+        if quality_column and quality_column != target:
+            return quality_column
+    if mentions_house_age_change():
+        column = choose_by_alias(
+            df,
+            ["HouseAge", "house_age", "BuildingAge", "building_age", "房龄", "房屋年龄", "建筑年龄", "楼龄"],
+            numeric_required=True,
+        )
+        if column and column != target:
+            return column
+        column = choose_by_alias(
+            df,
+            ["YearBuilt", "year_built", "BuiltYear", "Built_Year", "建成年份", "建造年份", "建筑年份"],
+            numeric_required=True,
+        )
+        if column and column != target:
+            return column
     if any(keyword in text for keyword in ["面积", "平方米", "平米", "grlivarea", "area", "㎡"]):
         column = choose_by_alias(
             df,
             ["GrLivArea", "LivingArea", "TotalBsmtSF", "1stFlrSF", "2ndFlrSF", "LotArea", "GarageArea", "面积", "Area", "SF"],
+            numeric_required=True,
+        )
+        if column and column != target:
+            return column
+    if any(keyword in text for keyword in ["装修", "精装修", "普通装修", "装修等级", "质量", "overallqual", "quality", "finish"]):
+        column = choose_by_alias(
+            df,
+            ["OverallQual", "KitchenQual", "ExterQual", "OverallCond", "装修等级", "装修", "quality"],
+            numeric_required=True,
+        )
+        if column and column != target:
+            return column
+    if any(keyword in text for keyword in ["两居", "二居", "三居", "卧室", "居室", "户型", "bedroom"]):
+        column = choose_by_alias(
+            df,
+            ["BedroomAbvGr", "Bedrooms", "Bedroom", "卧室数", "居室数", "居室", "户型", "TotRmsAbvGrd"],
             numeric_required=True,
         )
         if column and column != target:
@@ -583,10 +699,14 @@ def choose_entity(df):
     if matched:
         return matched
     text = all_plan_text().lower()
-    if any(keyword in text for keyword in ["某套房", "房屋", "房子", "住宅", "house"]):
+    if any(keyword in text for keyword in ["同一套房", "某套房", "房屋", "房子", "住宅", "house"]):
         id_column = choose_by_alias(df, ["Id", "房屋编号", "编号", "house_id"])
         if id_column:
             return id_column
+    if any(keyword in text for keyword in ["区域", "小区", "周边", "地段", "neighborhood"]):
+        region_column = choose_by_alias(df, ["Neighborhood", "小区", "区域", "地区", "MSZoning", "Location"])
+        if region_column:
+            return region_column
     for column in df.columns:
         if is_identifier_column(column):
             return column
@@ -609,6 +729,12 @@ def extract_requested_unit():
         return "平方米"
     if any(token in text for token in ["平方英尺", "sqft", "sq ft", "square foot", "square feet"]):
         return "平方英尺"
+    if any(token in text for token in ["装修", "精装修", "装修等级", "质量等级", "等级", "档", "quality", "finish"]):
+        return "等级"
+    if any(token in text for token in ["两居", "二居", "三居", "卧室", "居室", "户型", "bedroom", "bedrooms"]):
+        return "间"
+    if "年" in text or any(token in text for token in ["year", "years"]):
+        return "年"
     normalized_unit = unit.lower()
     if unit in {"米", "公里", "千米"} or normalized_unit in {"m", "km"}:
         return "公里" if unit in {"公里", "千米"} or normalized_unit == "km" else "米"
@@ -617,6 +743,19 @@ def extract_requested_unit():
     if any(token in text for token in ["米", "meter", "metre"]):
         return "米"
     return unit
+
+
+def mentions_house_age_change():
+    text = all_plan_text().lower()
+    original = all_plan_text()
+    return any(token in original for token in ["房龄", "房屋年龄", "建筑年龄", "楼龄"]) or any(
+        token in text for token in ["house age", "building age"]
+    )
+
+
+def year_built_column_represents_age_inverse(column):
+    normalized = str(column or "").strip().lower().replace("_", "")
+    return normalized in {"yearbuilt", "builtyear"} or str(column or "") in {"建成年份", "建造年份", "建筑年份"}
 
 
 def area_column_uses_square_feet(column):
@@ -680,7 +819,7 @@ def scenario_change_info(intervention_col):
             "unit_conversion": "相对变化按 1 + change_value 乘数处理",
         }
 
-    if change_type == "unknown" and abs(change_value) <= 1 and requested_unit not in {"平方米", "平方英尺"}:
+    if change_type == "unknown" and abs(change_value) <= 1 and requested_unit not in {"平方米", "平方英尺", "年", "米", "公里", "等级", "间"}:
         return {
             "change_type": "relative",
             "change_value": change_value,
@@ -689,11 +828,27 @@ def scenario_change_info(intervention_col):
             "unit_conversion": "未识别明确单位，按相对变化处理",
         }
 
-    if requested_unit == "平方米" and area_column_uses_square_feet(intervention_col):
+    if requested_unit == "年":
+        if mentions_house_age_change() and year_built_column_represents_age_inverse(intervention_col):
+            data_unit_change = -change_value
+            unit_conversion = f"用户输入为房龄变化，数据字段 {intervention_col} 表示建造年份；房龄变化按建造年份反向调整。"
+        elif mentions_house_age_change():
+            unit_conversion = "用户输入为房龄变化，数据字段按房龄年数直接调整。"
+        else:
+            unit_conversion = "用户输入按年处理；若数据字段使用其他年份口径，请先统一字段含义。"
+    elif requested_unit == "平方米" and area_column_uses_square_feet(intervention_col):
         data_unit_change = change_value * SQUARE_METER_TO_SQUARE_FOOT
         unit_conversion = "用户输入为平方米，数据面积字段按平方英尺口径换算，1 平方米 = 10.76391041671 平方英尺"
     elif requested_unit == "平方英尺":
         unit_conversion = "用户输入与数据面积字段同按平方英尺处理"
+    elif requested_unit == "等级":
+        if abs(change_value) <= 1e-12:
+            data_unit_change = 1.0
+        unit_conversion = "用户输入为装修或质量等级变化，按字段评分等级的绝对增减进行模拟。"
+    elif requested_unit == "间":
+        if abs(change_value) <= 1e-12:
+            data_unit_change = 1.0
+        unit_conversion = "用户输入为户型居室数量变化，按卧室数量字段的绝对增减进行模拟。"
     elif requested_unit == "米":
         if distance_column_uses_kilometers(intervention_col):
             data_unit_change = change_value / 1000.0
@@ -837,9 +992,15 @@ def apply_scenario(df, intervention_col, change_info):
         return scenario
     current = clean_numeric(scenario[intervention_col])
     if change_info["change_type"] == "relative":
-        scenario[intervention_col] = current * (1.0 + safe_number(change_info["data_unit_change"], 0.0))
+        adjusted = current * (1.0 + safe_number(change_info["data_unit_change"], 0.0))
     else:
-        scenario[intervention_col] = current + safe_number(change_info["data_unit_change"], 0.0)
+        adjusted = current + safe_number(change_info["data_unit_change"], 0.0)
+    column_lower = str(intervention_col).lower()
+    if column_lower == "overallqual" or intervention_col in {"OverallQual", "OverallCond"}:
+        adjusted = adjusted.clip(lower=1, upper=10)
+    if column_lower in {"bedroomabvgr", "bedrooms", "bedroom"} or any(token in str(intervention_col) for token in ["卧室", "居室"]):
+        adjusted = adjusted.clip(lower=0)
+    scenario[intervention_col] = adjusted
     return scenario
 
 
@@ -896,7 +1057,7 @@ def build_impacted_entities(df, entity_col, baseline, predicted):
                 "absolute_change": absolute_change,
                 "percent_change": absolute_change / base_mean if abs(base_mean) > 1e-9 else 0.0,
                 "direction": "增加" if absolute_change >= 0 else "降低",
-                "explanation": "当前线性模型下，同一绝对面积变化对应相同的边际预测变化，因此以整体平均展示，避免重复展示多个完全相同的房屋条目。",
+                "explanation": "当前线性模型下，同一绝对情景变化对应相同的边际预测变化，因此以整体平均展示，避免重复展示多个完全相同的房屋条目。",
             }
         ])
 
@@ -932,22 +1093,45 @@ def create_charts(impacted, baseline, predicted, target, change_info):
     configure_matplotlib()
     chart_paths = []
     changes = predicted - baseline
+    baseline_mean = float(baseline.mean()) if len(baseline) else 0.0
+    predicted_mean = float(predicted.mean()) if len(predicted) else 0.0
+    average_change = predicted_mean - baseline_mean
 
-    summary_values = [float(changes.mean()), float(changes.median()), float(changes.min()), float(changes.max())]
-    summary_labels = ["平均变化", "中位数变化", "最小变化", "最大变化"]
-    plt.figure(figsize=(9, 5))
-    bars = plt.bar(summary_labels, summary_values)
-    plt.axhline(0, color="#64748b", linewidth=1)
-    plt.title("情景下预测总价变化概览")
-    plt.xlabel("统计口径")
-    plt.ylabel("预测价格变化（美元）")
-    for bar, value in zip(bars, summary_values):
-        plt.text(bar.get_x() + bar.get_width() / 2, value, f"{value:,.0f}", ha="center", va="bottom" if value >= 0 else "top", fontsize=9)
-    plt.tight_layout()
-    path = CHARTS_DIR / "change_summary_bar.png"
-    plt.savefig(path, dpi=160)
-    plt.close()
-    chart_paths.append(str(path))
+    if changes_are_effectively_equal(changes):
+        plt.figure(figsize=(8, 5))
+        labels = ["基准平均值", "情景平均值"]
+        values = [baseline_mean, predicted_mean]
+        bars = plt.bar(labels, values)
+        plt.title("基准平均值与情景平均值对比")
+        plt.xlabel("预测口径")
+        plt.ylabel("预测价格（美元）")
+        lower_bound = min(values)
+        upper_bound = max(values)
+        span = max(abs(upper_bound - lower_bound), abs(upper_bound) * 0.08, 1.0)
+        plt.ylim(max(0, lower_bound - span), upper_bound + span)
+        for bar, value in zip(bars, values):
+            plt.text(bar.get_x() + bar.get_width() / 2, value, f"{value:,.0f}", ha="center", va="bottom", fontsize=10)
+        plt.tight_layout()
+        path = CHARTS_DIR / "scenario_average_bar.png"
+        plt.savefig(path, dpi=160)
+        plt.close()
+        chart_paths.append(str(path))
+    else:
+        summary_values = [float(changes.mean()), float(changes.median()), float(changes.min()), float(changes.max())]
+        summary_labels = ["平均变化", "中位数变化", "最小变化", "最大变化"]
+        plt.figure(figsize=(9, 5))
+        bars = plt.bar(summary_labels, summary_values)
+        plt.axhline(0, color="#64748b", linewidth=1)
+        plt.title("情景下预测价格变化分布")
+        plt.xlabel("统计口径")
+        plt.ylabel("预测价格变化（美元）")
+        for bar, value in zip(bars, summary_values):
+            plt.text(bar.get_x() + bar.get_width() / 2, value, f"{value:,.0f}", ha="center", va="bottom" if value >= 0 else "top", fontsize=9)
+        plt.tight_layout()
+        path = CHARTS_DIR / "change_distribution_summary.png"
+        plt.savefig(path, dpi=160)
+        plt.close()
+        chart_paths.append(str(path))
 
     plt.figure(figsize=(8, 6))
     plt.scatter(baseline, predicted, alpha=0.55, s=18)
@@ -992,9 +1176,13 @@ def build_result(df, target, intervention_col, entity_col, baseline, predicted, 
         estimated_effect = float(coefficient) * safe_number(change_info["data_unit_change"], 0.0)
     limitations = list(PREDICTION_PLAN.get("limitations") or [])
     limitations.extend(HYPOTHESIS_PLAN.get("limitations") or [])
-    limitations.append("预测结果基于历史表格数据和模型关系估计，不能单独证明面积变化与价格变化之间的因果关系。")
+    intervention_name = str(get_nested(PREDICTION_PLAN, "intervention", "variable") or intervention_col or "情景变量")
+    target_name = str(target or "目标指标")
+    limitations.append(f"预测结果基于历史表格数据和模型关系估计，不能单独证明{intervention_name}变化与{target_name}变化之间的因果关系。")
     if change_info.get("unit_conversion") and "平方米" in str(change_info.get("unit_conversion")):
         limitations.append("原始房价数据常用平方英尺字段，本次已将用户输入的平方米换算为平方英尺后模拟。")
+    if change_info.get("unit_conversion") and "房龄" in str(change_info.get("unit_conversion")):
+        limitations.append("当前数据未直接提供房龄字段时，系统使用建造年份的反向变化近似模拟房龄变化。")
     if model_info.get("metrics", {}).get("r2") is not None:
         limitations.append(f"留出集 R² 约为 {model_info['metrics']['r2']}，仍存在未被模型解释的价格波动。")
 
@@ -1124,12 +1312,45 @@ def _requires_deterministic_unit_aware_script(
             json.dumps(prediction_plan, ensure_ascii=False),
         ]
     ).lower()
-    has_house_price_columns = "SalePrice" in columns and "GrLivArea" in columns
+    has_price_target = any(str(column).lower() == "saleprice" or str(column) in {"房价", "总价", "售价", "价格"} for column in columns)
+    has_area_column = any(str(column).lower() in {"grlivarea", "livingarea", "totalbsmtsf", "lotarea", "garagearea"} for column in columns)
+    has_age_column = any(str(column).lower().replace("_", "") in {"houseage", "buildingage", "yearbuilt", "builtyear"} or str(column) in {"房龄", "房屋年龄", "建成年份", "建造年份", "建筑年份"} for column in columns)
+    has_quality_column = any(str(column).lower() in {"overallqual", "overallcond", "kitchenqual", "exterqual"} or str(column) in {"装修", "装修等级", "质量等级"} for column in columns)
+    has_bedroom_column = any(str(column).lower() in {"bedroomabvgr", "bedrooms", "bedroom"} or str(column) in {"卧室数", "居室数", "户型"} for column in columns)
     mentions_square_meters = any(token in text for token in ("平方米", "平米", "㎡", "m2", "m^2", "square meter"))
     mentions_area = any(token in text for token in ("面积", "grlivarea", "area", "平方"))
     mentions_distance = any(token in text for token in ("地铁", "距离", "米", "公里", "metro", "subway", "distance"))
+    mentions_age = any(token in text for token in ("房龄", "房屋年龄", "建筑年龄", "楼龄", "house age", "building age"))
+    mentions_quality = any(token in text for token in ("装修", "精装修", "普通装修", "装修等级", "质量", "quality", "finish"))
+    mentions_bedroom = any(token in text for token in ("两居", "二居", "三居", "卧室", "居室", "户型", "bedroom"))
     mentions_price = any(token in text for token in ("总价", "房价", "价格", "saleprice", "price"))
-    return has_house_price_columns and mentions_price and ((mentions_square_meters and mentions_area) or mentions_distance)
+    return has_price_target and mentions_price and (
+        (has_area_column and ((mentions_square_meters and mentions_area) or mentions_distance))
+        or (has_age_column and mentions_age)
+        or (has_quality_column and mentions_quality)
+        or (has_bedroom_column and mentions_bedroom)
+    )
+
+
+def _unsupported_plan_is_transformable(
+    dataset_profile: dict[str, Any],
+    hypothesis_plan: dict[str, Any],
+    prediction_plan: dict[str, Any],
+) -> bool:
+    columns = {str(column) for column in dataset_profile.get("columns", [])}
+    text = " ".join([
+        json.dumps(hypothesis_plan, ensure_ascii=False),
+        json.dumps(prediction_plan, ensure_ascii=False),
+    ]).lower()
+    has_price_target = any(str(column).lower() == "saleprice" or str(column) in {"房价", "总价", "售价", "价格"} for column in columns)
+    has_age_column = any(str(column).lower().replace("_", "") in {"houseage", "buildingage", "yearbuilt", "builtyear"} or str(column) in {"房龄", "房屋年龄", "建成年份", "建造年份", "建筑年份"} for column in columns)
+    has_quality_column = any(str(column).lower() in {"overallqual", "overallcond", "kitchenqual", "exterqual"} or str(column) in {"装修", "装修等级", "质量等级"} for column in columns)
+    has_bedroom_column = any(str(column).lower() in {"bedroomabvgr", "bedrooms", "bedroom"} or str(column) in {"卧室数", "居室数", "户型"} for column in columns)
+    mentions_age = any(token in text for token in ("房龄", "房屋年龄", "建筑年龄", "楼龄", "house age", "building age"))
+    mentions_quality = any(token in text for token in ("装修", "精装修", "普通装修", "装修等级", "质量", "quality", "finish"))
+    mentions_bedroom = any(token in text for token in ("两居", "二居", "三居", "卧室", "居室", "户型", "bedroom"))
+    mentions_price = any(token in text for token in ("总价", "房价", "价格", "saleprice", "price"))
+    return has_price_target and mentions_price and ((has_age_column and mentions_age) or (has_quality_column and mentions_quality) or (has_bedroom_column and mentions_bedroom))
 
 
 def _extract_python_code(content: str) -> str:
@@ -1329,4 +1550,3 @@ def _call_name(node: ast.AST) -> str:
         parent = _call_name(node.value)
         return f"{parent}.{node.attr}" if parent else node.attr
     return ""
-

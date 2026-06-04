@@ -321,6 +321,8 @@ export interface PredictionLogResponse {
 
 export interface WorkflowJobResponse {
   job_id: string;
+  dataset_id?: string | null;
+  user_goal?: string | null;
   status: string;
   current_stage?: string | null;
   workflow_type?: string | null;
@@ -349,6 +351,27 @@ export interface WorkflowJobResponse {
   events?: ExecutionLogEvent[];
   error?: Record<string, unknown> | null;
 }
+
+export interface WorkflowJobListItem {
+  job_id: string;
+  dataset_id?: string | null;
+  dataset_filename?: string | null;
+  file_type?: string | null;
+  user_goal: string;
+  status: string;
+  current_stage?: string | null;
+  workflow_type?: string | null;
+  task_type?: string | null;
+  asset_type?: "tabular" | "image" | string | null;
+  chart_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface WorkflowJobListResponse {
+  jobs: WorkflowJobListItem[];
+}
+
 
 export interface WorkflowLogResponse {
   job_id: string;
@@ -395,4 +418,3 @@ export interface ChartDeleteResponse {
   chart_path: string;
   chart_paths: string[];
 }
-
