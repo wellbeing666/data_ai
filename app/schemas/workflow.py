@@ -58,6 +58,10 @@ class WorkflowFollowUpRequest(BaseModel):
     question: str = Field(..., min_length=1)
 
 
+class WorkflowSelectionFollowUpRequest(BaseModel):
+    selection_spec: dict[str, Any] = Field(default_factory=dict)
+
+
 class WorkflowFollowUpResponse(BaseModel):
     job_id: str
     question: str
@@ -65,6 +69,9 @@ class WorkflowFollowUpResponse(BaseModel):
     follow_up_path: str | None = None
     created_at: str | None = None
     used_artifacts: list[str] = Field(default_factory=list)
+    source_delta: dict[str, Any] = Field(default_factory=dict)
+    selection_patch_path: str | None = None
+    selection_spec: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChartConfigRequest(BaseModel):
@@ -189,6 +196,7 @@ class WorkflowJobResponse(BaseModel):
     job_dir: str
     controller_plan_path: str | None = None
     rag_retrieval_path: str | None = None
+    analysis_ir_path: str | None = None
     dataset_profile_path: str | None = None
     analysis_roadmap_path: str | None = None
     quality_review_path: str | None = None
@@ -266,6 +274,7 @@ class WorkflowLogResponse(BaseModel):
     max_retries: int = 0
     artifacts: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list)
+
 
 
 

@@ -7,6 +7,7 @@ import type {
   AnalysisResult,
   DashboardConfig,
   DashboardWidget,
+  ChartSelectionSpec,
   DatasetDataMap,
   DatasetDataMapNode,
   DebateReflection,
@@ -1751,7 +1752,8 @@ export function ChartsPage({
   onRefineChart,
   onQuickRefineChart,
   onOpenChart,
-  onDeleteChart
+  onDeleteChart,
+  onBrushSelection
 }: {
   analysisResult: AnalysisResult | null;
   chartPaths: string[];
@@ -1768,6 +1770,7 @@ export function ChartsPage({
   onQuickRefineChart: (chartPath: string, instruction: string) => void;
   onOpenChart: (chartPath: string) => void;
   onDeleteChart: (chartPath: string) => void;
+  onBrushSelection?: (chartPath: string, selectionSpec: ChartSelectionSpec) => void;
 }) {
   const resultChartCount = Array.isArray(analysisResult?.charts) ? analysisResult.charts.length : 0;
   const noChartReason = chartPaths.length ? "" : buildNoChartReason(isPredictionWorkflow, predictionResult, analysisResult);
@@ -1793,6 +1796,7 @@ export function ChartsPage({
                   chartRefreshToken={chartRefreshToken}
                   onOpenChart={onOpenChart}
                   onDeleteChart={onDeleteChart}
+                  onBrushSelection={onBrushSelection}
                 />
                 <div className="chart-refine-panel">
                   <label htmlFor={`chart-refine-${index}`}>针对这张图输入修改要求</label>
@@ -1838,301 +1842,6 @@ export function ChartsPage({
   );
 }
 
-
-export function DataMapPage({
-  dataMap,
-  profile,
-  loading,
-  message,
-  onRefresh,
-  onUseQuestion
-}: {
-  dataMap: DatasetDataMap | null;
-  profile: DatasetProfile | null;
-  loading?: boolean;
-  message?: string;
-  onRefresh?: () => void;
-  onUseQuestion?: (question: string) => void;
-}) {
-  const nodes = useMemo(() => normalizeDataMapNodes(dataMap), [dataMap]);
-  const edges = dataMap?.graph?.edges ?? [];
-  const [selectedNodeId, setSelectedNodeId] = useState<string>("");
-  const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? nodes[0] ?? null;
-  const positionedNodes = useMemo(() => layoutDataMapNodes(nodes), [nodes]);
-  const nodePosition = new Map<string, DatasetDataMapNode & { x: number; y: number }>(
-    positionedNodes.map((node) => [node.id, node] as const)
-  );
-  const questions = selectedNode ? questionsForDataMapNode(dataMap, selectedNode) : [];
-
-  useEffect(() => {
-    if (!nodes.length) {
-      setSelectedNodeId("");
-      return;
-    }
-    if (!nodes.some((node) => node.id === selectedNodeId)) {
-      setSelectedNodeId(nodes[0].id);
-    }
-  }, [nodes, selectedNodeId]);
-
-  return (
-    <section className="page-section data-map-page">
-      <div className="section-heading dashboard-heading">
-        <div>
-          <h2>数据地图</h2>
-          <span>Data Map Agent 将字段、实体、指标和可提问方向组织成可点击知识图谱。</span>
-        </div>
-        <button className="secondary-button" type="button" disabled={!profile || loading} onClick={onRefresh}>
-          {loading ? "生成中" : "刷新数据地图"}
-        </button>
-      </div>
-      {message ? <p className="message success">{message}</p> : null}
-      {!dataMap || !nodes.length ? (
-        <EmptyState
-          title="暂无数据地图"
-          text="上传表格并生成数据画像后，系统会自动抽取实体、指标、维度和推荐问题。"
-        />
-      ) : (
-        <div className="data-map-layout">
-          <section className="data-map-canvas" aria-label="可点击数据知识图谱">
-            <svg viewBox="0 0 720 460" role="img" aria-label="数据地图关系图">
-              <defs>
-                <radialGradient id="data-map-glow" cx="50%" cy="50%" r="50%">
-                  <stop offset="0%" stopColor="rgba(20,184,166,0.28)" />
-                  <stop offset="100%" stopColor="rgba(20,184,166,0)" />
-                </radialGradient>
-              </defs>
-              <rect x="0" y="0" width="720" height="460" rx="24" className="data-map-svg-bg" />
-              <circle cx="360" cy="230" r="172" fill="url(#data-map-glow)" />
-              {edges.map((edge, index) => {
-                const source = nodePosition.get(edge.source);
-                const target = nodePosition.get(edge.target);
-                if (!source || !target) {
-                  return null;
-                }
-                return (
-                  <g key={`${edge.source}-${edge.target}-${index}`} className="data-map-edge">
-                    <line x1={source.x} y1={source.y} x2={target.x} y2={target.y} />
-                    {index < 28 ? (
-                      <text x={(source.x + target.x) / 2} y={(source.y + target.y) / 2}>
-                        {edge.relation || "关联"}
-                      </text>
-                    ) : null}
-                  </g>
-                );
-              })}
-              {positionedNodes.map((node) => (
-                <g
-                  key={node.id}
-                  className={`data-map-node node-${node.type} ${selectedNode?.id === node.id ? "selected" : ""}`}
-                  transform={`translate(${node.x}, ${node.y})`}
-                  onClick={() => setSelectedNodeId(node.id)}
-                  tabIndex={0}
-                  role="button"
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      setSelectedNodeId(node.id);
-                    }
-                  }}
-                >
-                  <circle r={nodeRadius(node)} />
-                  <text>{node.label}</text>
-                </g>
-              ))}
-            </svg>
-          </section>
-          <aside className="data-map-detail">
-            <div className="data-map-summary-cards">
-              <article><strong>{dataMap.row_count ?? profile?.row_count ?? 0}</strong><span>行</span></article>
-              <article><strong>{dataMap.column_count ?? profile?.column_count ?? 0}</strong><span>列</span></article>
-              <article><strong>{dataMap.data_map?.metrics?.length ?? 0}</strong><span>指标</span></article>
-              <article><strong>{dataMap.data_map?.dimensions?.length ?? 0}</strong><span>维度</span></article>
-            </div>
-            {selectedNode ? (
-              <article className={`data-map-node-card node-${selectedNode.type}`}>
-                <span>{dataMapNodeTypeLabel(selectedNode.type)}</span>
-                <h3>{selectedNode.label}</h3>
-                <p>{selectedNode.description || "该节点来自 Data Map Agent 对字段和业务概念的自动识别。"}</p>
-                {selectedNode.field ? <small>字段：{selectedNode.field}</small> : null}
-              </article>
-            ) : null}
-            {questions.length ? (
-              <div className="data-map-question-list">
-                <strong>可以直接追问</strong>
-                {questions.map((question) => (
-                  <button key={question} type="button" onClick={() => onUseQuestion?.(question)}>
-                    {question}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {dataMap.insights?.length ? (
-              <div className="data-map-insights">
-                <strong>AI 观察</strong>
-                {dataMap.insights.slice(0, 4).map((item, index) => (
-                  <p key={`${String(item.title)}-${index}`}>{String(item.description || item.title || "")}</p>
-                ))}
-              </div>
-            ) : null}
-          </aside>
-        </div>
-      )}
-    </section>
-  );
-}
-
-export function AgentsPage({
-  agentConsole,
-  job,
-  loading,
-  message,
-  onRefresh,
-  onUpdateAgent,
-  onDeleteMessage
-}: {
-  agentConsole: WorkflowAgentConsoleResponse | null;
-  job: WorkflowJobResponse | null;
-  loading?: boolean;
-  message?: string;
-  onRefresh?: () => void;
-  onUpdateAgent?: (agentId: string, updates: WorkflowAgentUpdateRequest) => void;
-  onDeleteMessage?: (agentId: string, messageId: string) => void;
-}) {
-  const agents = agentConsole?.agents ?? [];
-  const [selectedAgentId, setSelectedAgentId] = useState("");
-  const selectedAgent = agents.find((agent) => agent.agent_id === selectedAgentId) ?? agents[0] ?? null;
-  const [draft, setDraft] = useState<WorkflowAgentUpdateRequest>({});
-
-  useEffect(() => {
-    if (!agents.length) {
-      setSelectedAgentId("");
-      return;
-    }
-    if (!agents.some((agent) => agent.agent_id === selectedAgentId)) {
-      setSelectedAgentId(agents[0].agent_id);
-    }
-  }, [agents, selectedAgentId]);
-
-  useEffect(() => {
-    if (!selectedAgent) {
-      setDraft({});
-      return;
-    }
-    setDraft({
-      display_name: selectedAgent.display_name,
-      role: selectedAgent.role || "",
-      avatar: selectedAgent.avatar || "🤖",
-      description: selectedAgent.description || "",
-      tags: selectedAgent.tags ?? [],
-      notes: selectedAgent.notes || ""
-    });
-  }, [selectedAgent?.agent_id]);
-
-  const submitAgentEdit = () => {
-    if (selectedAgent) {
-      onUpdateAgent?.(selectedAgent.agent_id, draft);
-    }
-  };
-
-  return (
-    <section className="page-section agents-page">
-      <div className="section-heading dashboard-heading">
-        <div>
-          <h2>Agent 画像</h2>
-          <span>每个Agent都是可查看、可编辑、有历史输出的实体。</span>
-        </div>
-        <button className="secondary-button" type="button" disabled={!job?.job_id || loading} onClick={onRefresh}>
-          {loading ? "同步中" : "刷新 Agent"}
-        </button>
-      </div>
-      {message ? <p className="message success">{message}</p> : null}
-      {!job?.job_id ? (
-        <EmptyState title="暂无 Agent 实体" text="启动或打开一个分析任务后，这里会展示参与本轮流程的所有 Agent。" />
-      ) : (
-        <div className="agents-console-layout">
-          <div className="agent-persona-grid">
-            {agents.map((agent) => (
-              <button
-                key={agent.agent_id}
-                type="button"
-                className={`agent-persona-card status-${agent.status || "idle"} ${selectedAgent?.agent_id === agent.agent_id ? "selected" : ""}`}
-                onClick={() => setSelectedAgentId(agent.agent_id)}
-              >
-                <span className="agent-persona-avatar">{agent.avatar || agentInitial(agent.display_name)}</span>
-                <strong>{agent.display_name}</strong>
-                <small>{agent.role}</small>
-                <em>{agent.message_count ?? 0} 条输出</em>
-              </button>
-            ))}
-          </div>
-          {selectedAgent ? (
-            <section className="agent-persona-detail">
-              <div className="agent-persona-hero">
-                <span>{selectedAgent.avatar || "🤖"}</span>
-                <div>
-                  <h3>{selectedAgent.display_name}</h3>
-                  <p>{selectedAgent.description}</p>
-                  <div className="tag-row">
-                    {(selectedAgent.tags ?? []).map((tag) => <small key={tag}>{tag}</small>)}
-                  </div>
-                </div>
-              </div>
-              <details className="agent-edit-box">
-                <summary>编辑这个 Agent 的展示信息</summary>
-                <label>
-                  名称
-                  <input value={draft.display_name ?? ""} onChange={(event) => setDraft((value) => ({ ...value, display_name: event.target.value }))} />
-                </label>
-                <label>
-                  头像
-                  <input value={draft.avatar ?? ""} onChange={(event) => setDraft((value) => ({ ...value, avatar: event.target.value }))} />
-                </label>
-                <label>
-                  角色
-                  <input value={draft.role ?? ""} onChange={(event) => setDraft((value) => ({ ...value, role: event.target.value }))} />
-                </label>
-                <label>
-                  简介
-                  <textarea rows={3} value={draft.description ?? ""} onChange={(event) => setDraft((value) => ({ ...value, description: event.target.value }))} />
-                </label>
-                <label>
-                  标签（用逗号分隔）
-                  <input
-                    value={(draft.tags ?? []).join("，")}
-                    onChange={(event) => setDraft((value) => ({ ...value, tags: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) }))}
-                  />
-                </label>
-                <button className="primary-button" type="button" onClick={submitAgentEdit}>保存 Agent 信息</button>
-              </details>
-              <div className="agent-message-timeline">
-                <div className="section-heading compact-heading">
-                  <h2>最近会话输出</h2>
-                  <span>{selectedAgent.messages?.length ?? 0} 条</span>
-                </div>
-                {(selectedAgent.messages ?? []).length ? (
-                  (selectedAgent.messages ?? []).slice().reverse().map((item) => (
-                    <article key={item.message_id} className={`agent-session-card status-${item.status || "info"}`}>
-                      <header>
-                        <strong>{item.title || stageLabel(item.stage || "")}</strong>
-                        <span>{item.timestamp ? formatDateTime(item.timestamp) : ""}</span>
-                      </header>
-                      <p>{item.content || "该步骤已产生输出。"}</p>
-                      {item.artifact_path ? <a href={toStorageUrl(item.artifact_path)} target="_blank" rel="noreferrer">打开产物</a> : null}
-                      <button className="danger-link" type="button" onClick={() => onDeleteMessage?.(selectedAgent.agent_id, item.message_id)}>
-                        删除这条输出
-                      </button>
-                    </article>
-                  ))
-                ) : (
-                  <p className="agent-muted">该 Agent 在当前任务中暂无可展示输出。</p>
-                )}
-              </div>
-            </section>
-          ) : null}
-        </div>
-      )}
-    </section>
-  );
-}
 
 export function DashboardPage({
   dashboard,
@@ -2689,27 +2398,133 @@ function ChartFigure({
   index,
   chartRefreshToken,
   onOpenChart,
-  onDeleteChart
+  onDeleteChart,
+  onBrushSelection
 }: {
   chartPath: string;
   index: number;
   chartRefreshToken: number;
   onOpenChart: (chartPath: string) => void;
   onDeleteChart: (chartPath: string) => void;
+  onBrushSelection?: (chartPath: string, selectionSpec: ChartSelectionSpec) => void;
 }) {
   const [imageFailed, setImageFailed] = useState(false);
+  const [brushMode, setBrushMode] = useState(false);
+  const [brushDraft, setBrushDraft] = useState<{
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const imageButtonRef = useRef<HTMLButtonElement | null>(null);
   const imageUrl = toVersionedStorageUrl(chartPath, chartRefreshToken);
+
   useEffect(() => {
     setImageFailed(false);
+    setBrushDraft(null);
   }, [imageUrl]);
+
+  const readLocalPoint = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const rect = imageButtonRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return null;
+    }
+    return {
+      x: Math.min(Math.max(event.clientX - rect.left, 0), rect.width),
+      y: Math.min(Math.max(event.clientY - rect.top, 0), rect.height),
+      width: rect.width,
+      height: rect.height
+    };
+  };
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!brushMode || !onBrushSelection || imageFailed || event.button !== 0) {
+      return;
+    }
+    const point = readLocalPoint(event);
+    if (!point) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setBrushDraft({ startX: point.x, startY: point.y, currentX: point.x, currentY: point.y, width: point.width, height: point.height });
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!brushMode || !brushDraft) {
+      return;
+    }
+    const point = readLocalPoint(event);
+    if (!point) {
+      return;
+    }
+    event.preventDefault();
+    setBrushDraft((current) => current ? { ...current, currentX: point.x, currentY: point.y, width: point.width, height: point.height } : current);
+  };
+
+  const handlePointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!brushMode || !brushDraft || !onBrushSelection) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const x0 = Math.min(brushDraft.startX, brushDraft.currentX);
+    const x1 = Math.max(brushDraft.startX, brushDraft.currentX);
+    const y0 = Math.min(brushDraft.startY, brushDraft.currentY);
+    const y1 = Math.max(brushDraft.startY, brushDraft.currentY);
+    const width = Math.max(1, brushDraft.width);
+    const height = Math.max(1, brushDraft.height);
+    const selectedWidth = x1 - x0;
+    const selectedHeight = y1 - y0;
+    setBrushDraft(null);
+    if (selectedWidth < 14 || selectedHeight < 14) {
+      return;
+    }
+    onBrushSelection(chartPath, {
+      chart_path: chartPath,
+      chart_title: chartTitle(chartPath, index),
+      x0,
+      y0,
+      x1,
+      y1,
+      width: selectedWidth,
+      height: selectedHeight,
+      image_width: width,
+      image_height: height,
+      ratio_x0: x0 / width,
+      ratio_y0: y0 / height,
+      ratio_x1: x1 / width,
+      ratio_y1: y1 / height,
+      source: "chart_brush"
+    });
+  };
+
+  const brushRect = brushDraft ? {
+    left: Math.min(brushDraft.startX, brushDraft.currentX),
+    top: Math.min(brushDraft.startY, brushDraft.currentY),
+    width: Math.abs(brushDraft.currentX - brushDraft.startX),
+    height: Math.abs(brushDraft.currentY - brushDraft.startY)
+  } : null;
 
   return (
     <>
       <button
-        className="chart-image-button"
+        ref={imageButtonRef}
+        className={`chart-image-button ${brushMode ? "brush-active" : ""}`}
         type="button"
-        onClick={() => onOpenChart(chartPath)}
-        aria-label={`放大查看${chartTitle(chartPath, index)}`}
+        onClick={() => {
+          if (!brushMode) {
+            onOpenChart(chartPath);
+          }
+        }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={() => setBrushDraft(null)}
+        aria-label={brushMode ? `拖拽圈选${chartTitle(chartPath, index)}中的区域生成追问` : `放大查看${chartTitle(chartPath, index)}`}
       >
         {imageFailed ? (
           <span className="chart-image-fallback">图表暂时无法预览，可下载 PNG 或刷新任务状态。</span>
@@ -2717,14 +2532,30 @@ function ChartFigure({
           <img
             alt={`分析图表 ${index + 1}`}
             src={imageUrl}
+            draggable={false}
             onError={() => setImageFailed(true)}
           />
         )}
+        {brushMode ? <span className="chart-brush-hint">拖拽圈选区域，松开后自动生成追问</span> : null}
+        {brushRect ? (
+          <span
+            className="chart-brush-rect"
+            style={{ left: brushRect.left, top: brushRect.top, width: brushRect.width, height: brushRect.height }}
+          />
+        ) : null}
       </button>
       <figcaption>{chartTitle(chartPath, index)}</figcaption>
       <div className="chart-actions chart-tools">
         <a href={toStorageUrl(chartPath)} download>下载 PNG</a>
         <button type="button" onClick={() => onOpenChart(chartPath)}>放大查看</button>
+        <button
+          className={`chart-brush-button ${brushMode ? "active" : ""}`}
+          type="button"
+          disabled={!onBrushSelection}
+          onClick={() => setBrushMode((current) => !current)}
+        >
+          {brushMode ? "退出刷选" : "刷选提问"}
+        </button>
         <button className="danger-button" type="button" onClick={() => onDeleteChart(chartPath)}>删除</button>
       </div>
     </>
@@ -3792,6 +3623,7 @@ export function EmptyState({ title, text, compact = false }: { title: string; te
     </div>
   );
 }
+
 
 
 

@@ -9,6 +9,7 @@ import type {
   AutoRepairAnalysisJobResponse,
   ChartConfigResponse,
   ChartDeleteResponse,
+  ChartSelectionSpec,
   CleaningPlanResponse,
   DashboardConfig,
   DashboardConfigResponse,
@@ -412,6 +413,18 @@ export async function createWorkflowFollowUp(
   return parseResponse<WorkflowFollowUpResponse>(response);
 }
 
+export async function createWorkflowSelectionFollowUp(
+  jobId: string,
+  selectionSpec: ChartSelectionSpec
+): Promise<WorkflowFollowUpResponse> {
+  const response = await apiFetch(`/api/workflows/jobs/${jobId}/selection-follow-up`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ selection_spec: selectionSpec })
+  });
+  return parseResponse<WorkflowFollowUpResponse>(response);
+}
+
 export async function deleteWorkflowChart(
   jobId: string,
   chartPath: string
@@ -642,6 +655,7 @@ export function toStorageUrl(path: string): string {
   }
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
+
 
 
 

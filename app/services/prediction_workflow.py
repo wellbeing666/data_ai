@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.agents.analysis_ir_agent import create_analysis_ir, render_analysis_ir_for_agent
 from app.agents.hypothesis_agent import create_hypothesis_plan
 from app.agents.prediction_agent import create_prediction_plan
 from app.agents.prediction_code_agent import PredictionCodeAgent, PredictionCodeGenerationError
@@ -219,14 +220,21 @@ def run_prediction_job(
         )
     )
 
+    progress("analysis_ir", "Analysis IR 编译器正在统一锁定预测任务语义口径。")
+    existing_ir = _read_json_if_exists(job_dir / "analysis_ir.json") or {}
+    analysis_ir = existing_ir or create_analysis_ir(user_goal=user_goal, dataset_profile=dataset_profile, rag_context=rag_context)
+    _write_json(job_dir / "analysis_ir.json", analysis_ir)
+    agent_goal = render_analysis_ir_for_agent(analysis_ir, delta={"branch": "what_if_prediction", "raw_user_goal": user_goal})
+    events.append(create_event("analysis_ir", "success", "Analysis IR 已生成，预测链路将消费 IR + delta。"))
+
     progress("hypothesis", "假设解析 Agent 正在解析干预变量、目标指标和对象维度。")
-    hypothesis_plan = create_hypothesis_plan(user_goal, dataset_profile, rag_context=rag_context)
+    hypothesis_plan = create_hypothesis_plan(agent_goal, dataset_profile, rag_context=rag_context)
     _write_json(job_dir / "hypothesis_plan.json", hypothesis_plan)
     events.append(create_event("hypothesis", "success", "假设解析 Agent 已生成结构化假设。"))
 
     progress("prediction_plan", "预测 Agent 正在选择建模或模拟方案。")
     prediction_plan = create_prediction_plan(
-        user_goal=user_goal,
+        user_goal=agent_goal,
         dataset_profile=dataset_profile,
         hypothesis_plan=hypothesis_plan,
         rag_context=rag_context,
@@ -402,7 +410,7 @@ def run_prediction_job(
         prediction_result = _read_json(Path(final_prediction_result_path))
         chart_paths = prediction_result.get("charts") if isinstance(prediction_result.get("charts"), list) else []
         explanation = create_prediction_explanation(
-            user_goal=user_goal,
+            user_goal=agent_goal,
             prediction_result=prediction_result,
             chart_paths=[str(path) for path in chart_paths],
             rag_context=rag_context,
@@ -446,7 +454,7 @@ def run_prediction_job(
         )
         validation_payload = _read_json_if_exists(Path(final_validation_result_path)) if final_validation_result_path else None
         quality_review = create_quality_review(
-            user_goal=user_goal,
+            user_goal=agent_goal,
             dataset_profile=dataset_profile,
             result_payload=prediction_result,
             explanation=explanation,
@@ -753,6 +761,7 @@ def _existing_or_none(value: Any, fallback_path: Path) -> str | None:
     if isinstance(value, str) and value:
         return value
     return str(fallback_path) if fallback_path.exists() else None
+
 
 
 

@@ -128,7 +128,7 @@ export default function App() {
       </header>
 
       <AppErrorBoundary resetKey={`${view}-${user.id}`}>
-        {view === "workbench" ? <WorkbenchPage /> : null}
+        {view === "workbench" ? <WorkbenchPage currentUser={user} /> : null}
         {view === "account" ? <AccountPage user={user} onUserChange={setUser} onLogout={handleLogout} /> : null}
         {view === "admin" && user.role === "admin" ? <AdminPage currentUser={user} /> : null}
       </AppErrorBoundary>
@@ -556,5 +556,6 @@ function statusLabel(status: string) {
   };
   return labels[status] || status;
 }
+
 
 

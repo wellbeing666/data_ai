@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.agents.analysis_ir_agent import create_analysis_ir, render_analysis_ir_for_agent
 from app.agents.chart_code_refiner_agent import create_refined_chart_script
 from app.agents.chart_config_agent import create_chart_config
 from app.agents.chart_suggestion_agent import create_chart_refine_suggestions
@@ -17,6 +18,7 @@ from app.agents.insight_mining_agent import DEFAULT_INSIGHT_GOAL
 from app.agents.postprocess_sidecar_agent import create_dashboard_config
 from app.agents.preflight_agent import create_preflight_assessment
 from app.agents.roadmap_agent import create_analysis_roadmap, render_analysis_roadmap
+from app.agents.selection_to_query_agent import create_selection_followup_patch
 from app.agents.vision_parsing_agent import VisionParsingAgent, write_visual_extracted_csv
 from app.sandbox.code_safety import validate_script_static_safety
 from app.sandbox.local_executor import LocalSubprocessSandboxExecutor
@@ -40,6 +42,7 @@ ANALYSIS_WORKFLOW_TYPE = "auto_repair"
 IMAGE_ASSET_TYPE = "image"
 ROADMAP_FILENAME = "analysis_roadmap.json"
 QUALITY_REVIEW_FILENAME = "quality_review.json"
+ANALYSIS_IR_FILENAME = "analysis_ir.json"
 
 FOLLOW_UP_SYSTEM_PROMPT = """你是 AI 原生数据分析工作台的追问分析 Agent。
 
@@ -82,6 +85,15 @@ AGENT_BLUEPRINTS: list[dict[str, Any]] = [
         "description": "从知识库召回业务口径、指标定义和分析约束，提供给主控和解释链路。",
         "stage_names": ["rag_retrieval"],
         "tags": ["知识库", "业务口径"],
+    },
+    {
+        "agent_id": "analysis_ir_agent",
+        "display_name": "Analysis IR 编译器",
+        "avatar": "🧩",
+        "role": "语义中间表示编译器",
+        "description": "把自然语言目标编译为统一的强类型 analysis_ir.json，锁定实体、粒度、指标、时间窗和证据口径。",
+        "stage_names": ["analysis_ir"],
+        "tags": ["语义编译", "IR", "口径锁定"],
     },
     {
         "agent_id": "controller_agent",
@@ -320,8 +332,13 @@ def create_workflow_chart_config(
             status_code=status.HTTP_409_CONFLICT,
             detail="当前任务还没有可用于生成图表配置的分析结果。",
         )
+    analysis_ir = _read_json_if_exists(job_dir / ANALYSIS_IR_FILENAME) or {}
+    compiled_instruction = render_analysis_ir_for_agent(
+        analysis_ir,
+        delta={"interaction": "dashboard_chart_config", "instruction": instruction, "current_config": current_config or {}},
+    ) if analysis_ir else instruction
     chart_config = create_chart_config(
-        instruction=instruction,
+        instruction=compiled_instruction,
         result_payload=result_payload,
         dataset_profile=dataset_profile,
         current_config=current_config,
@@ -342,8 +359,13 @@ def create_workflow_chart_suggestions(job_id: str, chart_path: str) -> dict[str,
     result_filename = "prediction_result.json" if workflow_type == PREDICTION_TASK_TYPE else "analysis_result.json"
     result_payload = _read_json_if_exists(job_dir / result_filename) or _read_json_if_exists(job_dir / "report_data.json") or {}
     visual_parse_result = _read_json_if_exists(job_dir / "visual_parse_result.json")
+    analysis_ir = _read_json_if_exists(job_dir / ANALYSIS_IR_FILENAME) or {}
+    suggestion_goal = render_analysis_ir_for_agent(
+        analysis_ir,
+        delta={"interaction": "chart_suggestions", "chart_path": chart_path, "raw_user_goal": status_data.get("user_goal")},
+    ) if analysis_ir else str(status_data.get("user_goal") or "")
     suggestions = create_chart_refine_suggestions(
-        user_goal=str(status_data.get("user_goal") or ""),
+        user_goal=suggestion_goal,
         chart_path=chart_path,
         dataset_profile=dataset_profile,
         result_payload=result_payload,
@@ -384,12 +406,17 @@ def refine_workflow_chart(
 
     input_file, _ = load_uploaded_dataset(dataset_id)
     original_script = source_script_path.read_text(encoding="utf-8")
+    analysis_ir = _read_json_if_exists(job_dir / ANALYSIS_IR_FILENAME) or {}
+    compiled_instruction = render_analysis_ir_for_agent(
+        analysis_ir,
+        delta={"interaction": "chart_refine", "instruction": instruction, "chart_path": chart_path},
+    ) if analysis_ir else instruction
     refined_script = create_refined_chart_script(
         input_file=str(input_file.resolve()),
         output_dir=str(job_dir),
         original_script=original_script,
         target_chart_path=chart_path,
-        instruction=instruction,
+        instruction=compiled_instruction,
         dataset_profile=dataset_profile,
         result_payload=result_payload,
         workflow_type=workflow_type,
@@ -635,8 +662,27 @@ def run_workflow_job(
     rag_context = format_rag_context(rag_search_result)
     _write_json(job_dir / "rag_retrieval.json", rag_search_result)
 
+    events.append(create_event("analysis_ir", "running", "Analysis IR 编译器正在锁定实体、粒度、指标、时间窗和证据需求。"))
+    try:
+        preflight = _read_json_if_exists(get_dataset_dir(dataset_id) / "preflight_assessment.json") or {}
+    except HTTPException:
+        preflight = {}
+    analysis_ir = create_analysis_ir(
+        user_goal=user_goal,
+        dataset_profile=dataset_profile,
+        preflight=preflight,
+        rag_context=rag_context,
+    )
+    analysis_ir_path = str(job_dir / ANALYSIS_IR_FILENAME)
+    _write_json(job_dir / ANALYSIS_IR_FILENAME, analysis_ir)
+    compiled_goal = render_analysis_ir_for_agent(
+        analysis_ir,
+        delta={"stage": "controller", "raw_user_goal": user_goal},
+    )
+    events.append(create_event("analysis_ir", "success", "Analysis IR 已生成，后续 Agent 将统一消费 IR + delta。"))
+
     events.append(create_event("controller", "running", "主控 Agent 正在选择分析工作流。"))
-    controller_plan = create_controller_plan(user_goal, dataset_profile, rag_context=rag_context)
+    controller_plan = create_controller_plan(compiled_goal, dataset_profile, rag_context=rag_context)
     task_type = str(controller_plan.get("task_type") or "general_data_analysis")
     if _is_insight_goal(user_goal):
         task_type = INSIGHT_TASK_TYPE
@@ -652,7 +698,7 @@ def run_workflow_job(
 
     events.append(create_event("roadmap", "running", "路线图 Agent 正在生成可视化分析路线。"))
     roadmap = create_analysis_roadmap(
-        user_goal=user_goal,
+        user_goal=render_analysis_ir_for_agent(analysis_ir, delta={"stage": "roadmap", "raw_user_goal": user_goal}),
         dataset_profile=dataset_profile,
         controller_plan=controller_plan,
         workflow_type=workflow_type,
@@ -678,6 +724,7 @@ def run_workflow_job(
         timeout_seconds=timeout_seconds,
         controller_plan_path=str(job_dir / "controller_plan.json"),
         rag_retrieval_path=str(job_dir / "rag_retrieval.json"),
+        analysis_ir_path=analysis_ir_path,
         dataset_profile_path=str(job_dir / "dataset_profile.json"),
         analysis_roadmap_path=analysis_roadmap_path,
         visual_parse_result_path=visual_parse_result_path,
@@ -882,6 +929,7 @@ def get_workflow_job_log(job_id: str) -> dict[str, Any]:
         **artifacts,
         "visual_parse_result": status_data.get("visual_parse_result_path"),
         "visual_extracted_dataset": status_data.get("visual_extracted_dataset_path"),
+        "analysis_ir": status_data.get("analysis_ir_path"),
         "charts": status_data.get("chart_paths") or [],
         "analysis_roadmap": status_data.get("analysis_roadmap_path"),
         "quality_review": status_data.get("quality_review_path"),
@@ -1046,6 +1094,7 @@ def _agent_artifact_messages(job_dir: Path, status_data: dict[str, Any]) -> list
     artifact_map = [
         ("controller_agent", "controller_plan_path", "controller_plan.json", "主控计划产物"),
         ("rag_retriever", "rag_retrieval_path", "rag_retrieval.json", "RAG 检索产物"),
+        ("analysis_ir_agent", "analysis_ir_path", ANALYSIS_IR_FILENAME, "Analysis IR 编译产物"),
         ("visual_parser", "visual_parse_result_path", "visual_parse_result.json", "视觉解析产物"),
         ("data_understanding_agent", "data_understanding_path", "data_understanding.json", "字段理解产物"),
         ("analysis_agent", "analysis_plan_path", "analysis_plan.json", "分析计划产物"),
@@ -1617,7 +1666,7 @@ def _control_response(job_id: str, action: str, accepted: bool, message: str, st
         "background_action": None,
     }
 
-def create_workflow_follow_up(job_id: str, question: str) -> dict[str, Any]:
+def create_workflow_follow_up(job_id: str, question: str, source_delta: dict[str, Any] | None = None) -> dict[str, Any]:
     job_dir = _get_job_dir(job_id).resolve()
     status_data = get_workflow_job_status(job_id)
     if status_data.get("status") != "success":
@@ -1626,7 +1675,12 @@ def create_workflow_follow_up(job_id: str, question: str) -> dict[str, Any]:
     if not normalized_question:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="追问内容不能为空。")
     artifacts = _follow_up_artifacts(job_dir)
-    answer = _build_follow_up_answer(normalized_question, artifacts, status_data)
+    analysis_ir = artifacts.get(ANALYSIS_IR_FILENAME) if isinstance(artifacts.get(ANALYSIS_IR_FILENAME), dict) else {}
+    compiled_query = render_analysis_ir_for_agent(
+        analysis_ir,
+        delta={"interaction": "follow_up", "question": normalized_question, "source_delta": source_delta or {}},
+    ) if analysis_ir else normalized_question
+    answer = _build_follow_up_answer(normalized_question, artifacts, status_data, compiled_query=compiled_query)
     followups_dir = job_dir / "followups"
     followups_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
@@ -1637,10 +1691,42 @@ def create_workflow_follow_up(job_id: str, question: str) -> dict[str, Any]:
         "answer": answer,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "used_artifacts": sorted(artifacts.keys()),
+        "source_delta": source_delta or {},
     }
     _write_json(follow_up_path, payload)
     _append_job_event(job_dir, create_event("follow_up", "success", "已基于现有分析产物生成追问回答。"))
     return {**payload, "follow_up_path": str(follow_up_path)}
+
+
+def create_workflow_selection_follow_up(job_id: str, selection_spec: dict[str, Any]) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    status_data = get_workflow_job_status(job_id)
+    if status_data.get("status") != "success":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="请等待分析完成后再使用图形刷选追问。")
+    if not isinstance(selection_spec, dict) or not selection_spec:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="selection_spec 不能为空。")
+    artifacts = _follow_up_artifacts(job_dir)
+    analysis_ir = artifacts.get(ANALYSIS_IR_FILENAME) if isinstance(artifacts.get(ANALYSIS_IR_FILENAME), dict) else {}
+    patch = create_selection_followup_patch(
+        selection_spec=selection_spec,
+        analysis_ir=analysis_ir,
+        artifacts=artifacts,
+    )
+    followups_dir = job_dir / "followups"
+    followups_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    patch_path = followups_dir / f"followup_ir_patch_{timestamp}.json"
+    latest_patch_path = job_dir / "followup_ir_patch.json"
+    _write_json(patch_path, patch)
+    _write_json(latest_patch_path, patch)
+    question = str(patch.get("question") or "为什么图中被圈选的数据范围值得关注？").strip()
+    result = create_workflow_follow_up(job_id, question, source_delta=patch)
+    if result.get("follow_up_path"):
+        follow_up_payload = _read_json_if_exists(Path(str(result["follow_up_path"]))) or {}
+        follow_up_payload.update({"selection_patch_path": str(patch_path), "selection_spec": selection_spec})
+        _write_json(Path(str(result["follow_up_path"])), follow_up_payload)
+    _append_job_event(job_dir, create_event("selection_follow_up", "success", "图形刷选已编译为 follow-up IR patch 并生成追问回答。"))
+    return {**result, "selection_patch_path": str(patch_path), "selection_spec": selection_spec}
 
 
 def _refresh_workflow_artifact(job_id: str, action: str) -> None:
@@ -1782,6 +1868,7 @@ def _follow_up_artifacts(job_dir: Path) -> dict[str, Any]:
     for filename in (
         "dataset_profile.json",
         "controller_plan.json",
+        ANALYSIS_IR_FILENAME,
         "data_understanding.json",
         "analysis_plan.json",
         "hypothesis_plan.json",
@@ -1805,10 +1892,11 @@ def _follow_up_artifacts(job_dir: Path) -> dict[str, Any]:
     return artifacts
 
 
-def _build_follow_up_answer(question: str, artifacts: dict[str, Any], status_data: dict[str, Any]) -> str:
+def _build_follow_up_answer(question: str, artifacts: dict[str, Any], status_data: dict[str, Any], compiled_query: str | None = None) -> str:
     fallback = _build_rule_follow_up_answer(question, artifacts)
     prompt_payload = {
         "question": question,
+        "compiled_query": compiled_query or question,
         "job_context": {
             "user_goal": status_data.get("user_goal"),
             "workflow_type": status_data.get("workflow_type"),
@@ -1998,6 +2086,7 @@ def _write_workflow_status(
     timeout_seconds: int,
     controller_plan_path: str | None = None,
     rag_retrieval_path: str | None = None,
+    analysis_ir_path: str | None = None,
     dataset_profile_path: str | None = None,
     analysis_roadmap_path: str | None = None,
     quality_review_path: str | None = None,
@@ -2030,6 +2119,7 @@ def _write_workflow_status(
         "job_dir": str(job_dir),
         "controller_plan_path": controller_plan_path,
         "rag_retrieval_path": rag_retrieval_path,
+        "analysis_ir_path": analysis_ir_path,
         "dataset_profile_path": dataset_profile_path,
         "analysis_roadmap_path": analysis_roadmap_path,
         "quality_review_path": quality_review_path,
@@ -2067,6 +2157,7 @@ def _write_workflow_status(
             "retry_count": 0,
             "max_retries": max_retries,
             "artifacts": {
+                "analysis_ir": analysis_ir_path,
                 "analysis_roadmap": analysis_roadmap_path,
                 "quality_review": quality_review_path,
                 "cleaning_report": cleaning_report_path,
@@ -2098,6 +2189,7 @@ def _normalize_workflow_status(
             **data,
             "controller_plan_path": _existing_or_none(data.get("controller_plan_path"), job_dir / "controller_plan.json"),
             "rag_retrieval_path": _existing_or_none(data.get("rag_retrieval_path"), job_dir / "rag_retrieval.json"),
+            "analysis_ir_path": _existing_or_none(data.get("analysis_ir_path"), job_dir / ANALYSIS_IR_FILENAME),
             "dataset_profile_path": _existing_or_none(data.get("dataset_profile_path"), job_dir / "dataset_profile.json"),
             "analysis_roadmap_path": _existing_or_none(data.get("analysis_roadmap_path"), job_dir / ROADMAP_FILENAME),
             "quality_review_path": _existing_or_none(data.get("quality_review_path"), job_dir / QUALITY_REVIEW_FILENAME),
@@ -2141,6 +2233,7 @@ def _normalize_workflow_status(
         "job_dir": str(data.get("job_dir") or ""),
         "controller_plan_path": data.get("controller_plan_path"),
         "rag_retrieval_path": data.get("rag_retrieval_path"),
+        "analysis_ir_path": data.get("analysis_ir_path"),
         "dataset_profile_path": data.get("dataset_profile_path"),
         "analysis_roadmap_path": data.get("analysis_roadmap_path"),
         "quality_review_path": data.get("quality_review_path"),
@@ -2707,6 +2800,7 @@ def _event_list(value: Any) -> list[dict[str, Any]]:
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
 
 
 

@@ -10,6 +10,7 @@ import {
   controlWorkflowJob,
   createWorkflowFollowUp,
   createWorkflowJobAsync,
+  createWorkflowSelectionFollowUp,
   deleteWorkflowAgentMessage,
   deleteWorkflowChart,
   deleteWorkflowJob,
@@ -42,9 +43,12 @@ import {
   uploadDataset
 } from "../api";
 import type {
+  AnalysisIR,
   AnalysisRoadmap,
   AnalysisResult,
   AutoRepairAnalysisJobResponse,
+  AuthUser,
+  ChartSelectionSpec,
   CleaningPlanResponse,
   CleaningReportResponse,
   AutoRepairAttemptResult,
@@ -86,9 +90,7 @@ import {
   ChartPreviewModal,
   ChartsPage,
   CleaningPlanModal,
-  AgentsPage,
   DashboardPage,
-  DataMapPage,
   HistoryPanel,
   InsightsPage,
   KnowledgePage,
@@ -100,6 +102,9 @@ import {
   SamplePreviewModal,
   SetupPage
 } from "../components/WorkbenchComponents";
+import { AgentsPage } from "../components/workbench/AgentsPage";
+import { AnalysisIrPage } from "../components/workbench/AnalysisIrPage";
+import { DataMapPage } from "../components/workbench/DataMapPage";
 import {
   buildAgentSteps,
   buildPredictionSteps,
@@ -129,7 +134,7 @@ interface SamplePreviewState {
 
 const SMART_INSIGHT_GOAL = "智能洞察挖掘：系统自动扫描数据，挖掘潜在规律和高价值异常，无需用户预设目标。";
 
-export function WorkbenchPage() {
+export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }) {
   const [activePage, setActivePage] = useState<PageKey>("setup");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isAnalysisFileDragActive, setIsAnalysisFileDragActive] = useState(false);
@@ -145,6 +150,7 @@ export function WorkbenchPage() {
   const [dataUnderstanding, setDataUnderstanding] = useState<AnyRecord | null>(null);
   const [analysisPlan, setAnalysisPlan] = useState<AnyRecord | null>(null);
   const [analysisRoadmap, setAnalysisRoadmap] = useState<AnalysisRoadmap | null>(null);
+  const [analysisIr, setAnalysisIr] = useState<AnalysisIR | null>(null);
   const [qualityReview, setQualityReview] = useState<QualityReview | null>(null);
   const [visualParseResult, setVisualParseResult] = useState<VisualParseResult | null>(null);
   const [preflight, setPreflight] = useState<PreflightAssessment | null>(null);
@@ -689,6 +695,7 @@ export function WorkbenchPage() {
     setDataUnderstanding(null);
     setAnalysisPlan(null);
     setAnalysisRoadmap(null);
+    setAnalysisIr(null);
     setQualityReview(null);
     setVisualParseResult(null);
     setDataMap(null);
@@ -704,6 +711,7 @@ export function WorkbenchPage() {
     setPredictionExplanation(emptyPredictionExplanation);
     setHypothesisPlan(null);
     setPredictionPlan(null);
+    setAnalysisIr(null);
     setHiddenChartPaths([]);
     setChartRefreshToken(0);
     setChartPreviewPath(null);
@@ -837,6 +845,7 @@ export function WorkbenchPage() {
     setDataUnderstanding(null);
     setAnalysisPlan(null);
     setAnalysisRoadmap(null);
+    setAnalysisIr(null);
     setQualityReview(null);
     setVisualParseResult(null);
     setDataMap(null);
@@ -852,6 +861,7 @@ export function WorkbenchPage() {
     setPredictionExplanation(emptyPredictionExplanation);
     setHypothesisPlan(null);
     setPredictionPlan(null);
+    setAnalysisIr(null);
     setHiddenChartPaths([]);
     setChartRefreshToken(0);
     setChartPreviewPath(null);
@@ -960,6 +970,7 @@ export function WorkbenchPage() {
     setPredictionExplanation(emptyPredictionExplanation);
     setHypothesisPlan(null);
     setPredictionPlan(null);
+    setAnalysisIr(null);
     setHiddenChartPaths([]);
     setChartRefreshToken(0);
     setChartPreviewPath(null);
@@ -992,6 +1003,7 @@ export function WorkbenchPage() {
     await Promise.allSettled([
       refreshPredictionLog(nextJob.job_id),
       refreshExecutionLog(nextJob.job_id),
+      refreshJsonPath<AnalysisIR>(nextJob.analysis_ir_path, setAnalysisIr),
       refreshJsonPath(nextJob.hypothesis_plan_path, setHypothesisPlan),
       refreshJsonPath(nextJob.prediction_plan_path, setPredictionPlan),
       refreshJsonPath(nextJob.analysis_roadmap_path, setAnalysisRoadmap),
@@ -1255,6 +1267,7 @@ export function WorkbenchPage() {
       refreshExecutionLog(nextJob.job_id),
       refreshJsonPath(nextJob.controller_plan_path, setControllerPlan),
       refreshJsonPath(nextJob.rag_retrieval_path, setRagRetrieval),
+      refreshJsonPath<AnalysisIR>(nextJob.analysis_ir_path, setAnalysisIr),
       refreshJsonPath(nextJob.visual_parse_result_path, setVisualParseResult),
       refreshJsonPath(nextJob.data_understanding_path, setDataUnderstanding),
       refreshJsonPath(nextJob.dataset_profile_path, setProfile),
@@ -1459,6 +1472,27 @@ export function WorkbenchPage() {
     await runChartRefinement(chartPath, instruction);
   }
 
+
+  async function handleChartBrushSelection(chartPath: string, selectionSpec: ChartSelectionSpec) {
+    if (!job?.job_id) {
+      setChartMessage("请先完成或打开一个分析任务，再使用图形刷选追问。");
+      return;
+    }
+    setChartMessage("正在把图形刷选动作编译为追问问题。");
+    try {
+      const result = await createWorkflowSelectionFollowUp(job.job_id, {
+        ...selectionSpec,
+        chart_path: chartPath,
+        source: "chart_brush"
+      });
+      setFollowUps((current) => [result, ...current]);
+      setFollowUpQuestion("");
+      setChartMessage(`已生成刷选追问：${result.question}`);
+      setActivePage("insights");
+    } catch (error) {
+      setChartMessage(error instanceof Error ? error.message : "图形刷选追问生成失败。");
+    }
+  }
 
   async function handleDeleteChart(chartPath: string) {
     setChartMessage("");
@@ -1800,6 +1834,7 @@ export function WorkbenchPage() {
             {[
               ["setup", "任务配置"],
               ["knowledge", "知识库"],
+              ["analysisIr", "分析专用中间表示"],
               ["dataMap", "数据地图"],
               ["roadmap", "分析路线图"],
               ["agents", "Agent 画像"],
@@ -1839,6 +1874,10 @@ export function WorkbenchPage() {
             />
           ) : null}
 
+          {activePage === "analysisIr" ? (
+            <AnalysisIrPage analysisIr={analysisIr} job={job} />
+          ) : null}
+
           {activePage === "dataMap" ? (
             <DataMapPage
               dataMap={dataMap}
@@ -1860,6 +1899,7 @@ export function WorkbenchPage() {
               job={job}
               loading={agentConsoleLoading}
               message={agentConsoleMessage}
+              canManageAgents={currentUser?.role === "admin"}
               onRefresh={() => refreshAgentConsole()}
               onUpdateAgent={handleUpdateAgentProfile}
               onDeleteMessage={handleDeleteAgentMessage}
@@ -1905,6 +1945,7 @@ export function WorkbenchPage() {
               onQuickRefineChart={handleQuickRefineChart}
               onOpenChart={setChartPreviewPath}
               onDeleteChart={handleDeleteChart}
+              onBrushSelection={handleChartBrushSelection}
             />
           ) : null}
 
@@ -1986,6 +2027,7 @@ export function WorkbenchPage() {
     </main>
   );
 }
+
 
 
 

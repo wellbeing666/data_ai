@@ -17,6 +17,7 @@ from app.schemas.workflow import (
     WorkflowControlResponse,
     WorkflowFollowUpRequest,
     WorkflowFollowUpResponse,
+    WorkflowSelectionFollowUpRequest,
     WorkflowJobDeleteResponse,
     WorkflowJobListResponse,
     WorkflowJobRequest,
@@ -32,6 +33,7 @@ from app.services.workflow_service import (
     create_workflow_chart_suggestions,
     control_workflow_job,
     create_workflow_follow_up,
+    create_workflow_selection_follow_up,
     create_workflow_job_record,
     create_workflow_preflight,
     delete_workflow_chart,
@@ -57,6 +59,11 @@ router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
 def _is_admin(user: dict[str, Any]) -> bool:
     return str(user.get("role") or "") == "admin"
+
+
+def _ensure_admin(user: dict[str, Any]) -> None:
+    if not _is_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要管理员权限才能修改 Agent 画像。")
 
 
 def _ensure_job_access(job_id: str, user: dict[str, Any]) -> dict[str, Any]:
@@ -164,6 +171,17 @@ def create_job_follow_up(
     return WorkflowFollowUpResponse(**result)
 
 
+@router.post("/jobs/{job_id}/selection-follow-up", response_model=WorkflowFollowUpResponse)
+def create_job_selection_follow_up(
+    job_id: str,
+    request: WorkflowSelectionFollowUpRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> WorkflowFollowUpResponse:
+    _ensure_job_access(job_id, current_user)
+    result = create_workflow_selection_follow_up(job_id=job_id, selection_spec=request.selection_spec)
+    return WorkflowFollowUpResponse(**result)
+
+
 @router.get("/jobs/{job_id}/dashboard", response_model=DashboardConfigResponse)
 def read_job_dashboard(
     job_id: str,
@@ -210,6 +228,7 @@ def update_job_agent(
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> WorkflowAgentConsoleResponse:
     _ensure_job_access(job_id, current_user)
+    _ensure_admin(current_user)
     return WorkflowAgentConsoleResponse(**update_workflow_agent(job_id, agent_id, request.model_dump(exclude_unset=True)))
 
 
@@ -221,6 +240,7 @@ def delete_job_agent_message(
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> WorkflowAgentConsoleResponse:
     _ensure_job_access(job_id, current_user)
+    _ensure_admin(current_user)
     return WorkflowAgentConsoleResponse(**delete_workflow_agent_message(job_id, agent_id, message_id))
 
 
@@ -295,5 +315,6 @@ def remove_workflow_chart(
 ) -> dict[str, Any]:
     _ensure_job_access(job_id, current_user)
     return delete_workflow_chart(job_id, chart_path)
+
 
 

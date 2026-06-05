@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import HTTPException, status
 
 from app.agents.analysis_agent import create_analysis_plan
+from app.agents.analysis_ir_agent import create_analysis_ir, render_analysis_ir_for_agent
 from app.agents.code_agent import CodeAgent, CodeGenerationError
 from app.agents.controller_agent import create_controller_plan
 from app.agents.data_understanding_agent import create_data_understanding
@@ -246,6 +247,13 @@ def run_auto_repair_analysis_job(
             ),
         )
     )
+
+    progress("analysis_ir", "running", "Analysis IR 编译器正在统一锁定本次任务语义口径。")
+    existing_ir = _read_json_if_exists(job_dir / "analysis_ir.json") or {}
+    analysis_ir = existing_ir or create_analysis_ir(user_goal=user_goal, dataset_profile=dataset_profile, rag_context=rag_context)
+    _write_json(job_dir / "analysis_ir.json", analysis_ir)
+    agent_goal = render_analysis_ir_for_agent(analysis_ir, delta={"branch": "auto_repair", "raw_user_goal": user_goal})
+    events.append(create_event("analysis_ir", "success", "Analysis IR 已生成，分析链路将消费 IR + delta。"))
     _write_progress(
         job_dir=job_dir,
         job_id=job_id,
@@ -261,7 +269,7 @@ def run_auto_repair_analysis_job(
     )
 
     progress("controller", "running", "主控 Agent 正在规划任务类型和执行步骤。")
-    controller_plan = create_controller_plan(user_goal, dataset_profile, rag_context=rag_context)
+    controller_plan = create_controller_plan(agent_goal, dataset_profile, rag_context=rag_context)
     _write_json(job_dir / "controller_plan.json", controller_plan)
     _write_json(job_dir / "dataset_profile.json", dataset_profile)
     events.append(create_event("controller", "success", "主控 Agent 已生成任务计划。"))
@@ -283,7 +291,7 @@ def run_auto_repair_analysis_job(
 
     events.append(create_event("data_understanding", "running", "数据理解 Agent 正在识别字段语义。"))
     data_understanding = create_data_understanding(
-        user_goal,
+        agent_goal,
         dataset_profile,
         rag_context=rag_context,
     )
@@ -308,7 +316,7 @@ def run_auto_repair_analysis_job(
 
     events.append(create_event("analysis", "running", "分析 Agent 正在选择分析方法和图表方案。"))
     analysis_plan = create_analysis_plan(
-        user_goal=user_goal,
+        user_goal=agent_goal,
         dataset_profile=dataset_profile,
         data_understanding_result=data_understanding,
         controller_plan=controller_plan,
@@ -781,7 +789,7 @@ def run_auto_repair_analysis_job(
             analysis_plan_path=str(job_dir / "analysis_plan.json"),
         )
         debate_reflection = create_debate_reflection(
-            user_goal=user_goal,
+            user_goal=agent_goal,
             dataset_profile=dataset_profile,
             result_payload=analysis_result_data,
             report_data=report_data_payload,
@@ -795,7 +803,7 @@ def run_auto_repair_analysis_job(
         events.append(create_event("debate_matrix", "success", "Debate Matrix 已收敛为可交付给解释 Agent 的共识。"))
 
         explanation = create_explanation(
-            user_goal=user_goal,
+            user_goal=agent_goal,
             dataset_profile=dataset_profile,
             analysis_result=analysis_result_data,
             chart_paths=chart_paths,
@@ -842,7 +850,7 @@ def run_auto_repair_analysis_job(
         )
         validation_payload = _read_json_if_exists(Path(final_validation_result_path)) if final_validation_result_path else None
         quality_review = create_quality_review(
-            user_goal=user_goal,
+            user_goal=agent_goal,
             dataset_profile=dataset_profile,
             result_payload=analysis_result_data,
             explanation=explanation,
@@ -890,7 +898,7 @@ def run_auto_repair_analysis_job(
         try:
             sidecar_results = create_postprocess_sidecars(
                 job_dir=job_dir,
-                user_goal=user_goal,
+                user_goal=agent_goal,
                 dataset_profile=dataset_profile,
                 result_payload=analysis_result_data,
                 report_data=report_data_payload,
@@ -1350,6 +1358,7 @@ def _build_static_safety_failure_result(
             "safety_issues": issues,
         },
     }
+
 
 
 

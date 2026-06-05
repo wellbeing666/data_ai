@@ -183,6 +183,7 @@ export interface AutoRepairAnalysisJobResponse {
   job_dir: string;
   controller_plan_path?: string | null;
   rag_retrieval_path?: string | null;
+  analysis_ir_path?: string | null;
   dataset_profile_path?: string | null;
   data_understanding_path?: string | null;
   analysis_plan_path?: string | null;
@@ -688,6 +689,97 @@ export interface PredictionLogResponse {
   events: ExecutionLogEvent[];
 }
 
+export interface AnalysisIRFieldRef {
+  name: string;
+  role?: string;
+  source_column?: string;
+  confidence?: number;
+  description?: string;
+}
+
+export interface AnalysisIRMetric {
+  name: string;
+  source_column?: string;
+  aggregation?: string;
+  direction?: string;
+  business_definition?: string;
+  evidence_required?: string[];
+}
+
+export interface AnalysisIRFilter {
+  field: string;
+  operator?: string;
+  value?: unknown;
+  description?: string;
+}
+
+export interface AnalysisIRTimeWindow {
+  field?: string;
+  start?: string | null;
+  end?: string | null;
+  granularity?: string;
+  description?: string;
+}
+
+export interface AnalysisIRChartIntent {
+  chart_type?: string;
+  purpose?: string;
+  x?: string;
+  y?: string;
+  group_by?: string;
+  title?: string;
+}
+
+export interface AnalysisIROutputDependency {
+  artifact: string;
+  depends_on?: string[];
+  purpose?: string;
+}
+
+export interface AnalysisIR {
+  schema_version?: string;
+  generated_at?: string;
+  agent?: string;
+  task_type?: string;
+  normalized_goal?: string;
+  semantic_digest?: string;
+  entities?: AnalysisIRFieldRef[];
+  grain?: string[];
+  metrics?: AnalysisIRMetric[];
+  dimensions?: AnalysisIRFieldRef[];
+  time_window?: AnalysisIRTimeWindow;
+  filters?: AnalysisIRFilter[];
+  candidate_methods?: string[];
+  chart_intents?: AnalysisIRChartIntent[];
+  hypotheses?: string[];
+  evidence_requirements?: string[];
+  output_dependencies?: AnalysisIROutputDependency[];
+  guardrails?: string[];
+  open_questions?: string[];
+  source?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface ChartSelectionSpec {
+  chart_path?: string;
+  chart_title?: string;
+  source?: string;
+  x0?: number;
+  y0?: number;
+  x1?: number;
+  y1?: number;
+  width?: number;
+  height?: number;
+  image_width?: number;
+  image_height?: number;
+  ratio_x0?: number;
+  ratio_y0?: number;
+  ratio_x1?: number;
+  ratio_y1?: number;
+  labels?: string[];
+  [key: string]: unknown;
+}
+
 export interface WorkflowJobResponse {
   job_id: string;
   owner_user_id?: string | null;
@@ -702,6 +794,7 @@ export interface WorkflowJobResponse {
   job_dir: string;
   controller_plan_path?: string | null;
   rag_retrieval_path?: string | null;
+  analysis_ir_path?: string | null;
   dataset_profile_path?: string | null;
   analysis_roadmap_path?: string | null;
   quality_review_path?: string | null;
@@ -948,6 +1041,9 @@ export interface WorkflowFollowUpResponse {
   follow_up_path?: string | null;
   created_at?: string | null;
   used_artifacts: string[];
+  source_delta?: Record<string, unknown>;
+  selection_patch_path?: string | null;
+  selection_spec?: ChartSelectionSpec;
 }
 
 export interface PptPreviewSlide {
@@ -963,6 +1059,7 @@ export interface PptPreview {
   pptx_path?: string | null;
   slides: PptPreviewSlide[];
 }
+
 
 
 
