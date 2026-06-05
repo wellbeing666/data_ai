@@ -22,14 +22,18 @@ import {
   fetchPredictionJobStatus,
   fetchPredictionLog,
   fetchWorkflowChartSuggestions,
+  fetchWorkflowDashboard,
   fetchWorkflowJobs,
   fetchWorkflowJobStatus,
   fetchWorkflowLog,
   generateReport,
   generateWorkflowPptx,
+  refreshWorkflowDashboard,
   refineWorkflowChart,
   deleteKnowledgeDocument,
   searchKnowledge,
+  shareWorkflowDashboard,
+  saveWorkflowDashboard,
   toStorageUrl,
   uploadKnowledgeDocument,
   uploadDataset
@@ -41,12 +45,16 @@ import type {
   CleaningPlanResponse,
   CleaningReportResponse,
   AutoRepairAttemptResult,
+  DashboardConfig,
   DatasetProfile,
   DatasetUploadResponse,
   ExecutionAttemptLog,
   ExecutionLog,
   ExecutionLogEvent,
   ExplanationResult,
+  DebateReflection,
+  FollowUpRecommendation,
+  FollowUpRecommendationConfig,
   EvidenceChain,
   HealthStatus,
   KnowledgeDocument,
@@ -72,6 +80,7 @@ import {
   ChartPreviewModal,
   ChartsPage,
   CleaningPlanModal,
+  DashboardPage,
   HistoryPanel,
   InsightsPage,
   KnowledgePage,
@@ -183,6 +192,12 @@ export function WorkbenchPage() {
   const [followUpQuestion, setFollowUpQuestion] = useState("");
   const [followUpLoading, setFollowUpLoading] = useState(false);
   const [jobControlLoading, setJobControlLoading] = useState<string | null>(null);
+  const [debateReflection, setDebateReflection] = useState<DebateReflection | null>(null);
+  const [dashboardConfig, setDashboardConfig] = useState<DashboardConfig | null>(null);
+  const [dashboardMessage, setDashboardMessage] = useState("");
+  const [dashboardSaving, setDashboardSaving] = useState(false);
+  const [dashboardRefreshing, setDashboardRefreshing] = useState(false);
+  const [followUpRecommendations, setFollowUpRecommendations] = useState<FollowUpRecommendation[]>([]);
 
   useEffect(() => {
     fetchHealthStatus()
@@ -356,6 +371,7 @@ export function WorkbenchPage() {
         analysisPlan,
         executionLog,
         explanation,
+        debateReflection,
         qualityReview,
         events
       });
@@ -375,6 +391,7 @@ export function WorkbenchPage() {
       dataUnderstanding,
       analysisPlan,
       explanation,
+      debateReflection,
       qualityReview
     ]
   );
@@ -628,6 +645,12 @@ export function WorkbenchPage() {
     setPendingAnalysisGoal("");
     setPendingInsightMode(false);
     setEvidenceChain(null);
+    setDebateReflection(null);
+    setDashboardConfig(null);
+    setDashboardMessage("");
+    setDashboardSaving(false);
+    setDashboardRefreshing(false);
+    setFollowUpRecommendations([]);
     setPptPreview(null);
     setPptGenerating(false);
     setPptMessage("");
@@ -761,6 +784,12 @@ export function WorkbenchPage() {
     setCleaningStrategies({});
     setCleaningModalOpen(false);
     setEvidenceChain(null);
+    setDebateReflection(null);
+    setDashboardConfig(null);
+    setDashboardMessage("");
+    setDashboardSaving(false);
+    setDashboardRefreshing(false);
+    setFollowUpRecommendations([]);
     setPptPreview(null);
     setPptGenerating(false);
     setPptMessage("");
@@ -885,8 +914,10 @@ export function WorkbenchPage() {
       refreshJsonPath(nextJob.analysis_roadmap_path, setAnalysisRoadmap),
       refreshJsonPath(nextJob.quality_review_path, setQualityReview),
       refreshJsonPath(nextJob.cleaning_report_path, setCleaningReport),
+      refreshJsonPath<DebateReflection>(nextJob.debate_reflection_path, setDebateReflection),
       refreshJsonPath<EvidenceChain>(nextJob.evidence_chain_path, setEvidenceChain),
       refreshJsonPath<PptPreview>(nextJob.pptx_preview_path, setPptPreview),
+      refreshSidecarArtifacts(nextJob),
       refreshPredictionResult(nextJob.final_prediction_result_path),
       refreshPredictionExplanation(nextJob.prediction_explanation_path)
     ]);
@@ -1139,8 +1170,10 @@ export function WorkbenchPage() {
       refreshJsonPath(nextJob.analysis_roadmap_path, setAnalysisRoadmap),
       refreshJsonPath(nextJob.quality_review_path, setQualityReview),
       refreshJsonPath(nextJob.cleaning_report_path, setCleaningReport),
+      refreshJsonPath<DebateReflection>(nextJob.debate_reflection_path, setDebateReflection),
       refreshJsonPath<EvidenceChain>(nextJob.evidence_chain_path, setEvidenceChain),
       refreshJsonPath<PptPreview>(nextJob.pptx_preview_path, setPptPreview),
+      refreshSidecarArtifacts(nextJob),
       refreshAnalysisResult(nextJob.final_result_path),
       refreshExplanation(nextJob.explanation_path),
       refreshJsonPath(nextJob.hypothesis_plan_path, setHypothesisPlan),
@@ -1170,6 +1203,70 @@ export function WorkbenchPage() {
     } catch {
       // The log file appears shortly after the background workflow writes progress.
     }
+  }
+
+
+  async function refreshSidecarArtifacts(nextJob: WorkflowJobResponse) {
+    const sidecar = nextJob.sidecar_results ?? {};
+    const dashboardPath = sidecar.dashboard_config || sidecar.dashboard || "";
+    const followUpPath = sidecar.next_step_suggestions || "";
+    let loadedDashboard: DashboardConfig | null = null;
+
+    if (dashboardPath) {
+      try {
+        loadedDashboard = await fetchJsonFile<DashboardConfig>(dashboardPath);
+        setDashboardConfig(loadedDashboard);
+      } catch {
+        // Sidecar metadata may be written slightly before static files are served.
+      }
+    } else if (terminalStatuses.has(nextJob.status)) {
+      try {
+        const response = await fetchWorkflowDashboard(nextJob.job_id);
+        loadedDashboard = response.dashboard;
+        setDashboardConfig(response.dashboard);
+      } catch {
+        // Dashboard is optional for older jobs.
+      }
+    }
+
+    if (followUpPath) {
+      try {
+        const config = await fetchJsonFile<FollowUpRecommendationConfig>(followUpPath);
+        setFollowUpRecommendations(normalizeFollowUpRecommendations(config));
+        return;
+      } catch {
+        // Keep previous recommendations until the next polling tick.
+      }
+    }
+
+    if (loadedDashboard?.recommended_questions?.length) {
+      setFollowUpRecommendations(normalizeFollowUpRecommendations(loadedDashboard));
+    }
+  }
+
+  function normalizeFollowUpRecommendations(
+    config: FollowUpRecommendationConfig | DashboardConfig | null | undefined
+  ): FollowUpRecommendation[] {
+    if (!config) {
+      return [];
+    }
+    const raw = Array.isArray(config.recommended_questions)
+      ? config.recommended_questions
+      : Array.isArray((config as FollowUpRecommendationConfig).questions)
+        ? (config as FollowUpRecommendationConfig).questions ?? []
+        : [];
+    return raw
+      .map((item) => {
+        if (typeof item === "string") {
+          return { question: item };
+        }
+        if (item && typeof item === "object" && typeof item.question === "string") {
+          return item as FollowUpRecommendation;
+        }
+        return null;
+      })
+      .filter((item): item is FollowUpRecommendation => Boolean(item?.question?.trim()))
+      .slice(0, 5);
   }
 
   async function refreshJsonPath<T>(path: string | null | undefined, setter: (value: T) => void) {
@@ -1367,16 +1464,67 @@ export function WorkbenchPage() {
     }
   }
 
+
+  function handleDashboardChange(nextDashboard: DashboardConfig) {
+    setDashboardConfig(nextDashboard);
+    setDashboardMessage("Dashboard 布局已修改，点击保存后写回当前任务目录。");
+  }
+
+  async function handleSaveDashboard() {
+    if (!job?.job_id || !dashboardConfig) {
+      setDashboardMessage("请先完成分析并生成 Dashboard 后再保存。");
+      return;
+    }
+    setDashboardSaving(true);
+    try {
+      const response = await saveWorkflowDashboard(job.job_id, dashboardConfig);
+      setDashboardConfig(response.dashboard);
+      setDashboardMessage(response.message || "Dashboard 已保存。");
+      const latest = await fetchWorkflowJobStatus(job.job_id);
+      await applyJobUpdate(latest);
+    } catch (error) {
+      setDashboardMessage(error instanceof Error ? error.message : "Dashboard 保存失败。");
+    } finally {
+      setDashboardSaving(false);
+    }
+  }
+
+  async function handleRefreshDashboard() {
+    if (!job?.job_id) {
+      setDashboardMessage("请先完成或打开一个分析任务后再刷新 Dashboard。");
+      return;
+    }
+    setDashboardRefreshing(true);
+    try {
+      const response = await refreshWorkflowDashboard(job.job_id);
+      setDashboardConfig(response.dashboard);
+      setDashboardMessage(response.message || "Dashboard 已刷新。");
+      setChartRefreshToken(Date.now());
+      const latest = await fetchWorkflowJobStatus(job.job_id);
+      await applyJobUpdate(latest);
+    } catch (error) {
+      setDashboardMessage(error instanceof Error ? error.message : "Dashboard 刷新失败。");
+    } finally {
+      setDashboardRefreshing(false);
+    }
+  }
+
+  async function handleShareDashboard() {
+    if (!job?.job_id) {
+      setDashboardMessage("请先完成或打开一个分析任务后再生成分享信息。");
+      return;
+    }
+    try {
+      const response = await shareWorkflowDashboard(job.job_id);
+      setDashboardConfig(response.dashboard);
+      setDashboardMessage(response.message || "Dashboard 分享信息已更新。");
+    } catch (error) {
+      setDashboardMessage(error instanceof Error ? error.message : "Dashboard 分享信息生成失败。");
+    }
+  }
+
   return (
     <main className="workspace-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">AI Native Data Analysis Workbench</p>
-          <h1>DeepSeek 多 Agent 数据分析工作台</h1>
-        </div>
-        <span className={`status-pill status-${status}`}>{statusLabel(status)}</span>
-      </header>
-
       <section className="layout-grid">
         <aside className="left-panel">
           <section className="panel">
@@ -1520,6 +1668,7 @@ export function WorkbenchPage() {
               ["roadmap", "分析路线图"],
               ["process", "Agent 过程"],
               ["charts", "图表结果"],
+              ["dashboard", "Dashboard"],
               ["insights", "结论报告"],
               ["logs", "执行日志"]
             ].map(([key, label]) => (
@@ -1570,6 +1719,7 @@ export function WorkbenchPage() {
               hypothesisPlan={hypothesisPlan}
               predictionPlan={predictionPlan}
               explanation={isPredictionWorkflow ? toExplanationResult(predictionExplanation) : normalizeExplanationResult(explanation)}
+              debateReflection={debateReflection}
               qualityReview={qualityReview}
               isPredictionWorkflow={isPredictionWorkflow}
               events={events}
@@ -1598,13 +1748,30 @@ export function WorkbenchPage() {
             />
           ) : null}
 
+          {activePage === "dashboard" ? (
+            <DashboardPage
+              dashboard={dashboardConfig}
+              job={job}
+              chartRefreshToken={chartRefreshToken}
+              message={dashboardMessage}
+              saving={dashboardSaving}
+              refreshing={dashboardRefreshing}
+              onDashboardChange={handleDashboardChange}
+              onSave={handleSaveDashboard}
+              onRefresh={handleRefreshDashboard}
+              onShare={handleShareDashboard}
+            />
+          ) : null}
+
           {activePage === "insights" ? (
             <InsightsPage
               explanation={isPredictionWorkflow ? toExplanationResult(predictionExplanation) : normalizeExplanationResult(explanation)}
               report={report}
               job={job}
               evidenceChain={evidenceChain}
+              debateReflection={debateReflection}
               pptPreview={pptPreview}
+              followUpRecommendations={followUpRecommendations}
               followUps={followUps}
               followUpQuestion={followUpQuestion}
               followUpLoading={followUpLoading}
@@ -1660,6 +1827,7 @@ export function WorkbenchPage() {
     </main>
   );
 }
+
 
 
 

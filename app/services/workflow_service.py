@@ -530,7 +530,8 @@ def run_workflow_job(
     checkpoint_job_control(job_dir)
 
     if task_type == INSIGHT_TASK_TYPE:
-        result = run_insight_mining_job(
+        result = _call_job_runner(
+            run_insight_mining_job,
             dataset_id=dataset_id,
             user_goal=user_goal,
             timeout_seconds=timeout_seconds,
@@ -540,7 +541,8 @@ def run_workflow_job(
         return _normalize_workflow_status(result, workflow_type=INSIGHT_WORKFLOW_TYPE, task_type=task_type)
 
     if task_type == PREDICTION_TASK_TYPE:
-        result = run_prediction_job(
+        result = _call_job_runner(
+            run_prediction_job,
             dataset_id=dataset_id,
             user_goal=user_goal,
             max_retries=effective_max_retries,
@@ -550,7 +552,8 @@ def run_workflow_job(
         )
         return _normalize_workflow_status(result, workflow_type=PREDICTION_TASK_TYPE, task_type=task_type)
 
-    result = run_auto_repair_analysis_job(
+    result = _call_job_runner(
+        run_auto_repair_analysis_job,
         dataset_id=dataset_id,
         user_goal=user_goal,
         max_retries=effective_max_retries,
@@ -559,6 +562,17 @@ def run_workflow_job(
         owner_user_id=owner_user_id,
     )
     return _normalize_workflow_status(result, workflow_type=ANALYSIS_WORKFLOW_TYPE, task_type=task_type)
+
+
+def _call_job_runner(runner: Any, **kwargs: Any) -> dict[str, Any]:
+    try:
+        return runner(**kwargs)
+    except TypeError as exc:
+        if "owner_user_id" in kwargs and "owner_user_id" in str(exc):
+            compatible_kwargs = dict(kwargs)
+            compatible_kwargs.pop("owner_user_id", None)
+            return runner(**compatible_kwargs)
+        raise
 
 
 def list_workflow_jobs(
@@ -695,6 +709,7 @@ def get_workflow_job_log(job_id: str) -> dict[str, Any]:
             "artifacts": {
                 "analysis_roadmap": status_data.get("analysis_roadmap_path"),
                 "quality_review": status_data.get("quality_review_path"),
+                "sidecar_results": status_data.get("sidecar_results") or {},
             },
             "events": status_data.get("events") or [],
         }
@@ -715,6 +730,7 @@ def get_workflow_job_log(job_id: str) -> dict[str, Any]:
         "quality_review": status_data.get("quality_review_path"),
         "evidence_chain": status_data.get("evidence_chain_path"),
         "debate_reflection": status_data.get("debate_reflection_path"),
+        "sidecar_results": status_data.get("sidecar_results") or {},
         "insight_result": status_data.get("insight_result_path"),
         "cleaning_report": status_data.get("cleaning_report_path"),
         "report": status_data.get("report_path"),
@@ -729,6 +745,126 @@ def get_workflow_job_log(job_id: str) -> dict[str, Any]:
         log_data.setdefault("prediction_plan", None)
     return log_data
 
+
+
+def get_workflow_dashboard(job_id: str) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    dashboard_path = _dashboard_config_path(job_dir)
+    dashboard = _read_json_if_exists(dashboard_path)
+    if not dashboard:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前任务尚未生成 Dashboard 配置。")
+    return {
+        "job_id": job_id,
+        "dashboard": dashboard,
+        "dashboard_path": str(dashboard_path),
+        "message": "Dashboard 配置已读取。",
+    }
+
+
+def update_workflow_dashboard(job_id: str, dashboard: dict[str, Any]) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    if not isinstance(dashboard, dict) or not dashboard:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Dashboard 配置不能为空。")
+    dashboard_path = _dashboard_config_path(job_dir)
+    dashboard_payload = {
+        **dashboard,
+        "source_job_id": str(dashboard.get("source_job_id") or job_id),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_json(dashboard_path, dashboard_payload)
+    sidecar_results = _normalize_sidecar_results({"dashboard_config": str(dashboard_path)}, job_dir)
+    _set_job_status(
+        job_dir,
+        status_value=None,
+        current_stage="dashboard_saved",
+        event=create_event("dashboard_generation", "success", "Dashboard 配置已保存。"),
+        artifacts={"sidecar_results": sidecar_results},
+    )
+    return {
+        "job_id": job_id,
+        "dashboard": dashboard_payload,
+        "dashboard_path": str(dashboard_path),
+        "message": "Dashboard 配置已保存。",
+    }
+
+
+def refresh_workflow_dashboard(job_id: str) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    dashboard_path = _dashboard_config_path(job_dir)
+    dashboard = _read_json_if_exists(dashboard_path)
+    if not dashboard:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前任务尚未生成 Dashboard 配置。")
+    refresh_state = dashboard.get("refresh") if isinstance(dashboard.get("refresh"), dict) else {}
+    refreshed_at = datetime.now(timezone.utc).isoformat()
+    dashboard["refresh"] = {
+        **refresh_state,
+        "last_refreshed_at": refreshed_at,
+        "refresh_count": int(refresh_state.get("refresh_count") or 0) + 1,
+    }
+    dashboard["updated_at"] = refreshed_at
+    _write_json(dashboard_path, dashboard)
+    _append_job_event(job_dir, create_event("dashboard_generation", "success", "Dashboard 已完成一次刷新。"))
+    return {
+        "job_id": job_id,
+        "dashboard": dashboard,
+        "dashboard_path": str(dashboard_path),
+        "message": "Dashboard 已刷新。",
+    }
+
+
+def share_workflow_dashboard(job_id: str) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    dashboard_path = _dashboard_config_path(job_dir)
+    dashboard = _read_json_if_exists(dashboard_path)
+    if not dashboard:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前任务尚未生成 Dashboard 配置。")
+    token = str(dashboard.get("sharing", {}).get("share_token") if isinstance(dashboard.get("sharing"), dict) else "") or uuid4().hex[:16]
+    sharing = dashboard.get("sharing") if isinstance(dashboard.get("sharing"), dict) else {}
+    dashboard["sharing"] = {
+        **sharing,
+        "share_token": token,
+        "share_url": f"/api/workflows/jobs/{job_id}/dashboard/shared/{token}",
+        "embed_code": f'<iframe src="/api/workflows/jobs/{job_id}/dashboard/shared/{token}" width="100%" height="720"></iframe>',
+    }
+    dashboard["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_json(dashboard_path, dashboard)
+    _append_job_event(job_dir, create_event("dashboard_generation", "success", "Dashboard 分享信息已生成。"))
+    return {
+        "job_id": job_id,
+        "dashboard": dashboard,
+        "dashboard_path": str(dashboard_path),
+        "message": "Dashboard 分享链接和嵌入代码已生成。",
+    }
+
+
+def get_shared_workflow_dashboard(job_id: str, token: str) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    dashboard_path = _dashboard_config_path(job_dir)
+    dashboard = _read_json_if_exists(dashboard_path)
+    if not dashboard:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前任务尚未生成 Dashboard 配置。")
+    sharing = dashboard.get("sharing") if isinstance(dashboard.get("sharing"), dict) else {}
+    expected_token = str(sharing.get("share_token") or "")
+    if not token or token != expected_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Dashboard 分享令牌无效。")
+    return {
+        "job_id": job_id,
+        "dashboard": dashboard,
+        "dashboard_path": str(dashboard_path),
+        "message": "共享 Dashboard 配置已读取。",
+    }
+
+
+def _dashboard_config_path(job_dir: Path) -> Path:
+    status_data = _history_status_data(job_dir) or {}
+    sidecar_results = _normalize_sidecar_results(status_data.get("sidecar_results"), job_dir)
+    raw_path = sidecar_results.get("dashboard_config") or str(job_dir / "dashboard_config.json")
+    dashboard_path = Path(raw_path)
+    if not dashboard_path.is_absolute():
+        dashboard_path = (Path.cwd() / dashboard_path).resolve()
+    if not _is_relative_to(dashboard_path, job_dir.resolve()):
+        dashboard_path = (job_dir / "dashboard_config.json").resolve()
+    return dashboard_path
 
 def delete_workflow_chart(job_id: str, chart_path: str) -> dict[str, Any]:
     job_dir = _get_job_dir(job_id).resolve()
@@ -1316,6 +1452,7 @@ def _write_workflow_status(
     pptx_preview_path: str | None = None,
     insight_result_path: str | None = None,
     debate_reflection_path: str | None = None,
+    sidecar_results: dict[str, Any] | None = None,
     error: dict[str, Any] | None = None,
     owner_user_id: str | None = None,
 ) -> dict[str, Any]:
@@ -1347,6 +1484,7 @@ def _write_workflow_status(
         "pptx_preview_path": pptx_preview_path,
         "insight_result_path": insight_result_path,
         "debate_reflection_path": debate_reflection_path,
+        "sidecar_results": _normalize_sidecar_results(sidecar_results, job_dir),
         "effective_max_retries": max_retries,
         "timeout_seconds": timeout_seconds,
         "events": events,
@@ -1379,6 +1517,7 @@ def _write_workflow_status(
                 "pptx_preview": pptx_preview_path,
                 "insight_result": insight_result_path,
                 "debate_reflection": debate_reflection_path,
+                "sidecar_results": _normalize_sidecar_results(sidecar_results, job_dir),
             },
             "visual_parse_result": visual_parse_result_path,
             "visual_extracted_dataset": visual_extracted_dataset_path,
@@ -1410,6 +1549,7 @@ def _normalize_workflow_status(
             "pptx_preview_path": _existing_or_none(data.get("pptx_preview_path"), job_dir / "pptx_preview.json"),
             "insight_result_path": _existing_or_none(data.get("insight_result_path"), job_dir / "analysis_result.json") if str(workflow_type or data.get("workflow_type") or "") == INSIGHT_WORKFLOW_TYPE else data.get("insight_result_path"),
             "debate_reflection_path": _existing_or_none(data.get("debate_reflection_path"), job_dir / "debate_reflection.json"),
+            "sidecar_results": _normalize_sidecar_results(data.get("sidecar_results"), job_dir),
             "job_control_path": _existing_or_none(data.get("job_control_path"), job_dir / "job_control.json"),
             "visual_parse_result_path": _existing_or_none(data.get("visual_parse_result_path"), job_dir / "visual_parse_result.json"),
             "visual_extracted_dataset_path": data.get("visual_extracted_dataset_path"),
@@ -1452,6 +1592,7 @@ def _normalize_workflow_status(
         "pptx_preview_path": data.get("pptx_preview_path"),
         "insight_result_path": data.get("insight_result_path"),
         "debate_reflection_path": data.get("debate_reflection_path"),
+        "sidecar_results": _normalize_sidecar_results(data.get("sidecar_results"), job_dir),
         "job_control_path": data.get("job_control_path"),
         "control_state": read_job_control(job_dir) if job_dir.exists() else {},
         "visual_parse_result_path": data.get("visual_parse_result_path"),
@@ -1899,6 +2040,33 @@ def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if item is not None]
 
 
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _normalize_sidecar_results(value: Any, job_dir: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    if isinstance(value, dict):
+        for key, raw_path in value.items():
+            if isinstance(raw_path, str) and raw_path.strip():
+                result[str(key)] = raw_path
+    fallback_files = {
+        "anomalies": "anomaly_scan.json",
+        "next_step_suggestions": "next_steps.json",
+        "significance_tests": "significance_tests.json",
+        "dashboard_config": "dashboard_config.json",
+    }
+    for key, filename in fallback_files.items():
+        fallback_path = job_dir / filename
+        if key not in result and fallback_path.exists() and fallback_path.is_file():
+            result[key] = str(fallback_path)
+    return result
+
+
 def _existing_or_none(value: Any, fallback_path: Path) -> str | None:
     if isinstance(value, str) and value:
         return value
@@ -1980,6 +2148,7 @@ def _event_list(value: Any) -> list[dict[str, Any]]:
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
 
 
 

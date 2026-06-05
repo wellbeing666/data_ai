@@ -41,6 +41,7 @@ def generate_markdown_report(
     explanation = _load_optional_json(result_dir / "explanation.json") or _load_optional_json(result_dir / "prediction_explanation.json")
     if isinstance(explanation, dict) and _has_explanation_content(explanation):
         markdown = _build_explanation_report(explanation, analysis_result, resolved_chart_paths, result_dir)
+        markdown = _append_debate_section(markdown, result_dir)
         markdown = _append_cleaning_section(markdown, result_dir)
         resolved_output_path.write_text(markdown, encoding="utf-8")
         return _build_report_response(
@@ -65,6 +66,7 @@ def generate_markdown_report(
     else:
         markdown = _build_general_report(analysis_result, resolved_chart_paths, result_dir)
 
+    markdown = _append_debate_section(markdown, result_dir)
     markdown = _append_cleaning_section(markdown, result_dir)
     resolved_output_path.write_text(markdown, encoding="utf-8")
     return _build_report_response(
@@ -560,6 +562,63 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 
 
+def _append_debate_section(markdown: str, result_dir: Path) -> str:
+    debate = _load_optional_json(result_dir / "debate_reflection.json")
+    if not isinstance(debate, dict):
+        return markdown
+    lines = [markdown.rstrip(), "", "## Debate Matrix 动态辩论摘要"]
+    source = str(debate.get("source") or debate.get("agent") or "debate_matrix")
+    lines.append(f"- 生成来源：{source}")
+
+    rounds = [item for item in debate.get("debate_rounds", []) if isinstance(item, dict)]
+    if rounds:
+        lines.append("")
+        lines.append("### 双 Agent 交互过程")
+        for index, item in enumerate(rounds[:3], start=1):
+            round_no = item.get("round") or index
+            aggressive = _clip_markdown_text(str(item.get("aggressive_business_agent") or item.get("agent_a") or item.get("business_insight") or ""), 260)
+            cautious = _clip_markdown_text(str(item.get("statistical_qc_agent") or item.get("agent_b") or item.get("statistical_challenge") or ""), 260)
+            if aggressive:
+                lines.append(f"- 第 {round_no} 轮｜激进商业洞察 Agent：{aggressive}")
+            if cautious:
+                lines.append(f"- 第 {round_no} 轮｜严谨统计质检 Agent：{cautious}")
+
+    consensus = _as_string_list(debate.get("consensus_findings"))
+    if consensus:
+        lines.append("")
+        lines.append("### 共识结论")
+        lines.extend(f"- {item}" for item in consensus[:6])
+
+    recommendations = _as_string_list(debate.get("consensus_recommendations"))
+    if recommendations:
+        lines.append("")
+        lines.append("### 共识建议")
+        lines.extend(f"- {item}" for item in recommendations[:6])
+
+    guardrails = _as_string_list(debate.get("statistical_guardrails"))
+    if guardrails:
+        lines.append("")
+        lines.append("### 统计护栏")
+        lines.extend(f"- {item}" for item in guardrails[:6])
+
+    revisions = _as_string_list(debate.get("phrasing_revisions"))
+    if revisions:
+        lines.append("")
+        lines.append("### 表述修订")
+        lines.extend(f"- {item}" for item in revisions[:6])
+
+    final_consensus = str(debate.get("final_consensus") or "").strip()
+    if final_consensus:
+        lines.append("")
+        lines.append(f"- 最终共识：{_clip_markdown_text(final_consensus, 420)}")
+    return "\n".join(lines) + "\n"
+
+
+def _clip_markdown_text(text: str, limit: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 def _append_cleaning_section(markdown: str, result_dir: Path) -> str:
     cleaning_report = _load_optional_json(result_dir / "cleaning_report.json")
     if not isinstance(cleaning_report, dict):
@@ -846,4 +905,5 @@ def _slide_chart_path(slide_data: dict[str, Any], chart_paths: list[Path]) -> Pa
             if chart_path.name == raw_name:
                 return chart_path
     return chart_paths[0] if chart_paths else None
+
 

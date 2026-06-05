@@ -6,6 +6,8 @@ from app.agents.insight_mining_agent import DEFAULT_INSIGHT_GOAL
 from app.schemas.workflow import (
     ChartConfigRequest,
     ChartConfigResponse,
+    DashboardConfigResponse,
+    DashboardConfigUpdateRequest,
     ChartRefineRequest,
     ChartRefineResponse,
     ChartSuggestionResponse,
@@ -32,11 +34,16 @@ from app.services.workflow_service import (
     create_workflow_preflight,
     delete_workflow_chart,
     delete_workflow_job,
+    get_workflow_dashboard,
+    get_shared_workflow_dashboard,
     get_workflow_job_log,
     generate_workflow_pptx,
     get_workflow_job_status,
     list_workflow_jobs,
     refine_workflow_chart,
+    refresh_workflow_dashboard,
+    share_workflow_dashboard,
+    update_workflow_dashboard,
     rerun_workflow_job_background,
     run_workflow_job_background,
 )
@@ -154,6 +161,48 @@ def create_job_follow_up(
     return WorkflowFollowUpResponse(**result)
 
 
+@router.get("/jobs/{job_id}/dashboard", response_model=DashboardConfigResponse)
+def read_job_dashboard(
+    job_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> DashboardConfigResponse:
+    _ensure_job_access(job_id, current_user)
+    return DashboardConfigResponse(**get_workflow_dashboard(job_id))
+
+
+@router.put("/jobs/{job_id}/dashboard", response_model=DashboardConfigResponse)
+def save_job_dashboard(
+    job_id: str,
+    request: DashboardConfigUpdateRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> DashboardConfigResponse:
+    _ensure_job_access(job_id, current_user)
+    return DashboardConfigResponse(**update_workflow_dashboard(job_id, request.dashboard))
+
+
+@router.post("/jobs/{job_id}/dashboard/refresh", response_model=DashboardConfigResponse)
+def refresh_job_dashboard(
+    job_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> DashboardConfigResponse:
+    _ensure_job_access(job_id, current_user)
+    return DashboardConfigResponse(**refresh_workflow_dashboard(job_id))
+
+
+@router.post("/jobs/{job_id}/dashboard/share", response_model=DashboardConfigResponse)
+def share_job_dashboard(
+    job_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> DashboardConfigResponse:
+    _ensure_job_access(job_id, current_user)
+    return DashboardConfigResponse(**share_workflow_dashboard(job_id))
+
+
+@router.get("/jobs/{job_id}/dashboard/shared/{token}")
+def read_shared_job_dashboard(job_id: str, token: str) -> dict[str, Any]:
+    return get_shared_workflow_dashboard(job_id, token)
+
+
 @router.get("/jobs/{job_id}/logs", response_model=WorkflowLogResponse)
 def read_workflow_job_logs(
     job_id: str,
@@ -225,3 +274,4 @@ def remove_workflow_chart(
 ) -> dict[str, Any]:
     _ensure_job_access(job_id, current_user)
     return delete_workflow_chart(job_id, chart_path)
+

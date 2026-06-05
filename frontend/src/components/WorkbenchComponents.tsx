@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 
 import { toStorageUrl } from "../api";
 import type {
   AnalysisRoadmap,
   AnalysisResult,
+  DashboardConfig,
+  DashboardWidget,
+  DebateReflection,
   CleaningPlanResponse,
   CleaningReportResponse,
   DatasetProfile,
@@ -26,6 +29,7 @@ import type {
   ValidationAttemptLog,
   VisualParseResult,
   WorkflowFollowUpResponse,
+  FollowUpRecommendation,
   WorkflowJobListItem,
   WorkflowJobResponse,
   WorkflowLogResponse
@@ -1007,6 +1011,7 @@ export function ProcessPage({
   hypothesisPlan,
   predictionPlan,
   explanation,
+  debateReflection,
   qualityReview,
   isPredictionWorkflow,
   events,
@@ -1024,6 +1029,7 @@ export function ProcessPage({
   hypothesisPlan: AnyRecord | null;
   predictionPlan: AnyRecord | null;
   explanation: ExplanationResult;
+  debateReflection: DebateReflection | null;
   qualityReview: QualityReview | null;
   isPredictionWorkflow: boolean;
   events: ExecutionLogEvent[];
@@ -1042,6 +1048,7 @@ export function ProcessPage({
     hypothesisPlan,
     predictionPlan,
     explanation,
+    debateReflection,
     qualityReview,
     isPredictionWorkflow
   });
@@ -1378,6 +1385,9 @@ export function ArtifactSummary({ card }: { card: AgentCardView }) {
   if (card.artifactKind === "validation") {
     return <ValidationArtifactSummary value={card.raw as ValidationAttemptLog} />;
   }
+  if (card.artifactKind === "debate_reflection") {
+    return <DebateArtifactSummary value={card.raw as DebateReflection} />;
+  }
   if (card.artifactKind === "explanation") {
     return <ExplanationArtifactSummary value={card.raw as ExplanationResult} />;
   }
@@ -1549,6 +1559,43 @@ export function ValidationArtifactSummary({ value }: { value: ValidationAttemptL
   );
 }
 
+
+export function DebateArtifactSummary({ value }: { value: DebateReflection }) {
+  const rounds = Array.isArray(value?.debate_rounds) ? value.debate_rounds : [];
+  const findings = value?.consensus_findings ?? [];
+  const recommendations = value?.consensus_recommendations ?? [];
+  const guardrails = value?.statistical_guardrails ?? [];
+  const revisions = value?.phrasing_revisions ?? [];
+
+  return (
+    <div className="artifact-summary debate-mini">
+      <KeyValueGrid
+        items={[
+          ["辩论轮次", String(rounds.length || 0)],
+          ["共识发现", `${findings.length} 条`],
+          ["统计护栏", `${guardrails.length} 条`]
+        ]}
+      />
+      {value?.final_consensus ? <SummaryParagraph label="最终共识" text={String(value.final_consensus)} /> : null}
+      {rounds.length ? (
+        <div className="debate-round-list compact">
+          {rounds.slice(0, 3).map((round, index) => (
+            <article key={`debate-artifact-${index}`}>
+              <strong>第 {round.round ?? index + 1} 轮交互</strong>
+              <p><b>激进商业洞察 Agent：</b>{String(round.aggressive_business_agent ?? round.agent_a ?? "-")}</p>
+              <p><b>严谨统计质检 Agent：</b>{String(round.statistical_qc_agent ?? round.agent_b ?? "-")}</p>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      <ChipList title="共识发现" items={findings.slice(0, 4)} />
+      <ChipList title="建议动作" items={recommendations.slice(0, 4)} />
+      <ChipList title="统计限制" items={guardrails.slice(0, 4)} />
+      <ChipList title="表述修正" items={revisions.slice(0, 4)} />
+    </div>
+  );
+}
+
 export function ExplanationArtifactSummary({ value }: { value: ExplanationResult }) {
   return (
     <div className="artifact-summary">
@@ -1654,8 +1701,8 @@ export function SummaryParagraph({ label, text }: { label: string; text: string 
   );
 }
 
-export function ChipList({ title, items, tone = "default" }: { title: string; items: string[]; tone?: "default" | "warning" }) {
-  const cleanItems = items.filter(Boolean);
+export function ChipList({ title, items, tone = "default" }: { title: string; items?: unknown[] | null; tone?: "default" | "warning" }) {
+  const cleanItems = Array.isArray(items) ? items.map((item) => formatListItem(item)).filter(Boolean) : [];
   if (!cleanItems.length) {
     return null;
   }
@@ -1786,6 +1833,259 @@ export function ChartsPage({
   );
 }
 
+
+export function DashboardPage({
+  dashboard,
+  job,
+  chartRefreshToken,
+  message,
+  saving,
+  refreshing,
+  onDashboardChange,
+  onSave,
+  onRefresh,
+  onShare
+}: {
+  dashboard: DashboardConfig | null;
+  job: WorkflowJobResponse | null;
+  chartRefreshToken: number;
+  message?: string;
+  saving?: boolean;
+  refreshing?: boolean;
+  onDashboardChange?: (dashboard: DashboardConfig) => void;
+  onSave?: () => void;
+  onRefresh?: () => void;
+  onShare?: () => void;
+}) {
+  const [draggingWidgetId, setDraggingWidgetId] = useState<string | null>(null);
+
+  if (!dashboard) {
+    return (
+      <section className="page-section">
+        <div className="section-heading">
+          <h2>自动 Dashboard</h2>
+          <span>等待后处理 Sidecar Agent</span>
+        </div>
+        <EmptyState
+          title="暂无 Dashboard"
+          text="分析完成后，Dashboard 生成 Agent 会基于本轮结果自动生成 KPI 卡片、趋势图、对比图、明细表和筛选器。"
+        />
+      </section>
+    );
+  }
+
+  const widgets = dashboard.widgets ?? [];
+  const filters = dashboard.filters ?? [];
+  const refreshInterval = dashboard.refresh?.interval_seconds ?? 300;
+
+  const emitChange = (next: DashboardConfig) => onDashboardChange?.(next);
+  const updateRefreshInterval = (value: number) => {
+    emitChange({
+      ...dashboard,
+      refresh: {
+        ...(dashboard.refresh ?? {}),
+        enabled: value > 0,
+        interval_seconds: value
+      }
+    });
+  };
+  const updateFilter = (id: string, value: string) => {
+    emitChange({
+      ...dashboard,
+      filters: filters.map((filter) => (filter.id === id ? { ...filter, value } : filter))
+    });
+  };
+  const reorderWidgets = (sourceId: string, targetId: string) => {
+    if (sourceId === targetId) {
+      return;
+    }
+    const sourceIndex = widgets.findIndex((widget) => widget.id === sourceId);
+    const targetIndex = widgets.findIndex((widget) => widget.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) {
+      return;
+    }
+    const nextWidgets = [...widgets];
+    const [moved] = nextWidgets.splice(sourceIndex, 1);
+    nextWidgets.splice(targetIndex, 0, moved);
+    emitChange({
+      ...dashboard,
+      widgets: nextWidgets,
+      layout: nextWidgets.map((widget, index) => ({
+        i: widget.id,
+        x: index % 2,
+        y: Math.floor(index / 2),
+        w: widget.type === "table" ? 2 : 1,
+        h: widget.type === "table" ? 2 : 1
+      }))
+    });
+  };
+  const handleDrop = (event: ReactDragEvent<HTMLElement>, targetId: string) => {
+    event.preventDefault();
+    const sourceId = event.dataTransfer.getData("text/plain") || draggingWidgetId;
+    if (sourceId) {
+      reorderWidgets(sourceId, targetId);
+    }
+    setDraggingWidgetId(null);
+  };
+
+  return (
+    <section className="page-section dashboard-page">
+      <div className="section-heading dashboard-heading">
+        <div>
+          <h2>{dashboard.title || "自动 Dashboard"}</h2>
+          <span>{dashboard.description || "从一次性分析升级为持续监控视图"}</span>
+        </div>
+        <div className="dashboard-actions">
+          <button className="secondary-button" type="button" disabled={!job?.job_id || refreshing} onClick={onRefresh}>
+            {refreshing ? "刷新中" : "刷新数据"}
+          </button>
+          <button className="secondary-button" type="button" disabled={!dashboard || saving} onClick={onSave}>
+            {saving ? "保存中" : "保存布局"}
+          </button>
+          <button className="secondary-button" type="button" disabled={!job?.job_id} onClick={onShare}>
+            保存分享信息
+          </button>
+        </div>
+      </div>
+
+      {message ? <p className="message success">{message}</p> : null}
+
+      <section className="dashboard-toolbar">
+        <label>
+          自动刷新频率
+          <select value={refreshInterval} onChange={(event) => updateRefreshInterval(Number(event.target.value))}>
+            <option value={0}>关闭</option>
+            <option value={60}>每 1 分钟</option>
+            <option value={300}>每 5 分钟</option>
+            <option value={900}>每 15 分钟</option>
+            <option value={3600}>每 1 小时</option>
+          </select>
+        </label>
+        <div className="dashboard-filter-row">
+          {filters.length ? (
+            filters.map((filter) => (
+              <label key={filter.id}>
+                {filter.label || filter.field}
+                {filter.options?.length ? (
+                  <select value={filter.value ?? ""} onChange={(event) => updateFilter(filter.id, event.target.value)}>
+                    <option value="">全部</option>
+                    {filter.options.map((option) => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                ) : (
+                  <input value={filter.value ?? ""} placeholder="输入筛选值" onChange={(event) => updateFilter(filter.id, event.target.value)} />
+                )}
+              </label>
+            ))
+          ) : (
+            <span className="agent-muted">本轮数据未生成可用筛选器。</span>
+          )}
+        </div>
+      </section>
+
+      <div className="dashboard-grid" aria-label="可拖拽调整布局的 Dashboard 组件">
+        {widgets.map((widget) => (
+          <article
+            className={`dashboard-widget dashboard-widget-${widget.type} ${draggingWidgetId === widget.id ? "dragging" : ""}`}
+            key={widget.id}
+            draggable
+            onDragStart={(event) => {
+              setDraggingWidgetId(widget.id);
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData("text/plain", widget.id);
+            }}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => handleDrop(event, widget.id)}
+            onDragEnd={() => setDraggingWidgetId(null)}
+          >
+            <DashboardWidgetView widget={widget} chartRefreshToken={chartRefreshToken} />
+          </article>
+        ))}
+      </div>
+
+      {dashboard.sharing?.share_url || dashboard.sharing?.embed_code ? (
+        <section className="dashboard-share-box">
+          <strong>分享与嵌入</strong>
+          {dashboard.sharing.share_url ? <code>{dashboard.sharing.share_url}</code> : null}
+          {dashboard.sharing.embed_code ? <pre>{dashboard.sharing.embed_code}</pre> : null}
+        </section>
+      ) : null}
+    </section>
+  );
+}
+
+function DashboardWidgetView({ widget, chartRefreshToken }: { widget: DashboardWidget; chartRefreshToken: number }) {
+  if (widget.type === "kpi") {
+    return (
+      <div className="dashboard-kpi-card">
+        <span>{widget.title}</span>
+        <strong>{formatDashboardValue(widget.value)}{widget.unit ? <em>{widget.unit}</em> : null}</strong>
+        {widget.description ? <p>{widget.description}</p> : null}
+      </div>
+    );
+  }
+
+  if (widget.type === "chart") {
+    return (
+      <div className="dashboard-chart-card">
+        <header>
+          <strong>{widget.title}</strong>
+          {widget.chart_role ? <span>{widget.chart_role}</span> : null}
+        </header>
+        {widget.chart_path ? (
+          <img alt={widget.title} src={toVersionedStorageUrl(widget.chart_path, chartRefreshToken)} />
+        ) : (
+          <p className="agent-muted">该图表组件尚未绑定图片。</p>
+        )}
+        {widget.description ? <p>{widget.description}</p> : null}
+      </div>
+    );
+  }
+
+  if (widget.type === "table") {
+    const columns = widget.columns ?? [];
+    const rows = widget.rows ?? [];
+    return (
+      <div className="dashboard-table-card">
+        <header>
+          <strong>{widget.title}</strong>
+          {widget.description ? <span>{widget.description}</span> : null}
+        </header>
+        <div className="dashboard-table-wrap">
+          <table className="dashboard-table">
+            <thead>
+              <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 8).map((row, rowIndex) => (
+                <tr key={`dashboard-row-${rowIndex}`}>
+                  {columns.map((column) => <td key={`${rowIndex}-${column}`}>{formatCell(row[column])}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="dashboard-generic-card">
+      <strong>{widget.title}</strong>
+      <pre>{JSON.stringify(widget, null, 2)}</pre>
+    </div>
+  );
+}
+
+function formatDashboardValue(value: DashboardWidget["value"]): string {
+  if (value === null || value === undefined || value === "") {
+    return "-";
+  }
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  }
+  return String(value);
+}
+
 function ChartFigure({
   chartPath,
   index,
@@ -1799,15 +2099,11 @@ function ChartFigure({
   onOpenChart: (chartPath: string) => void;
   onDeleteChart: (chartPath: string) => void;
 }) {
-  const [scale, setScale] = useState(1);
   const [imageFailed, setImageFailed] = useState(false);
   const imageUrl = toVersionedStorageUrl(chartPath, chartRefreshToken);
   useEffect(() => {
     setImageFailed(false);
   }, [imageUrl]);
-  const changeScale = (delta: number) => {
-    setScale((current) => Math.min(2.4, Math.max(0.6, Math.round((current + delta) * 10) / 10)));
-  };
 
   return (
     <>
@@ -1823,15 +2119,12 @@ function ChartFigure({
           <img
             alt={`分析图表 ${index + 1}`}
             src={imageUrl}
-            style={{ transform: `scale(${scale})` }}
             onError={() => setImageFailed(true)}
           />
         )}
       </button>
       <figcaption>{chartTitle(chartPath, index)}</figcaption>
       <div className="chart-actions chart-tools">
-        <button type="button" onClick={() => changeScale(0.2)}>放大</button>
-        <button type="button" onClick={() => changeScale(-0.2)}>缩小</button>
         <a href={toStorageUrl(chartPath)} download>下载 PNG</a>
         <button type="button" onClick={() => onOpenChart(chartPath)}>放大查看</button>
         <button className="danger-button" type="button" onClick={() => onDeleteChart(chartPath)}>删除</button>
@@ -2047,7 +2340,9 @@ export function InsightsPage({
   report,
   job,
   evidenceChain,
+  debateReflection,
   pptPreview,
+  followUpRecommendations,
   followUps,
   followUpQuestion,
   followUpLoading,
@@ -2061,7 +2356,9 @@ export function InsightsPage({
   report: ReportGenerateResponse | null;
   job: WorkflowJobResponse | null;
   evidenceChain?: EvidenceChain | null;
+  debateReflection?: DebateReflection | null;
   pptPreview?: PptPreview | null;
+  followUpRecommendations?: FollowUpRecommendation[];
   followUps?: WorkflowFollowUpResponse[];
   followUpQuestion?: string;
   followUpLoading?: boolean;
@@ -2099,12 +2396,14 @@ export function InsightsPage({
         <>
           <p className="summary-text">{explanation.summary}</p>
           <EvidenceResultList title="关键发现" items={explanation.key_findings} evidenceChain={evidenceChain} />
+          <DebateReflectionPanel debate={debateReflection ?? null} />
           <EvidenceResultList title="建议动作" items={explanation.recommendations} evidenceChain={evidenceChain} />
           <EvidenceResultList title="限制说明" items={explanation.limitations} evidenceChain={evidenceChain} />
           <PptOutline outline={explanation.ppt_outline} />
           <PptPreviewPanel preview={pptPreview || null} />
           <FollowUpPanel
             followUps={followUps ?? []}
+            recommendations={followUpRecommendations ?? []}
             question={followUpQuestion ?? ""}
             loading={Boolean(followUpLoading)}
             onQuestionChange={onFollowUpQuestionChange}
@@ -2114,6 +2413,52 @@ export function InsightsPage({
       ) : (
         <EmptyState title="暂无结论" text="验证 Agent 通过后，解释 Agent 会生成结论、建议和 PPT 大纲。" />
       )}
+    </section>
+  );
+}
+
+
+function DebateReflectionPanel({ debate }: { debate?: DebateReflection | null }) {
+  if (!debate) {
+    return null;
+  }
+  const rounds = Array.isArray(debate.debate_rounds) ? debate.debate_rounds : [];
+  const findings = debate.consensus_findings ?? [];
+  const recommendations = debate.consensus_recommendations ?? [];
+  const guardrails = debate.statistical_guardrails ?? [];
+  const revisions = debate.phrasing_revisions ?? [];
+  const finalConsensus = formatListItem(debate.final_consensus);
+
+  return (
+    <section className="debate-panel">
+      <div className="section-heading compact-heading">
+        <h2>Debate Matrix 双 Agent 交互过程</h2>
+        <span>{rounds.length || 0} 轮动态辩论</span>
+      </div>
+      {rounds.length ? (
+        <div className="debate-round-grid">
+          {rounds.map((round, index) => (
+            <article key={`debate-round-${index}`} className="debate-round-card">
+              <strong>第 {round.round ?? index + 1} 轮</strong>
+              <div className="debate-agent debate-agent-a">
+                <span>角色 A：激进商业洞察 Agent</span>
+                <p>{String(round.aggressive_business_agent ?? round.agent_a ?? "-")}</p>
+              </div>
+              <div className="debate-agent debate-agent-b">
+                <span>角色 B：严谨统计质检 Agent</span>
+                <p>{String(round.statistical_qc_agent ?? round.agent_b ?? "-")}</p>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      <div className="debate-consensus-grid">
+        <ResultList title="双方达成的业务共识" items={findings} />
+        <ResultList title="可执行策略建议" items={recommendations} />
+        <ResultList title="统计质检护栏" items={guardrails} />
+        <ResultList title="报告表述修正" items={revisions} />
+      </div>
+      {finalConsensus ? <p className="debate-final-consensus">{finalConsensus}</p> : null}
     </section>
   );
 }
@@ -2472,12 +2817,14 @@ function PptPreviewPanel({ preview }: { preview: PptPreview | null }) {
 
 function FollowUpPanel({
   followUps,
+  recommendations,
   question,
   loading,
   onQuestionChange,
   onSubmit
 }: {
   followUps: WorkflowFollowUpResponse[];
+  recommendations: FollowUpRecommendation[];
   question: string;
   loading: boolean;
   onQuestionChange?: (value: string) => void;
@@ -2492,6 +2839,23 @@ function FollowUpPanel({
         <h2>继续追问</h2>
         <span>基于当前分析产物</span>
       </div>
+      {recommendations.length ? (
+        <div className="follow-up-recommendations">
+          <strong>推荐继续追问</strong>
+          <div className="follow-up-recommendation-list">
+            {recommendations.slice(0, 5).map((item, index) => (
+              <button
+                key={`${item.question}-${index}`}
+                type="button"
+                onClick={() => onQuestionChange(item.question)}
+              >
+                <span>{item.question}</span>
+                {item.rationale ? <small>{item.rationale}</small> : null}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <textarea
         rows={3}
         value={question}
@@ -2830,6 +3194,7 @@ export function EmptyState({ title, text, compact = false }: { title: string; te
     </div>
   );
 }
+
 
 
 

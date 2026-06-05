@@ -14,6 +14,7 @@ from app.agents.data_understanding_agent import create_data_understanding
 from app.agents.debate_reflection_agent import create_debate_reflection
 from app.agents.explanation_agent import create_explanation
 from app.agents.quality_review_agent import create_quality_review
+from app.agents.postprocess_sidecar_agent import create_postprocess_sidecars
 from app.sandbox.code_safety import validate_script_static_safety
 from app.sandbox.local_executor import LocalSubprocessSandboxExecutor
 from app.services.dataset_profile import generate_dataset_profile
@@ -178,6 +179,7 @@ def run_auto_repair_analysis_job(
     pptx_preview_path = None
     debate_reflection_path = None
     rag_retrieval_path = None
+    sidecar_results: dict[str, str] = {}
     rag_context: list[dict[str, Any]] = []
 
     def existing_job_file(filename: str) -> str | None:
@@ -208,6 +210,7 @@ def run_auto_repair_analysis_job(
             pptx_path=pptx_path,
             pptx_preview_path=pptx_preview_path,
             debate_reflection_path=debate_reflection_path,
+            sidecar_results=sidecar_results,
             controller_plan_path=existing_job_file("controller_plan.json"),
             rag_retrieval_path=rag_retrieval_path or existing_job_file("rag_retrieval.json"),
             dataset_profile_path=existing_job_file("dataset_profile.json"),
@@ -855,6 +858,60 @@ def run_auto_repair_analysis_job(
             "success" if quality_review.get("passed") else "warning",
             "质检 Agent 已完成结论审查。",
         ))
+
+        events.append(create_event("sidecar_postprocess", "running", "后处理 Sidecar Agent 正在生成异常扫描、显著性建议、追问推荐和 Dashboard 配置。"))
+        _write_progress(
+            job_dir=job_dir,
+            job_id=job_id,
+            dataset_id=dataset_id,
+            user_goal=user_goal,
+            status_value="running",
+            current_stage="sidecar_postprocess",
+            max_retries=effective_max_retries,
+            attempts=attempts,
+            events=events,
+            timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
+            final_result_path=final_result_path,
+            final_report_data_path=final_report_data_path,
+            final_validation_result_path=final_validation_result_path,
+            explanation_path=explanation_path,
+            quality_review_path=quality_review_path,
+            evidence_chain_path=evidence_chain_path,
+            debate_reflection_path=debate_reflection_path,
+            cleaning_report_path=cleaning_report_path,
+            controller_plan_path=str(job_dir / "controller_plan.json"),
+            rag_retrieval_path=rag_retrieval_path,
+            dataset_profile_path=str(job_dir / "dataset_profile.json"),
+            data_understanding_path=str(job_dir / "data_understanding.json"),
+            analysis_plan_path=str(job_dir / "analysis_plan.json"),
+            sidecar_results=sidecar_results,
+        )
+        try:
+            sidecar_results = create_postprocess_sidecars(
+                job_dir=job_dir,
+                user_goal=user_goal,
+                dataset_profile=dataset_profile,
+                result_payload=analysis_result_data,
+                report_data=report_data_payload,
+                chart_paths=chart_paths,
+                validation_result=validation_payload or {},
+                debate_reflection=debate_reflection,
+                workflow_type="auto_repair",
+            )
+            events.append(create_event("sidecar_postprocess", "success", "后处理 Sidecar Agent 已生成可插拔附件。"))
+        except Exception as exc:  # pragma: no cover - optional sidecar must not fail the trunk
+            sidecar_error_path = job_dir / "sidecar_error.json"
+            _write_json(
+                sidecar_error_path,
+                {
+                    "error": {"type": exc.__class__.__name__, "message": str(exc)},
+                    "message": "后处理 Sidecar 生成失败，主分析结果不受影响。",
+                },
+            )
+            sidecar_results = {"sidecar_error": str(sidecar_error_path)}
+            events.append(create_event("sidecar_postprocess", "warning", "后处理 Sidecar 未完全生成，主链继续输出报告。"))
+
         report_result = generate_markdown_report(final_result_path, chart_paths, include_pptx=True)
         report_path = report_result.get("report_path")
         pptx_path = report_result.get("pptx_path")
@@ -891,6 +948,7 @@ def run_auto_repair_analysis_job(
         "pptx_path": pptx_path,
         "pptx_preview_path": pptx_preview_path,
         "effective_max_retries": effective_max_retries,
+        "sidecar_results": sidecar_results,
     }
     return _write_progress(
         job_dir=job_dir,
@@ -914,6 +972,7 @@ def run_auto_repair_analysis_job(
         report_path=report_path,
         pptx_path=pptx_path,
         pptx_preview_path=pptx_preview_path,
+        sidecar_results=sidecar_results,
         controller_plan_path=str(job_dir / "controller_plan.json"),
         dataset_profile_path=str(job_dir / "dataset_profile.json"),
         data_understanding_path=str(job_dir / "data_understanding.json"),
@@ -973,6 +1032,7 @@ def _write_progress(
     quality_review_path: str | None = None,
     evidence_chain_path: str | None = None,
     debate_reflection_path: str | None = None,
+    sidecar_results: dict[str, Any] | None = None,
     cleaning_report_path: str | None = None,
     report_path: str | None = None,
     pptx_path: str | None = None,
@@ -1036,6 +1096,7 @@ def _normalize_status_payload(data: dict[str, Any]) -> dict[str, Any]:
             "quality_review_path": _existing_or_none(data.get("quality_review_path"), job_dir / "quality_review.json"),
             "evidence_chain_path": _existing_or_none(data.get("evidence_chain_path"), job_dir / "evidence_chain.json"),
             "debate_reflection_path": _existing_or_none(data.get("debate_reflection_path"), job_dir / "debate_reflection.json"),
+            "sidecar_results": _normalize_sidecar_results(data.get("sidecar_results"), job_dir),
             "cleaning_report_path": _existing_or_none(data.get("cleaning_report_path"), job_dir / "cleaning_report.json"),
             "report_path": _existing_or_none(data.get("report_path"), job_dir / "report.md"),
             "pptx_path": _existing_or_none(data.get("pptx_path"), job_dir / "report.pptx"),
@@ -1064,6 +1125,7 @@ def _normalize_status_payload(data: dict[str, Any]) -> dict[str, Any]:
         "quality_review_path": data.get("quality_review_path"),
         "evidence_chain_path": data.get("evidence_chain_path"),
         "debate_reflection_path": data.get("debate_reflection_path"),
+        "sidecar_results": _normalize_sidecar_results(data.get("sidecar_results"), job_dir),
         "cleaning_report_path": data.get("cleaning_report_path"),
         "report_path": data.get("report_path"),
         "pptx_path": data.get("pptx_path"),
@@ -1139,6 +1201,7 @@ def _build_progress_execution_log(status_data: dict[str, Any]) -> dict[str, Any]
             "quality_review": status_data.get("quality_review_path"),
             "evidence_chain": status_data.get("evidence_chain_path"),
             "debate_reflection": status_data.get("debate_reflection_path"),
+            "sidecar_results": status_data.get("sidecar_results") or {},
             "cleaning_report": status_data.get("cleaning_report_path"),
             "report": status_data.get("report_path"),
             "pptx": status_data.get("pptx_path"),
@@ -1147,6 +1210,25 @@ def _build_progress_execution_log(status_data: dict[str, Any]) -> dict[str, Any]
         },
         "events": _event_list(status_data.get("events")),
     }
+
+
+def _normalize_sidecar_results(value: Any, job_dir: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    if isinstance(value, dict):
+        for key, raw_path in value.items():
+            if isinstance(raw_path, str) and raw_path.strip():
+                result[str(key)] = raw_path
+    fallback_files = {
+        "anomalies": "anomaly_scan.json",
+        "next_step_suggestions": "next_steps.json",
+        "significance_tests": "significance_tests.json",
+        "dashboard_config": "dashboard_config.json",
+    }
+    for key, filename in fallback_files.items():
+        path = job_dir / filename
+        if key not in result and path.exists():
+            result[key] = str(path)
+    return result
 
 
 def _existing_or_none(value: Any, fallback_path: Path) -> str | None:
@@ -1268,6 +1350,7 @@ def _build_static_safety_failure_result(
             "safety_issues": issues,
         },
     }
+
 
 
 

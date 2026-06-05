@@ -10,6 +10,8 @@ import type {
   ChartConfigResponse,
   ChartDeleteResponse,
   CleaningPlanResponse,
+  DashboardConfig,
+  DashboardConfigResponse,
   CleaningReportResponse,
   ChartRefineResponse,
   ChartSuggestionResponse,
@@ -333,6 +335,38 @@ export async function generateWorkflowPptx(jobId: string): Promise<WorkflowPptxG
 }
 
 
+
+export async function fetchWorkflowDashboard(jobId: string): Promise<DashboardConfigResponse> {
+  const response = await apiFetch(`/api/workflows/jobs/${jobId}/dashboard`);
+  return parseResponse<DashboardConfigResponse>(response);
+}
+
+export async function saveWorkflowDashboard(
+  jobId: string,
+  dashboard: DashboardConfig
+): Promise<DashboardConfigResponse> {
+  const response = await apiFetch(`/api/workflows/jobs/${jobId}/dashboard`, {
+    method: "PUT",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ dashboard })
+  });
+  return parseResponse<DashboardConfigResponse>(response);
+}
+
+export async function refreshWorkflowDashboard(jobId: string): Promise<DashboardConfigResponse> {
+  const response = await apiFetch(`/api/workflows/jobs/${jobId}/dashboard/refresh`, {
+    method: "POST"
+  });
+  return parseResponse<DashboardConfigResponse>(response);
+}
+
+export async function shareWorkflowDashboard(jobId: string): Promise<DashboardConfigResponse> {
+  const response = await apiFetch(`/api/workflows/jobs/${jobId}/dashboard/share`, {
+    method: "POST"
+  });
+  return parseResponse<DashboardConfigResponse>(response);
+}
+
 export async function createWorkflowFollowUp(
   jobId: string,
   question: string
@@ -575,6 +609,7 @@ export function toStorageUrl(path: string): string {
   }
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
+
 
 
 

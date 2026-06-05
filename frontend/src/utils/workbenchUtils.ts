@@ -2,6 +2,7 @@ import type {
   AnalysisResult,
   AutoRepairAttemptResult,
   ExecutionAttemptLog,
+  DebateReflection,
   ExecutionLogEvent,
   ExplanationResult,
   PredictionExplanationResult,
@@ -14,7 +15,7 @@ import type {
 } from "../types";
 
 export type AnyRecord = Record<string, unknown>;
-export type PageKey = "setup" | "knowledge" | "prediction" | "roadmap" | "process" | "charts" | "insights" | "logs";
+export type PageKey = "setup" | "knowledge" | "prediction" | "roadmap" | "process" | "charts" | "dashboard" | "insights" | "logs";
 
 export interface StepView {
   key: string;
@@ -36,6 +37,7 @@ export type ArtifactKind =
   | "execution"
   | "validation"
   | "explanation"
+  | "debate_reflection"
   | "quality_review"
   | "generic";
 
@@ -101,6 +103,7 @@ export function buildAgentCards(input: {
   hypothesisPlan: AnyRecord | null;
   predictionPlan: AnyRecord | null;
   explanation: ExplanationResult;
+  debateReflection: DebateReflection | null;
   qualityReview: QualityReview | null;
   isPredictionWorkflow: boolean;
 }): AgentCardView[] {
@@ -209,6 +212,16 @@ export function buildAgentCards(input: {
         artifactPath: latestValidation?.path,
         artifactLabel: "validation_result.json",
         evidence: validationEvidence(latestValidation)
+      };
+    }
+    if (step.key === "debate_matrix") {
+      return {
+        ...card,
+        raw: input.debateReflection,
+        artifactKind: "debate_reflection",
+        artifactPath: input.job?.debate_reflection_path,
+        artifactLabel: "debate_reflection.json",
+        evidence: debateEvidence(input.debateReflection)
       };
     }
     if (step.key === "quality_review") {
@@ -444,6 +457,13 @@ export function cardBase(step: StepView, isPredictionWorkflow: boolean): Omit<Ag
       evidence: [],
       artifactKind: "validation"
     },
+    debate_matrix: {
+      agentName: "Debate Matrix 双 Agent",
+      inputSource: "验证通过的结果、图表 JSON、报告数据和统计限制",
+      action: "让激进商业洞察 Agent 与严谨统计质检 Agent 进行 2-3 轮辩论，并把共识交给解释 Agent。",
+      evidence: [],
+      artifactKind: "debate_reflection"
+    },
     explanation: {
       agentName: prediction ? "预测解释 Agent" : "解释 Agent",
       inputSource: "通过验证的结果、图表和限制说明",
@@ -477,6 +497,7 @@ export function buildAgentSteps(input: {
   analysisPlan: AnyRecord | null;
   executionLog: WorkflowLogResponse | null;
   explanation: ExplanationResult;
+  debateReflection: DebateReflection | null;
   qualityReview: QualityReview | null;
   events: ExecutionLogEvent[];
 }): StepView[] {
@@ -556,6 +577,13 @@ export function buildAgentSteps(input: {
       summary: validation
         ? `验证${validation.passed ? "通过" : "未通过"}，严重级别 ${validation.severity}`
         : "等待沙箱产物。"
+    },
+    {
+      key: "debate_matrix",
+      title: "Debate Matrix 正在动态辩论",
+      stageNames: ["debate_matrix"],
+      done: Boolean(input.debateReflection || input.job?.debate_reflection_path),
+      summary: debateSummary(input.debateReflection)
     },
     {
       key: "explanation",
@@ -847,6 +875,31 @@ export function explanationEvidence(explanation: ExplanationResult): string[] {
   ];
 }
 
+
+
+export function debateEvidence(debate: DebateReflection | null): string[] {
+  if (!debate) {
+    return ["等待 Debate Matrix 完成双 Agent 交互。"];
+  }
+  const rounds = Array.isArray(debate.debate_rounds) ? debate.debate_rounds.length : 0;
+  return [
+    `辩论轮次：${rounds || "-"}`,
+    `共识发现：${debate.consensus_findings?.length ?? 0} 条`,
+    `统计护栏：${debate.statistical_guardrails?.length ?? 0} 条`
+  ];
+}
+
+export function debateSummary(debate: DebateReflection | null): string {
+  if (!debate) {
+    return "等待验证通过后启动商业洞察与统计质检双 Agent 辩论。";
+  }
+  const finalConsensus = typeof debate.final_consensus === "string" ? debate.final_consensus : "";
+  if (finalConsensus) {
+    return finalConsensus.length > 120 ? `${finalConsensus.slice(0, 120)}...` : finalConsensus;
+  }
+  const findings = debate.consensus_findings ?? [];
+  return findings.length ? findings.slice(0, 2).join("；") : "Debate Matrix 已生成共识和统计护栏。";
+}
 
 export function qualityReviewEvidence(review: QualityReview | null): string[] {
   if (!review) {
@@ -1178,6 +1231,9 @@ export function stageLabel(value: string): string {
     sandbox: "沙箱执行",
     validation: "结果验证",
     repair: "脚本修复",
+    debate_matrix: "动态辩论",
+    sidecar_postprocess: "后处理扩展",
+    dashboard_generation: "Dashboard 生成",
     explanation: "结论生成",
     quality_review: "质检自检",
     success: "已完成",
@@ -1195,7 +1251,8 @@ export function eventStatusLabel(value: string): string {
     success: "已完成",
     failed: "失败",
     fallback: "降级继续",
-    retrying: "准备重试"
+    retrying: "准备重试",
+    warning: "风险提示"
   };
   return labels[value] ?? value;
 }
@@ -1404,6 +1461,7 @@ function lastItem<T>(items: T[] | undefined): T | undefined {
   }
   return items[items.length - 1];
 }
+
 
 
 

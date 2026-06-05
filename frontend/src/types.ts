@@ -187,6 +187,13 @@ export interface AutoRepairAnalysisJobResponse {
   data_understanding_path?: string | null;
   analysis_plan_path?: string | null;
   explanation_path?: string | null;
+  quality_review_path?: string | null;
+  evidence_chain_path?: string | null;
+  debate_reflection_path?: string | null;
+  report_path?: string | null;
+  pptx_path?: string | null;
+  pptx_preview_path?: string | null;
+  sidecar_results?: PostprocessSidecarResults;
   effective_max_retries?: number | null;
   events?: ExecutionLogEvent[];
   error?: Record<string, unknown> | null;
@@ -320,6 +327,122 @@ export interface QualityReview {
   revised_summary: string;
   safe_language_suggestions: string[];
   missing_evidence: string[];
+}
+
+
+export interface DebateRound {
+  round?: number;
+  aggressive_business_agent?: string;
+  statistical_qc_agent?: string;
+  agent_a?: string;
+  agent_b?: string;
+  [key: string]: unknown;
+}
+
+export interface DebateReflection {
+  source?: string;
+  debate_rounds?: DebateRound[];
+  consensus_findings?: string[];
+  consensus_recommendations?: string[];
+  statistical_guardrails?: string[];
+  phrasing_revisions?: unknown[];
+  final_consensus?: string;
+  [key: string]: unknown;
+}
+
+export interface FollowUpRecommendation {
+  question: string;
+  rationale?: string;
+  based_on?: string[];
+  confidence?: number;
+  [key: string]: unknown;
+}
+
+export interface FollowUpRecommendationConfig {
+  agent?: string;
+  generated_at?: string;
+  recommended_questions?: FollowUpRecommendation[];
+  questions?: Array<string | FollowUpRecommendation>;
+  context_summary?: string;
+  [key: string]: unknown;
+}
+
+export interface PostprocessSidecarResults {
+  anomalies?: string | null;
+  next_step_suggestions?: string | null;
+  significance_tests?: string | null;
+  dashboard_config?: string | null;
+  dashboard?: string | null;
+  sidecar_error?: string | null;
+  [key: string]: string | null | undefined;
+}
+
+export interface DashboardFilterConfig {
+  id: string;
+  field: string;
+  label: string;
+  type: string;
+  value?: string;
+  options?: string[];
+}
+
+export interface DashboardLayoutItem {
+  i: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface DashboardWidget {
+  id: string;
+  type: "kpi" | "chart" | "table" | string;
+  title: string;
+  value?: string | number | null;
+  unit?: string;
+  description?: string;
+  chart_path?: string;
+  chart_role?: string;
+  columns?: string[];
+  rows?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+export interface DashboardConfig {
+  dashboard_id: string;
+  title: string;
+  description?: string;
+  source_job_id?: string;
+  source_goal?: string;
+  workflow_type?: string;
+  created_at?: string;
+  updated_at?: string;
+  refresh?: {
+    enabled?: boolean;
+    interval_seconds?: number;
+    last_refreshed_at?: string | null;
+    refresh_count?: number;
+    api?: string;
+    [key: string]: unknown;
+  };
+  filters?: DashboardFilterConfig[];
+  layout?: DashboardLayoutItem[];
+  widgets?: DashboardWidget[];
+  sharing?: {
+    share_token?: string;
+    share_url?: string;
+    embed_code?: string;
+    [key: string]: unknown;
+  };
+  recommended_questions?: FollowUpRecommendation[];
+  [key: string]: unknown;
+}
+
+export interface DashboardConfigResponse {
+  job_id: string;
+  dashboard: DashboardConfig;
+  dashboard_path?: string | null;
+  message: string;
 }
 
 export interface ChartSuggestionResponse {
@@ -515,6 +638,7 @@ export interface WorkflowJobResponse {
   final_validation_result_path: string | null;
   insight_result_path?: string | null;
   debate_reflection_path?: string | null;
+  sidecar_results?: PostprocessSidecarResults;
   chart_paths?: string[];
   effective_max_retries?: number | null;
   events?: ExecutionLogEvent[];
@@ -750,5 +874,6 @@ export interface PptPreview {
   pptx_path?: string | null;
   slides: PptPreviewSlide[];
 }
+
 
 

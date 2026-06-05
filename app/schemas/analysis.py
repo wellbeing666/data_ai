@@ -49,6 +49,13 @@ class AutoRepairAnalysisJobResponse(BaseModel):
     data_understanding_path: str | None = None
     analysis_plan_path: str | None = None
     explanation_path: str | None = None
+    quality_review_path: str | None = None
+    evidence_chain_path: str | None = None
+    debate_reflection_path: str | None = None
+    report_path: str | None = None
+    pptx_path: str | None = None
+    pptx_preview_path: str | None = None
+    sidecar_results: dict[str, str] = Field(default_factory=dict)
     effective_max_retries: int | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
     error: dict[str, Any] | None = None
@@ -77,3 +84,4 @@ class ExecutionLogResponse(BaseModel):
     max_retries: int = 0
     artifacts: dict[str, Any] = Field(default_factory=dict)
     events: list[ExecutionLogEvent] = Field(default_factory=list)
+

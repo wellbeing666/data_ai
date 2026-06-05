@@ -107,6 +107,17 @@ class ChartRefineResponse(BaseModel):
     safety_issues: list[str] = Field(default_factory=list)
 
 
+class DashboardConfigUpdateRequest(BaseModel):
+    dashboard: dict[str, Any] = Field(default_factory=dict)
+
+
+class DashboardConfigResponse(BaseModel):
+    job_id: str
+    dashboard: dict[str, Any] = Field(default_factory=dict)
+    dashboard_path: str | None = None
+    message: str = ""
+
+
 class WorkflowAttemptResult(BaseModel):
     attempt: int
     script_path: str
@@ -159,6 +170,7 @@ class WorkflowJobResponse(BaseModel):
     final_validation_result_path: str | None = None
     insight_result_path: str | None = None
     debate_reflection_path: str | None = None
+    sidecar_results: dict[str, str] = Field(default_factory=dict)
     effective_max_retries: int | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
     error: dict[str, Any] | None = None
@@ -209,6 +221,7 @@ class WorkflowLogResponse(BaseModel):
     max_retries: int = 0
     artifacts: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list)
+
 
 
 

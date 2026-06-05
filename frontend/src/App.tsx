@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { Component, type ErrorInfo, type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 
 import {
   changeAdminUserRole,
@@ -24,6 +24,7 @@ export default function App() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [booting, setBooting] = useState(true);
   const [globalMessage, setGlobalMessage] = useState("");
+  const [appHeaderCollapsed, setAppHeaderCollapsed] = useState(false);
 
   useEffect(() => {
     const token = getStoredAuthToken();
@@ -86,38 +87,98 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <div>
-          <p className="eyebrow">AI Native Data Analysis Workbench</p>
-          <h1>DeepSeek 多 Agent 数据分析工作台</h1>
-        </div>
-        <nav className="app-nav" aria-label="账号与系统导航">
-          <button type="button" className={view === "workbench" ? "active" : ""} onClick={() => setView("workbench")}>
-            工作台
-          </button>
-          <button type="button" className={view === "account" ? "active" : ""} onClick={() => setView("account")}>
-            账号设置
-          </button>
-          {user.role === "admin" ? (
-            <button type="button" className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}>
-              用户管理
-            </button>
-          ) : null}
-          <span className="user-badge">
-            {user.username} · {roleLabel(user.role)}
-          </span>
-          <button type="button" onClick={handleLogout}>
-            退出
-          </button>
-        </nav>
+      <header className={`app-header ${appHeaderCollapsed ? "collapsed" : ""}`}>
+        <button
+          className="app-header-toggle"
+          type="button"
+          aria-expanded={!appHeaderCollapsed}
+          aria-label={appHeaderCollapsed ? "展开顶部导航栏" : "收起顶部导航栏"}
+          title={appHeaderCollapsed ? "展开顶部导航栏" : "收起顶部导航栏"}
+          onClick={() => setAppHeaderCollapsed((value) => !value)}
+        >
+          {appHeaderCollapsed ? "展开" : "收起"}
+        </button>
+        {!appHeaderCollapsed ? (
+          <>
+            <div className="app-title-block">
+              <p className="eyebrow">AI Native Data Analysis Workbench</p>
+              <h1>DeepSeek 多 Agent 数据分析工作台</h1>
+            </div>
+            <nav className="app-nav" aria-label="账号与系统导航">
+              <button type="button" className={view === "workbench" ? "active" : ""} onClick={() => setView("workbench")}>
+                工作台
+              </button>
+              <button type="button" className={view === "account" ? "active" : ""} onClick={() => setView("account")}>
+                账号设置
+              </button>
+              {user.role === "admin" ? (
+                <button type="button" className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}>
+                  用户管理
+                </button>
+              ) : null}
+              <span className="user-badge">
+                {user.username} · {roleLabel(user.role)}
+              </span>
+              <button type="button" onClick={handleLogout}>
+                退出
+              </button>
+            </nav>
+          </>
+        ) : null}
       </header>
 
-      {view === "workbench" ? <WorkbenchPage /> : null}
-      {view === "account" ? <AccountPage user={user} onUserChange={setUser} onLogout={handleLogout} /> : null}
-      {view === "admin" && user.role === "admin" ? <AdminPage currentUser={user} /> : null}
+      <AppErrorBoundary resetKey={`${view}-${user.id}`}>
+        {view === "workbench" ? <WorkbenchPage /> : null}
+        {view === "account" ? <AccountPage user={user} onUserChange={setUser} onLogout={handleLogout} /> : null}
+        {view === "admin" && user.role === "admin" ? <AdminPage currentUser={user} /> : null}
+      </AppErrorBoundary>
     </div>
   );
 }
+
+class AppErrorBoundary extends Component<
+  { children: ReactNode; resetKey: string },
+  { error: Error | null; resetKey: string }
+> {
+  state = { error: null as Error | null, resetKey: this.props.resetKey };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  static getDerivedStateFromProps(
+    props: { resetKey: string },
+    state: { error: Error | null; resetKey: string }
+  ) {
+    if (props.resetKey !== state.resetKey) {
+      return { error: null, resetKey: props.resetKey };
+    }
+    return null;
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Workbench render error", error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <main className="workspace-shell">
+          <section className="panel render-error-panel">
+            <h2>前端展示异常</h2>
+            <p>当前分析结果中存在暂时无法展示的字段，页面已阻止白屏。请刷新或切换页面后继续查看。</p>
+            <pre>{this.state.error.message}</pre>
+            <button className="primary-button" type="button" onClick={() => this.setState({ error: null })}>
+              重新显示页面
+            </button>
+          </section>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 
 function LoginPage({
   onRegister,
@@ -495,3 +556,4 @@ function statusLabel(status: string) {
   };
   return labels[status] || status;
 }
+
