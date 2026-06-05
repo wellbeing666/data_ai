@@ -11,6 +11,7 @@ import {
   createWorkflowFollowUp,
   createWorkflowJobAsync,
   createWorkflowSelectionFollowUp,
+  createWorkflowSelectionQuestion,
   deleteWorkflowAgentMessage,
   deleteWorkflowChart,
   deleteWorkflowJob,
@@ -81,14 +82,13 @@ import type {
   WorkflowAgentConsoleResponse,
   WorkflowAgentUpdateRequest,
   WorkflowFollowUpResponse,
+  WorkflowSelectionQuestionResponse,
   WorkflowJobListItem,
   WorkflowJobResponse,
   WorkflowLogResponse
 } from "../types";
 
 import {
-  ChartPreviewModal,
-  ChartsPage,
   CleaningPlanModal,
   DashboardPage,
   HistoryPanel,
@@ -102,6 +102,8 @@ import {
   SamplePreviewModal,
   SetupPage
 } from "../components/WorkbenchComponents";
+import { ChartsPage } from "../components/workbench/ChartsPage";
+import { ChartPreviewModal } from "../components/workbench/charts/ChartPreviewModal";
 import { AgentsPage } from "../components/workbench/AgentsPage";
 import { AnalysisIrPage } from "../components/workbench/AnalysisIrPage";
 import { DataMapPage } from "../components/workbench/DataMapPage";
@@ -1473,25 +1475,43 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
   }
 
 
-  async function handleChartBrushSelection(chartPath: string, selectionSpec: ChartSelectionSpec) {
+  async function handleCompileChartSelectionQuestion(
+    chartPath: string,
+    selectionSpec: ChartSelectionSpec
+  ): Promise<WorkflowSelectionQuestionResponse> {
     if (!job?.job_id) {
-      setChartMessage("请先完成或打开一个分析任务，再使用图形刷选追问。");
-      return;
+      throw new Error("请先完成或打开一个分析任务，再使用图形刷选追问。");
     }
-    setChartMessage("正在把图形刷选动作编译为追问问题。");
-    try {
-      const result = await createWorkflowSelectionFollowUp(job.job_id, {
+    const result = await createWorkflowSelectionQuestion(job.job_id, {
+      ...selectionSpec,
+      chart_path: chartPath,
+      source: "chart_brush"
+    });
+    setChartMessage(`已生成候选刷选追问：${result.question}`);
+    return result;
+  }
+
+  async function handleSubmitChartSelectionFollowUp(
+    chartPath: string,
+    selectionSpec: ChartSelectionSpec,
+    question: string
+  ): Promise<WorkflowFollowUpResponse> {
+    if (!job?.job_id) {
+      throw new Error("请先完成或打开一个分析任务，再使用图形刷选追问。");
+    }
+    const result = await createWorkflowSelectionFollowUp(
+      job.job_id,
+      {
         ...selectionSpec,
         chart_path: chartPath,
         source: "chart_brush"
-      });
-      setFollowUps((current) => [result, ...current]);
-      setFollowUpQuestion("");
-      setChartMessage(`已生成刷选追问：${result.question}`);
-      setActivePage("insights");
-    } catch (error) {
-      setChartMessage(error instanceof Error ? error.message : "图形刷选追问生成失败。");
-    }
+      },
+      question
+    );
+    setFollowUps((current) => [result, ...current]);
+    setFollowUpQuestion("");
+    setChartMessage(`刷选追问答案已生成：${result.question}`);
+    return result;
   }
 
   async function handleDeleteChart(chartPath: string) {
@@ -1945,7 +1965,6 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
               onQuickRefineChart={handleQuickRefineChart}
               onOpenChart={setChartPreviewPath}
               onDeleteChart={handleDeleteChart}
-              onBrushSelection={handleChartBrushSelection}
             />
           ) : null}
 
@@ -2019,14 +2038,18 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
       {chartPreviewPath ? (
         <ChartPreviewModal
           chartPath={chartPreviewPath}
+          chartIndex={Math.max(0, chartPaths.findIndex((chartPath) => chartPath === chartPreviewPath))}
           chartRefreshToken={chartRefreshToken}
           onClose={() => setChartPreviewPath(null)}
           onDelete={() => handleDeleteChart(chartPreviewPath)}
+          onCompileSelection={handleCompileChartSelectionQuestion}
+          onSubmitSelectionFollowUp={handleSubmitChartSelectionFollowUp}
         />
       ) : null}
     </main>
   );
 }
+
 
 
 

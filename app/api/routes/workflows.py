@@ -18,6 +18,7 @@ from app.schemas.workflow import (
     WorkflowFollowUpRequest,
     WorkflowFollowUpResponse,
     WorkflowSelectionFollowUpRequest,
+    WorkflowSelectionQuestionResponse,
     WorkflowJobDeleteResponse,
     WorkflowJobListResponse,
     WorkflowJobRequest,
@@ -34,6 +35,7 @@ from app.services.workflow_service import (
     control_workflow_job,
     create_workflow_follow_up,
     create_workflow_selection_follow_up,
+    create_workflow_selection_question,
     create_workflow_job_record,
     create_workflow_preflight,
     delete_workflow_chart,
@@ -171,6 +173,17 @@ def create_job_follow_up(
     return WorkflowFollowUpResponse(**result)
 
 
+@router.post("/jobs/{job_id}/selection-question", response_model=WorkflowSelectionQuestionResponse)
+def create_job_selection_question(
+    job_id: str,
+    request: WorkflowSelectionFollowUpRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> WorkflowSelectionQuestionResponse:
+    _ensure_job_access(job_id, current_user)
+    result = create_workflow_selection_question(job_id=job_id, selection_spec=request.selection_spec)
+    return WorkflowSelectionQuestionResponse(**result)
+
+
 @router.post("/jobs/{job_id}/selection-follow-up", response_model=WorkflowFollowUpResponse)
 def create_job_selection_follow_up(
     job_id: str,
@@ -178,7 +191,11 @@ def create_job_selection_follow_up(
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> WorkflowFollowUpResponse:
     _ensure_job_access(job_id, current_user)
-    result = create_workflow_selection_follow_up(job_id=job_id, selection_spec=request.selection_spec)
+    result = create_workflow_selection_follow_up(
+        job_id=job_id,
+        selection_spec=request.selection_spec,
+        question=request.question,
+    )
     return WorkflowFollowUpResponse(**result)
 
 
@@ -315,6 +332,7 @@ def remove_workflow_chart(
 ) -> dict[str, Any]:
     _ensure_job_access(job_id, current_user)
     return delete_workflow_chart(job_id, chart_path)
+
 
 
 

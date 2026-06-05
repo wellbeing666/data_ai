@@ -320,6 +320,38 @@ export interface QualityReviewIssue {
   suggestion: string;
 }
 
+export interface ConsistencyCheckItem {
+  check_id: string;
+  status: "pass" | "warning" | "fail" | string;
+  severity?: "low" | "medium" | "high" | string;
+  topic: string;
+  finding: string;
+  evidence?: string[];
+  suggested_action?: string;
+}
+
+export interface CrossArtifactConsistencyReport {
+  schema_version?: string;
+  agent?: string;
+  generated_at?: string;
+  passed: boolean;
+  risk_level: string;
+  canonical_context?: Record<string, unknown>;
+  artifact_inventory?: Record<string, unknown>;
+  checks: ConsistencyCheckItem[];
+  inconsistent_claims?: Array<Record<string, unknown>>;
+  summary?: string;
+  limitations?: string[];
+}
+
+export interface SuggestedRewrite {
+  artifact: string;
+  field: string;
+  current_text: string;
+  suggested_text: string;
+  rationale: string;
+}
+
 export interface QualityReview {
   passed: boolean;
   risk_level: string;
@@ -328,6 +360,8 @@ export interface QualityReview {
   revised_summary: string;
   safe_language_suggestions: string[];
   missing_evidence: string[];
+  cross_artifact_consistency?: CrossArtifactConsistencyReport;
+  suggested_rewrites?: SuggestedRewrite[];
 }
 
 
@@ -780,6 +814,16 @@ export interface ChartSelectionSpec {
   [key: string]: unknown;
 }
 
+export interface WorkflowSelectionQuestionResponse {
+  job_id: string;
+  question: string;
+  selection_patch_path?: string | null;
+  latest_patch_path?: string | null;
+  used_artifacts: string[];
+  source_delta: Record<string, unknown>;
+  selection_spec: ChartSelectionSpec;
+}
+
 export interface WorkflowJobResponse {
   job_id: string;
   owner_user_id?: string | null;
@@ -1059,6 +1103,7 @@ export interface PptPreview {
   pptx_path?: string | null;
   slides: PptPreviewSlide[];
 }
+
 
 
 

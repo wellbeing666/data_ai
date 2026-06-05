@@ -5,12 +5,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.agents.cross_artifact_consistency_agent import create_cross_artifact_consistency_report
+
 
 SIDECAR_FILENAMES = {
     "anomalies": "anomaly_scan.json",
     "next_step_suggestions": "next_steps.json",
     "significance_tests": "significance_tests.json",
     "dashboard_config": "dashboard_config.json",
+    "consistency_report": "consistency_report.json",
+    "suggested_rewrites": "suggested_rewrites.json",
 }
 
 
@@ -70,12 +74,30 @@ def create_postprocess_sidecars(
         next_steps=next_steps,
         workflow_type=workflow_type,
     )
+    consistency_report, suggested_rewrites = create_cross_artifact_consistency_report(
+        job_dir=job_path,
+        user_goal=user_goal,
+        dataset_profile=dataset_profile,
+        result_payload=result_payload,
+        report_data=safe_report_data,
+        dashboard=dashboard,
+        chart_paths=safe_chart_paths,
+        validation_result=safe_validation,
+        debate_reflection=safe_debate,
+        workflow_type=workflow_type,
+    )
 
     payloads = {
         "anomalies": anomalies,
         "next_step_suggestions": next_steps,
         "significance_tests": significance,
         "dashboard_config": dashboard,
+        "consistency_report": consistency_report,
+        "suggested_rewrites": {
+            "agent": "Cross Artifact Consistency Agent",
+            "generated_at": consistency_report.get("generated_at"),
+            "suggested_rewrites": suggested_rewrites,
+        },
     }
     sidecar_results: dict[str, str] = {}
     for key, payload in payloads.items():
@@ -919,4 +941,5 @@ def _clip_text(text: str, limit: int) -> str:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
 

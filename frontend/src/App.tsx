@@ -96,7 +96,11 @@ export default function App() {
           title={appHeaderCollapsed ? "展开顶部导航栏" : "收起顶部导航栏"}
           onClick={() => setAppHeaderCollapsed((value) => !value)}
         >
-          <span aria-hidden="true">{appHeaderCollapsed ? "⌄" : "⌃"}</span>
+          <span aria-hidden="true" className="app-header-toggle-icon">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d={appHeaderCollapsed ? "M7 10l5 5 5-5" : "M7 14l5-5 5 5"} />
+            </svg>
+          </span>
         </button>
         {!appHeaderCollapsed ? (
           <>
@@ -556,6 +560,7 @@ function statusLabel(status: string) {
   };
   return labels[status] || status;
 }
+
 
 
 

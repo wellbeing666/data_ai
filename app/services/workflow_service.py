@@ -204,6 +204,15 @@ AGENT_BLUEPRINTS: list[dict[str, Any]] = [
         "tags": ["证据", "风险"],
     },
     {
+        "agent_id": "cross_artifact_consistency_agent",
+        "display_name": "跨产物口径一致性 Agent",
+        "avatar": "🧭",
+        "role": "多产物口径审计员",
+        "description": "扫描解释文本、报告、PPT 大纲、Dashboard、图表标题和追问回答的口径一致性。",
+        "stage_names": ["cross_artifact_consistency"],
+        "tags": ["一致性", "可信口径"],
+    },
+    {
         "agent_id": "dashboard_agent",
         "display_name": "Dashboard 生成 Agent",
         "avatar": "📊",
@@ -1051,6 +1060,8 @@ def _read_agent_workspace(job_dir: Path) -> dict[str, Any]:
 
 def _agent_id_from_stage(stage: str) -> str:
     text = str(stage or "").lower()
+    if "cross_artifact" in text or "consistency" in text or "口径" in text:
+        return "cross_artifact_consistency_agent"
     if "dashboard" in text or "sidecar" in text:
         return "dashboard_agent"
     if "report" in text or "ppt" in text:
@@ -1117,12 +1128,28 @@ def _agent_artifact_messages(job_dir: Path, status_data: dict[str, Any]) -> list
             continue
         messages.append(_artifact_message(agent_id, index, title, path, job_dir))
         index += 1
+    sidecar_agent_map = {
+        "dashboard_config": "dashboard_agent",
+        "next_step_suggestions": "explanation_agent",
+        "anomalies": "explanation_agent",
+        "significance_tests": "quality_review_agent",
+        "consistency_report": "cross_artifact_consistency_agent",
+        "suggested_rewrites": "cross_artifact_consistency_agent",
+    }
+    sidecar_title_map = {
+        "dashboard_config": "Dashboard 配置产物",
+        "next_step_suggestions": "追问推荐产物",
+        "anomalies": "异常扫描产物",
+        "significance_tests": "显著性建议产物",
+        "consistency_report": "跨产物口径一致性报告",
+        "suggested_rewrites": "口径修订建议产物",
+    }
     for key, raw_path in sidecar.items():
         path = _resolve_job_path(job_dir, raw_path)
         if not path or not path.exists():
             continue
-        agent_id = "dashboard_agent" if key == "dashboard_config" else "quality_review_agent" if key == "significance_tests" else "explanation_agent"
-        title = {"dashboard_config": "Dashboard 配置产物", "next_step_suggestions": "追问推荐产物", "anomalies": "异常扫描产物", "significance_tests": "显著性建议产物"}.get(key, f"{key} 产物")
+        agent_id = sidecar_agent_map.get(key, "explanation_agent")
+        title = sidecar_title_map.get(key, f"{key} 产物")
         messages.append(_artifact_message(agent_id, index, title, path, job_dir))
         index += 1
     return messages
@@ -1698,11 +1725,50 @@ def create_workflow_follow_up(job_id: str, question: str, source_delta: dict[str
     return {**payload, "follow_up_path": str(follow_up_path)}
 
 
-def create_workflow_selection_follow_up(job_id: str, selection_spec: dict[str, Any]) -> dict[str, Any]:
+def create_workflow_selection_question(job_id: str, selection_spec: dict[str, Any]) -> dict[str, Any]:
     job_dir = _get_job_dir(job_id).resolve()
     status_data = get_workflow_job_status(job_id)
     if status_data.get("status") != "success":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="请等待分析完成后再使用图形刷选追问。")
+    patch, patch_path, latest_patch_path, artifacts = _compile_and_store_selection_patch(job_dir, selection_spec)
+    question = str(patch.get("question") or "为什么图中被圈选的数据范围值得关注？").strip()
+    _append_job_event(job_dir, create_event("selection_question", "success", "图形刷选已编译为候选追问，等待用户确认。"))
+    return {
+        "job_id": job_id,
+        "question": question,
+        "selection_patch_path": str(patch_path),
+        "latest_patch_path": str(latest_patch_path),
+        "used_artifacts": sorted(artifacts.keys()),
+        "source_delta": patch,
+        "selection_spec": selection_spec,
+    }
+
+
+def create_workflow_selection_follow_up(job_id: str, selection_spec: dict[str, Any], question: str | None = None) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    status_data = get_workflow_job_status(job_id)
+    if status_data.get("status") != "success":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="请等待分析完成后再使用图形刷选追问。")
+    patch, patch_path, _latest_patch_path, _artifacts = _compile_and_store_selection_patch(job_dir, selection_spec)
+    normalized_question = str(question or patch.get("question") or "为什么图中被圈选的数据范围值得关注？").strip()
+    if not normalized_question:
+        normalized_question = "为什么图中被圈选的数据范围值得关注？"
+    patch["question"] = normalized_question
+    _write_json(patch_path, patch)
+    _write_json(job_dir / "followup_ir_patch.json", patch)
+    result = create_workflow_follow_up(job_id, normalized_question, source_delta=patch)
+    if result.get("follow_up_path"):
+        follow_up_payload = _read_json_if_exists(Path(str(result["follow_up_path"]))) or {}
+        follow_up_payload.update({"selection_patch_path": str(patch_path), "selection_spec": selection_spec})
+        _write_json(Path(str(result["follow_up_path"])), follow_up_payload)
+    _append_job_event(job_dir, create_event("selection_follow_up", "success", "用户确认图形刷选追问后已生成回答。"))
+    return {**result, "selection_patch_path": str(patch_path), "selection_spec": selection_spec}
+
+
+def _compile_and_store_selection_patch(
+    job_dir: Path,
+    selection_spec: dict[str, Any],
+) -> tuple[dict[str, Any], Path, Path, dict[str, Any]]:
     if not isinstance(selection_spec, dict) or not selection_spec:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="selection_spec 不能为空。")
     artifacts = _follow_up_artifacts(job_dir)
@@ -1719,14 +1785,7 @@ def create_workflow_selection_follow_up(job_id: str, selection_spec: dict[str, A
     latest_patch_path = job_dir / "followup_ir_patch.json"
     _write_json(patch_path, patch)
     _write_json(latest_patch_path, patch)
-    question = str(patch.get("question") or "为什么图中被圈选的数据范围值得关注？").strip()
-    result = create_workflow_follow_up(job_id, question, source_delta=patch)
-    if result.get("follow_up_path"):
-        follow_up_payload = _read_json_if_exists(Path(str(result["follow_up_path"]))) or {}
-        follow_up_payload.update({"selection_patch_path": str(patch_path), "selection_spec": selection_spec})
-        _write_json(Path(str(result["follow_up_path"])), follow_up_payload)
-    _append_job_event(job_dir, create_event("selection_follow_up", "success", "图形刷选已编译为 follow-up IR patch 并生成追问回答。"))
-    return {**result, "selection_patch_path": str(patch_path), "selection_spec": selection_spec}
+    return patch, patch_path, latest_patch_path, artifacts
 
 
 def _refresh_workflow_artifact(job_id: str, action: str) -> None:
@@ -2800,6 +2859,7 @@ def _event_list(value: Any) -> list[dict[str, Any]]:
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
 
 
 

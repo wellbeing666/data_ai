@@ -35,6 +35,7 @@ import type {
   WorkflowAgentUpdateRequest,
   WorkflowControlResponse,
   WorkflowFollowUpResponse,
+  WorkflowSelectionQuestionResponse,
   WorkflowJobDeleteResponse,
   WorkflowJobListResponse,
   WorkflowJobResponse,
@@ -413,14 +414,27 @@ export async function createWorkflowFollowUp(
   return parseResponse<WorkflowFollowUpResponse>(response);
 }
 
-export async function createWorkflowSelectionFollowUp(
+export async function createWorkflowSelectionQuestion(
   jobId: string,
   selectionSpec: ChartSelectionSpec
+): Promise<WorkflowSelectionQuestionResponse> {
+  const response = await apiFetch(`/api/workflows/jobs/${jobId}/selection-question`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ selection_spec: selectionSpec })
+  });
+  return parseResponse<WorkflowSelectionQuestionResponse>(response);
+}
+
+export async function createWorkflowSelectionFollowUp(
+  jobId: string,
+  selectionSpec: ChartSelectionSpec,
+  question?: string
 ): Promise<WorkflowFollowUpResponse> {
   const response = await apiFetch(`/api/workflows/jobs/${jobId}/selection-follow-up`, {
     method: "POST",
     headers: jsonHeaders(),
-    body: JSON.stringify({ selection_spec: selectionSpec })
+    body: JSON.stringify({ selection_spec: selectionSpec, question: question?.trim() || undefined })
   });
   return parseResponse<WorkflowFollowUpResponse>(response);
 }
@@ -655,6 +669,7 @@ export function toStorageUrl(path: string): string {
   }
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
+
 
 
 

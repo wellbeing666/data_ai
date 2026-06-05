@@ -39,6 +39,7 @@ export type ArtifactKind =
   | "explanation"
   | "debate_reflection"
   | "quality_review"
+  | "consistency_report"
   | "generic";
 
 export interface AgentCardView extends StepView {
@@ -232,6 +233,16 @@ export function buildAgentCards(input: {
         artifactPath: input.job?.quality_review_path,
         artifactLabel: "quality_review.json",
         evidence: qualityReviewEvidence(input.qualityReview)
+      };
+    }
+    if (step.key === "cross_artifact_consistency") {
+      return {
+        ...card,
+        raw: input.qualityReview?.cross_artifact_consistency ?? null,
+        artifactKind: "consistency_report",
+        artifactPath: input.job?.sidecar_results?.consistency_report,
+        artifactLabel: "consistency_report.json",
+        evidence: consistencyEvidence(input.qualityReview)
       };
     }
     if (step.key === "explanation") {
@@ -477,6 +488,13 @@ export function cardBase(step: StepView, isPredictionWorkflow: boolean): Omit<Ag
       action: "检查结论是否有数据支撑，识别因果误写、样本量和不确定性风险。",
       evidence: [],
       artifactKind: "quality_review"
+    },
+    cross_artifact_consistency: {
+      agentName: "跨产物口径一致性 Agent",
+      inputSource: "解释文本、报告数据、PPT 大纲、Dashboard、图表标题和追问回答",
+      action: "扫描多产物之间的日期范围、指标口径、样本排除条件、单位和涨跌幅基准是否一致。",
+      evidence: [],
+      artifactKind: "consistency_report"
     }
   };
   return byKey[step.key] ?? {
@@ -598,6 +616,13 @@ export function buildAgentSteps(input: {
       stageNames: ["quality_review"],
       done: Boolean(input.qualityReview),
       summary: qualityReviewSummary(input.qualityReview)
+    },
+    {
+      key: "cross_artifact_consistency",
+      title: "跨产物口径一致性 Agent 正在复核",
+      stageNames: ["cross_artifact_consistency", "sidecar_postprocess"],
+      done: Boolean(input.qualityReview?.cross_artifact_consistency),
+      summary: consistencySummary(input.qualityReview)
     }
   ];
 
@@ -903,13 +928,40 @@ export function debateSummary(debate: DebateReflection | null): string {
 
 export function qualityReviewEvidence(review: QualityReview | null): string[] {
   if (!review) {
-    return ["等待质检 Agent 审查解释结论。"];
+    return ["等待质检 Agent 审查解释结论。"]; 
   }
-  return [
+  const evidence = [
     `质检结果：${review.passed ? "通过" : "存在风险"}`,
     `风险级别：${severityLabel(review.risk_level)}`,
     `问题数量：${review.issues?.length ?? 0}`
   ];
+  if (review.cross_artifact_consistency) {
+    evidence.push(`跨产物一致性：${review.cross_artifact_consistency.passed ? "通过" : severityLabel(review.cross_artifact_consistency.risk_level)}`);
+  }
+  return evidence;
+}
+
+export function consistencyEvidence(review: QualityReview | null): string[] {
+  const report = review?.cross_artifact_consistency;
+  if (!report) {
+    return ["等待后处理阶段扫描跨产物口径。"];
+  }
+  const checks = Array.isArray(report.checks) ? report.checks : [];
+  const issueCount = checks.filter((item) => String(item.status || "pass") !== "pass").length;
+  return [
+    `一致性结果：${report.passed ? "通过" : "需复核"}`,
+    `风险级别：${severityLabel(report.risk_level)}`,
+    `需关注检查项：${issueCount}`
+  ];
+}
+
+
+export function consistencySummary(review: QualityReview | null): string {
+  const report = review?.cross_artifact_consistency;
+  if (!report) {
+    return "等待 Sidecar 后处理生成 consistency_report.json。";
+  }
+  return report.summary || (report.passed ? "多产物口径一致性通过。" : "发现多产物口径不一致风险，建议查看 suggested_rewrites.json。");
 }
 
 export function qualityReviewSummary(review: QualityReview | null): string {
@@ -1461,6 +1513,7 @@ function lastItem<T>(items: T[] | undefined): T | undefined {
   }
   return items[items.length - 1];
 }
+
 
 
 

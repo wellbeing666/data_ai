@@ -2,12 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 
 import { toStorageUrl } from "../api";
+import { toVersionedStorageUrl } from "./workbench/charts/chartHelpers";
 import type {
   AnalysisRoadmap,
   AnalysisResult,
   DashboardConfig,
   DashboardWidget,
-  ChartSelectionSpec,
   DatasetDataMap,
   DatasetDataMapNode,
   DebateReflection,
@@ -573,7 +573,41 @@ export function QualityReviewPanel({ review }: { review: QualityReview | null })
       )}
       <ChipList title="安全表述建议" items={review.safe_language_suggestions ?? []} />
       <ChipList title="缺失证据" items={review.missing_evidence ?? []} tone="warning" />
+      <ConsistencyReportPanel review={review} />
     </section>
+  );
+}
+
+export function ConsistencyReportPanel({ review }: { review: QualityReview | null }) {
+  const report = review?.cross_artifact_consistency;
+  if (!report) {
+    return null;
+  }
+  const checks = Array.isArray(report.checks) ? report.checks : [];
+  const visibleChecks = checks.filter((check) => String(check.status || "pass") !== "pass").slice(0, 5);
+  const rewrites = (review?.suggested_rewrites ?? []).slice(0, 4).map((rewrite) => `${rewrite.artifact}.${rewrite.field}：${rewrite.suggested_text}`);
+  return (
+    <div className="consistency-panel">
+      <header>
+        <strong>跨产物口径一致性 Agent</strong>
+        <span className={report.passed ? "" : "warning"}>{report.passed ? "一致性通过" : `存在${severityLabel(report.risk_level)}风险`}</span>
+      </header>
+      <p className="agent-muted">{report.summary || "已扫描解释、报告数据、PPT 大纲、Dashboard、图表标题和追问回答等产物。"}</p>
+      {visibleChecks.length ? (
+        <div className="consistency-check-list">
+          {visibleChecks.map((check, index) => (
+            <article key={`${check.check_id}-${index}`}>
+              <strong>{severityLabel(String(check.severity || "low"))} · {check.topic}</strong>
+              <p>{check.finding}</p>
+              {check.suggested_action ? <small>{check.suggested_action}</small> : null}
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="agent-muted">未发现日期范围、指标口径、样本条件、单位或基准口径冲突。</p>
+      )}
+      <ChipList title="建议改写" items={rewrites} tone="warning" />
+    </div>
   );
 }
 
@@ -1400,6 +1434,9 @@ export function ArtifactSummary({ card }: { card: AgentCardView }) {
   if (card.artifactKind === "quality_review") {
     return <QualityReviewArtifactSummary value={card.raw as QualityReview} />;
   }
+  if (card.artifactKind === "consistency_report") {
+    return <GenericArtifactSummary value={card.raw} title="跨产物一致性报告" />;
+  }
   return <GenericArtifactSummary value={card.raw} />;
 }
 
@@ -1627,6 +1664,7 @@ export function QualityReviewArtifactSummary({ value }: { value: QualityReview }
       <SummaryParagraph label="修正版摘要" text={value.revised_summary || "质检 Agent 未生成修正版摘要。"} />
       <ChipList title="安全表述建议" items={value.safe_language_suggestions ?? []} />
       <ChipList title="缺失证据" items={value.missing_evidence ?? []} tone="warning" />
+      <ConsistencyReportPanel review={value} />
     </div>
   );
 }
@@ -1736,112 +1774,6 @@ export function DataSourceNotice({ job }: { job: WorkflowJobResponse | null }) {
     </div>
   );
 }
-
-export function ChartsPage({
-  analysisResult,
-  chartPaths,
-  job,
-  predictionResult,
-  isPredictionWorkflow,
-  message,
-  refineInstructions,
-  chartSuggestions,
-  refiningChartPath,
-  chartRefreshToken,
-  onRefineInstructionChange,
-  onRefineChart,
-  onQuickRefineChart,
-  onOpenChart,
-  onDeleteChart,
-  onBrushSelection
-}: {
-  analysisResult: AnalysisResult | null;
-  chartPaths: string[];
-  job: WorkflowJobResponse | null;
-  predictionResult: PredictionResult | null;
-  isPredictionWorkflow: boolean;
-  message: string;
-  refineInstructions: Record<string, string>;
-  chartSuggestions: Record<string, string[]>;
-  refiningChartPath: string | null;
-  chartRefreshToken: number;
-  onRefineInstructionChange: (chartPath: string, value: string) => void;
-  onRefineChart: (chartPath: string) => void;
-  onQuickRefineChart: (chartPath: string, instruction: string) => void;
-  onOpenChart: (chartPath: string) => void;
-  onDeleteChart: (chartPath: string) => void;
-  onBrushSelection?: (chartPath: string, selectionSpec: ChartSelectionSpec) => void;
-}) {
-  const resultChartCount = Array.isArray(analysisResult?.charts) ? analysisResult.charts.length : 0;
-  const noChartReason = chartPaths.length ? "" : buildNoChartReason(isPredictionWorkflow, predictionResult, analysisResult);
-  return (
-    <section className="page-section">
-      <div className="section-heading">
-        <h2>最终图表</h2>
-        <span>{chartPaths.length || resultChartCount} 个图表</span>
-      </div>
-      <DataSourceNotice job={job} />
-      {message ? <p className="chart-message">{message}</p> : null}
-      {chartPaths.length ? (
-        <div className="chart-grid">
-          {chartPaths.map((chartPath, index) => {
-            const suggestions = chartSuggestions[chartPath]?.length
-              ? chartSuggestions[chartPath]
-              : buildChartRefineSuggestions(chartPath, isPredictionWorkflow, analysisResult, predictionResult, job);
-            return (
-              <figure className="chart-card" key={chartPath}>
-                <ChartFigure
-                  chartPath={chartPath}
-                  index={index}
-                  chartRefreshToken={chartRefreshToken}
-                  onOpenChart={onOpenChart}
-                  onDeleteChart={onDeleteChart}
-                  onBrushSelection={onBrushSelection}
-                />
-                <div className="chart-refine-panel">
-                  <label htmlFor={`chart-refine-${index}`}>针对这张图输入修改要求</label>
-                  <textarea
-                    id={`chart-refine-${index}`}
-                    rows={3}
-                    value={refineInstructions[chartPath] ?? ""}
-                    placeholder="例如：改成折线图，只保留华东地区，并把标题改成月度销量趋势"
-                    onChange={(event) => onRefineInstructionChange(chartPath, event.target.value)}
-                  />
-                  <div className="chart-suggestion-row" aria-label="智能推荐的图表修改选项">
-                    {suggestions.map((suggestion) => (
-                      <button
-                        key={suggestion}
-                        type="button"
-                        disabled={!job?.job_id || refiningChartPath === chartPath}
-                        onClick={() => onQuickRefineChart(chartPath, suggestion)}
-                      >
-                        {suggestion}
-                      </button>
-                    ))}
-                  </div>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={!job?.job_id || refiningChartPath === chartPath}
-                    onClick={() => onRefineChart(chartPath)}
-                  >
-                    {refiningChartPath === chartPath ? "重新渲染中" : "按要求重新渲染"}
-                  </button>
-                </div>
-              </figure>
-            );
-          })}
-        </div>
-      ) : (
-        <EmptyState
-          title={noChartReason ? "本次无需图表" : "暂无图表"}
-          text={noChartReason || "分析脚本完成并通过验证后，图表会自动出现在这里。"}
-        />
-      )}
-    </section>
-  );
-}
-
 
 export function DashboardPage({
   dashboard,
@@ -2392,377 +2324,6 @@ function dataMapNodeTypeLabel(type: string): string {
   return labels[type] ?? type;
 }
 
-
-function ChartFigure({
-  chartPath,
-  index,
-  chartRefreshToken,
-  onOpenChart,
-  onDeleteChart,
-  onBrushSelection
-}: {
-  chartPath: string;
-  index: number;
-  chartRefreshToken: number;
-  onOpenChart: (chartPath: string) => void;
-  onDeleteChart: (chartPath: string) => void;
-  onBrushSelection?: (chartPath: string, selectionSpec: ChartSelectionSpec) => void;
-}) {
-  const [imageFailed, setImageFailed] = useState(false);
-  const [brushMode, setBrushMode] = useState(false);
-  const [brushDraft, setBrushDraft] = useState<{
-    startX: number;
-    startY: number;
-    currentX: number;
-    currentY: number;
-    width: number;
-    height: number;
-  } | null>(null);
-  const imageButtonRef = useRef<HTMLButtonElement | null>(null);
-  const imageUrl = toVersionedStorageUrl(chartPath, chartRefreshToken);
-
-  useEffect(() => {
-    setImageFailed(false);
-    setBrushDraft(null);
-  }, [imageUrl]);
-
-  const readLocalPoint = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const rect = imageButtonRef.current?.getBoundingClientRect();
-    if (!rect) {
-      return null;
-    }
-    return {
-      x: Math.min(Math.max(event.clientX - rect.left, 0), rect.width),
-      y: Math.min(Math.max(event.clientY - rect.top, 0), rect.height),
-      width: rect.width,
-      height: rect.height
-    };
-  };
-
-  const handlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!brushMode || !onBrushSelection || imageFailed || event.button !== 0) {
-      return;
-    }
-    const point = readLocalPoint(event);
-    if (!point) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setBrushDraft({ startX: point.x, startY: point.y, currentX: point.x, currentY: point.y, width: point.width, height: point.height });
-  };
-
-  const handlePointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!brushMode || !brushDraft) {
-      return;
-    }
-    const point = readLocalPoint(event);
-    if (!point) {
-      return;
-    }
-    event.preventDefault();
-    setBrushDraft((current) => current ? { ...current, currentX: point.x, currentY: point.y, width: point.width, height: point.height } : current);
-  };
-
-  const handlePointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!brushMode || !brushDraft || !onBrushSelection) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    const x0 = Math.min(brushDraft.startX, brushDraft.currentX);
-    const x1 = Math.max(brushDraft.startX, brushDraft.currentX);
-    const y0 = Math.min(brushDraft.startY, brushDraft.currentY);
-    const y1 = Math.max(brushDraft.startY, brushDraft.currentY);
-    const width = Math.max(1, brushDraft.width);
-    const height = Math.max(1, brushDraft.height);
-    const selectedWidth = x1 - x0;
-    const selectedHeight = y1 - y0;
-    setBrushDraft(null);
-    if (selectedWidth < 14 || selectedHeight < 14) {
-      return;
-    }
-    onBrushSelection(chartPath, {
-      chart_path: chartPath,
-      chart_title: chartTitle(chartPath, index),
-      x0,
-      y0,
-      x1,
-      y1,
-      width: selectedWidth,
-      height: selectedHeight,
-      image_width: width,
-      image_height: height,
-      ratio_x0: x0 / width,
-      ratio_y0: y0 / height,
-      ratio_x1: x1 / width,
-      ratio_y1: y1 / height,
-      source: "chart_brush"
-    });
-  };
-
-  const brushRect = brushDraft ? {
-    left: Math.min(brushDraft.startX, brushDraft.currentX),
-    top: Math.min(brushDraft.startY, brushDraft.currentY),
-    width: Math.abs(brushDraft.currentX - brushDraft.startX),
-    height: Math.abs(brushDraft.currentY - brushDraft.startY)
-  } : null;
-
-  return (
-    <>
-      <button
-        ref={imageButtonRef}
-        className={`chart-image-button ${brushMode ? "brush-active" : ""}`}
-        type="button"
-        onClick={() => {
-          if (!brushMode) {
-            onOpenChart(chartPath);
-          }
-        }}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={() => setBrushDraft(null)}
-        aria-label={brushMode ? `拖拽圈选${chartTitle(chartPath, index)}中的区域生成追问` : `放大查看${chartTitle(chartPath, index)}`}
-      >
-        {imageFailed ? (
-          <span className="chart-image-fallback">图表暂时无法预览，可下载 PNG 或刷新任务状态。</span>
-        ) : (
-          <img
-            alt={`分析图表 ${index + 1}`}
-            src={imageUrl}
-            draggable={false}
-            onError={() => setImageFailed(true)}
-          />
-        )}
-        {brushMode ? <span className="chart-brush-hint">拖拽圈选区域，松开后自动生成追问</span> : null}
-        {brushRect ? (
-          <span
-            className="chart-brush-rect"
-            style={{ left: brushRect.left, top: brushRect.top, width: brushRect.width, height: brushRect.height }}
-          />
-        ) : null}
-      </button>
-      <figcaption>{chartTitle(chartPath, index)}</figcaption>
-      <div className="chart-actions chart-tools">
-        <a href={toStorageUrl(chartPath)} download>下载 PNG</a>
-        <button type="button" onClick={() => onOpenChart(chartPath)}>放大查看</button>
-        <button
-          className={`chart-brush-button ${brushMode ? "active" : ""}`}
-          type="button"
-          disabled={!onBrushSelection}
-          onClick={() => setBrushMode((current) => !current)}
-        >
-          {brushMode ? "退出刷选" : "刷选提问"}
-        </button>
-        <button className="danger-button" type="button" onClick={() => onDeleteChart(chartPath)}>删除</button>
-      </div>
-    </>
-  );
-}
-
-function buildChartRefineSuggestions(
-  chartPath: string,
-  isPredictionWorkflow: boolean,
-  analysisResult?: AnalysisResult | null,
-  predictionResult?: PredictionResult | null,
-  job?: WorkflowJobResponse | null
-): string[] {
-  const chartType = inferChartType(chartPath);
-  const field = friendlyFieldName(extractChartField(chartPath));
-  const target = friendlyFieldName(inferTargetMetric(analysisResult, predictionResult));
-  const goal = (job?.user_goal || "本轮分析目标").slice(0, 24);
-
-  if (isPredictionWorkflow) {
-    return [
-      `改为${target}的基准值与预测值并列柱状图，并按预测变化绝对值从高到低排序。`,
-      `只展示${target}变化最大的前 5 个对象，并在柱尾标注变化量和变化率。`,
-      "把预测提升和预测下降分开表达，并在标题中写清当前情景假设。",
-      "增加模型限制说明到图表副标题，提示预测结果不是确定因果。"
-    ];
-  }
-
-  if (chartType === "heatmap") {
-    return [
-      `只展示与${target}相关性最高的前 10 个字段，并按相关系数绝对值排序。`,
-      "将热力图色阶固定为 -1 到 1，并放大字段标签，便于比较强弱关系。",
-      "隐藏 Id 等标识类字段，只保留面积、质量、年份和配套等可解释变量。",
-      `改为${target}相关系数横向柱状图，突出正相关和负相关最明显的变量。`
-    ];
-  }
-
-  if (chartType === "scatter") {
-    const discreteField = ["整体质量（OverallQual）", "车库容量（GarageCars）", "全卫数量（FullBath）", "地上房间数（TotRmsAbvGrd）"].includes(field);
-    return [
-      `保留${field}与${target}散点关系，增加线性趋势线、相关系数和样本量标注。`,
-      `剔除${field}或${target}的极端离群点后重绘，并在标题中说明过滤口径。`,
-      discreteField
-        ? `改为箱线图，比较不同${field}等级下${target}的中位数、分位数和异常点。`
-        : `改为分箱柱状图，将${field}按区间分组后展示${target}均值和中位数。`,
-      `按社区/区域分组着色，只保留样本量最高的前 5 组，减少视觉干扰。`
-    ];
-  }
-
-  if (chartType === "line") {
-    return [
-      `保留时间顺序并增加${target}趋势线，同时标注最高点和最低点。`,
-      "改为按关键分组拆分的多折线图，只保留样本量最高的前 5 组。",
-      `增加环比变化标签，突出${target}波动最大的区间。`,
-      "优化标题和横轴刻度密度，使趋势图更适合汇报展示。"
-    ];
-  }
-
-  if (chartType === "bar" || chartType === "barh") {
-    const dimension = field === "目标指标" ? "当前分组" : field;
-    return [
-      `按${target}均值从高到低重排${dimension}，并只保留前 10 组。`,
-      `增加${target}中位数或样本量标签，避免只看均值造成误判。`,
-      `改为横向柱状图展示${dimension}差异，长标签保持完整可读。`,
-      `突出最高和最低的${dimension}，并在标题中说明对比口径。`
-    ];
-  }
-
-  return [
-    `围绕${target}重绘图表，明确维度、指标和排序口径。`,
-    `只保留与“${goal}”最相关的前 8 个分组。`,
-    "增加样本量、均值或中位数标签，让图表结论更可核对。",
-    "优化标题、副标题和坐标轴单位，使图表可以直接放入报告。"
-  ];
-}
-
-function inferChartType(chartPath: string): "heatmap" | "scatter" | "line" | "bar" | "barh" | "chart" {
-  const lower = chartPath.toLowerCase();
-  if (lower.includes("heatmap") || lower.includes("corr")) {
-    return "heatmap";
-  }
-  if (lower.includes("scatter")) {
-    return "scatter";
-  }
-  if (lower.includes("line") || lower.includes("trend") || lower.includes("monthly") || chartPath.includes("月")) {
-    return "line";
-  }
-  if (lower.includes("barh")) {
-    return "barh";
-  }
-  if (lower.includes("bar") || lower.includes("top") || lower.includes("rank")) {
-    return "bar";
-  }
-  return "chart";
-}
-
-function extractChartField(chartPath: string): string {
-  const filename = chartPath.replace(/\\/g, "/").split("/").pop() || "";
-  const stem = filename.replace(/\.[^.]+$/, "");
-  const scatterMatch = stem.match(/scatter[_-]([^._-]+)/i);
-  if (scatterMatch?.[1]) {
-    return scatterMatch[1];
-  }
-  const pieces = stem.split(/[_-]+/).filter(Boolean);
-  const ignored = new Set(["chart", "plot", "heatmap", "correlation", "refined"]);
-  for (let index = pieces.length - 1; index >= 0; index -= 1) {
-    const piece = pieces[index];
-    if (!ignored.has(piece.toLowerCase())) {
-      return piece;
-    }
-  }
-  return "";
-}
-
-function inferTargetMetric(analysisResult?: AnalysisResult | null, predictionResult?: PredictionResult | null): string {
-  if (predictionResult?.target_metric) {
-    return predictionResult.target_metric;
-  }
-  const candidateKeys = ["target_metric", "target_column", "metric"];
-  for (const key of candidateKeys) {
-    const value = analysisResult?.[key];
-    if (typeof value === "string" && value.trim()) {
-      return value;
-    }
-  }
-  const text = JSON.stringify(analysisResult || {});
-  if (text.includes("SalePrice")) {
-    return "SalePrice";
-  }
-  if (text.includes("销量")) {
-    return "销量";
-  }
-  if (text.includes("销售额")) {
-    return "销售额";
-  }
-  if (text.includes("成绩")) {
-    return "成绩";
-  }
-  return "目标指标";
-}
-
-function friendlyFieldName(value: string): string {
-  const text = (value || "").trim();
-  const normalized = text.toLowerCase().replace(/[^0-9a-z\u4e00-\u9fff]/g, "");
-  const labels: Record<string, string> = {
-    saleprice: "房价（SalePrice）",
-    overallqual: "整体质量（OverallQual）",
-    grlivarea: "地上居住面积（GrLivArea）",
-    totalbsmtsf: "地下室总面积（TotalBsmtSF）",
-    "1stflrsf": "一层面积（1stFlrSF）",
-    garagecars: "车库容量（GarageCars）",
-    garagearea: "车库面积（GarageArea）",
-    neighborhood: "社区/区域（Neighborhood）",
-    mszoning: "住宅分区（MSZoning）",
-    yearbuilt: "建造年份（YearBuilt）",
-    fullbath: "全卫数量（FullBath）",
-    totrmsabvgrd: "地上房间数（TotRmsAbvGrd）"
-  };
-  return labels[normalized] || text || "目标指标";
-}
-
-export function ChartPreviewModal({
-  chartPath,
-  chartRefreshToken,
-  onClose,
-  onDelete
-}: {
-  chartPath: string;
-  chartRefreshToken: number;
-  onClose: () => void;
-  onDelete: () => void;
-}) {
-  const [scale, setScale] = useState(1);
-  const changeScale = (delta: number) => {
-    setScale((current) => Math.min(2.4, Math.max(0.6, Math.round((current + delta) * 10) / 10)));
-  };
-  return (
-    <div className="chart-modal-backdrop" role="dialog" aria-modal="true" aria-label="图表预览">
-      <div className="chart-modal">
-        <div className="chart-modal-head">
-          <strong>{chartTitle(chartPath, 0)}</strong>
-          <div className="chart-modal-actions">
-            <button type="button" onClick={() => changeScale(0.2)}>放大</button>
-            <button type="button" onClick={() => changeScale(-0.2)}>缩小</button>
-            <a href={toStorageUrl(chartPath)} download>下载 PNG</a>
-            <button className="danger-button" type="button" onClick={onDelete}>删除</button>
-            <button type="button" onClick={onClose}>关闭</button>
-          </div>
-        </div>
-        <div className="chart-modal-body">
-          <img
-            alt="放大图表"
-            src={toVersionedStorageUrl(chartPath, chartRefreshToken)}
-            style={{ transform: `scale(${scale})` }}
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function toVersionedStorageUrl(path: string, token: number): string {
-  const url = toStorageUrl(path);
-  if (!token) {
-    return url;
-  }
-  return `${url}${url.includes("?") ? "&" : "?"}v=${token}`;
-}
 
 export function InsightsPage({
   explanation,
@@ -3623,6 +3184,7 @@ export function EmptyState({ title, text, compact = false }: { title: string; te
     </div>
   );
 }
+
 
 
 

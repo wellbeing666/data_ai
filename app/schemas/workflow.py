@@ -60,6 +60,17 @@ class WorkflowFollowUpRequest(BaseModel):
 
 class WorkflowSelectionFollowUpRequest(BaseModel):
     selection_spec: dict[str, Any] = Field(default_factory=dict)
+    question: str | None = Field(default=None, max_length=2000)
+
+
+class WorkflowSelectionQuestionResponse(BaseModel):
+    job_id: str
+    question: str
+    selection_patch_path: str | None = None
+    latest_patch_path: str | None = None
+    used_artifacts: list[str] = Field(default_factory=list)
+    source_delta: dict[str, Any] = Field(default_factory=dict)
+    selection_spec: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowFollowUpResponse(BaseModel):
@@ -274,6 +285,7 @@ class WorkflowLogResponse(BaseModel):
     max_retries: int = 0
     artifacts: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list)
+
 
 
 

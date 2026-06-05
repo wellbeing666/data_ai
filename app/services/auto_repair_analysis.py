@@ -867,7 +867,13 @@ def run_auto_repair_analysis_job(
             "质检 Agent 已完成结论审查。",
         ))
 
-        events.append(create_event("sidecar_postprocess", "running", "后处理 Sidecar Agent 正在生成异常扫描、显著性建议、追问推荐和 Dashboard 配置。"))
+        report_result = generate_markdown_report(final_result_path, chart_paths, include_pptx=True)
+        report_path = report_result.get("report_path")
+        pptx_path = report_result.get("pptx_path")
+        pptx_preview_path = report_result.get("pptx_preview_path")
+        events.append(create_event("report", "success", "报告和 PPTX 已生成。"))
+
+        events.append(create_event("sidecar_postprocess", "running", "后处理 Sidecar Agent 正在生成异常扫描、显著性建议、追问推荐、Dashboard 配置和跨产物口径复核。"))
         _write_progress(
             job_dir=job_dir,
             job_id=job_id,
@@ -907,6 +913,9 @@ def run_auto_repair_analysis_job(
                 debate_reflection=debate_reflection,
                 workflow_type="auto_repair",
             )
+            if sidecar_results.get("consistency_report"):
+                _merge_consistency_into_quality_review(job_dir, quality_review_path, sidecar_results)
+                events.append(create_event("cross_artifact_consistency", "success", "跨产物口径一致性 Agent 已完成多产物口径复核。"))
             events.append(create_event("sidecar_postprocess", "success", "后处理 Sidecar Agent 已生成可插拔附件。"))
         except Exception as exc:  # pragma: no cover - optional sidecar must not fail the trunk
             sidecar_error_path = job_dir / "sidecar_error.json"
@@ -919,12 +928,6 @@ def run_auto_repair_analysis_job(
             )
             sidecar_results = {"sidecar_error": str(sidecar_error_path)}
             events.append(create_event("sidecar_postprocess", "warning", "后处理 Sidecar 未完全生成，主链继续输出报告。"))
-
-        report_result = generate_markdown_report(final_result_path, chart_paths, include_pptx=True)
-        report_path = report_result.get("report_path")
-        pptx_path = report_result.get("pptx_path")
-        pptx_preview_path = report_result.get("pptx_preview_path")
-        events.append(create_event("report", "success", "报告和 PPTX 已生成。"))
 
     events.append(
         create_event(
@@ -1220,6 +1223,63 @@ def _build_progress_execution_log(status_data: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def _merge_consistency_into_quality_review(job_dir: Path, quality_review_path: str | None, sidecar_results: dict[str, str]) -> None:
+    if not quality_review_path:
+        return
+    quality_path = Path(quality_review_path)
+    if not quality_path.is_absolute():
+        quality_path = job_dir / quality_path
+    quality = _read_json_if_exists(quality_path)
+    if not isinstance(quality, dict):
+        return
+    consistency_path = Path(str(sidecar_results.get("consistency_report") or ""))
+    rewrites_path = Path(str(sidecar_results.get("suggested_rewrites") or ""))
+    consistency = _read_json_if_exists(consistency_path) if consistency_path.exists() else None
+    rewrites_payload = _read_json_if_exists(rewrites_path) if rewrites_path.exists() else None
+    if not isinstance(consistency, dict):
+        return
+    suggested_rewrites = []
+    if isinstance(rewrites_payload, dict):
+        raw_rewrites = rewrites_payload.get("suggested_rewrites")
+        if isinstance(raw_rewrites, list):
+            suggested_rewrites = raw_rewrites
+    quality["cross_artifact_consistency"] = consistency
+    quality["suggested_rewrites"] = suggested_rewrites
+    checks = consistency.get("checks") if isinstance(consistency.get("checks"), list) else []
+    issue_count = len([item for item in checks if isinstance(item, dict) and str(item.get("status") or "pass") != "pass"])
+    quality.setdefault("checked_items", [])
+    if isinstance(quality["checked_items"], list):
+        quality["checked_items"].append(
+            {
+                "name": "跨产物口径一致性",
+                "status": "pass" if consistency.get("passed") else "warning",
+                "detail": consistency.get("summary") or f"发现 {issue_count} 个需复核点。",
+            }
+        )
+    if not consistency.get("passed"):
+        quality.setdefault("issues", [])
+        if isinstance(quality["issues"], list):
+            quality["issues"].append(
+                {
+                    "issue_type": "cross_artifact_consistency",
+                    "severity": str(consistency.get("risk_level") or "medium"),
+                    "finding": consistency.get("summary") or "多产物之间存在口径不一致风险。",
+                    "evidence": f"consistency_report.json 检查项：{issue_count}",
+                    "suggestion": "查看 suggested_rewrites.json，并统一报告、PPT、Dashboard 与追问回答中的日期、指标和样本口径。",
+                }
+            )
+        quality["risk_level"] = _max_risk_level(str(quality.get("risk_level") or "low"), str(consistency.get("risk_level") or "medium"))
+        quality["passed"] = False if quality["risk_level"] == "high" else bool(quality.get("passed", True)) and bool(consistency.get("passed"))
+    _write_json(quality_path, quality)
+
+
+def _max_risk_level(left: str, right: str) -> str:
+    order = {"low": 0, "medium": 1, "high": 2}
+    left_value = left if left in order else "low"
+    right_value = right if right in order else "low"
+    return left_value if order[left_value] >= order[right_value] else right_value
+
+
 def _normalize_sidecar_results(value: Any, job_dir: Path) -> dict[str, str]:
     result: dict[str, str] = {}
     if isinstance(value, dict):
@@ -1358,6 +1418,7 @@ def _build_static_safety_failure_result(
             "safety_issues": issues,
         },
     }
+
 
 
 
