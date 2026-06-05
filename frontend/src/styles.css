@@ -2835,3 +2835,283 @@ tr:last-child td {
     width: min(280px, calc(100vw - 84px));
   }
 }
+
+
+.auth-page,
+.settings-page {
+  min-height: 100vh;
+  background: radial-gradient(circle at top left, rgba(20, 184, 166, 0.14), transparent 34%), #eef2f6;
+  padding: 32px;
+}
+
+.auth-page {
+  display: grid;
+  place-items: center;
+}
+
+.auth-card,
+.settings-card {
+  width: min(100%, 520px);
+  border: 1px solid #d7dee8;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.12);
+  padding: 28px;
+}
+
+.auth-card.compact {
+  text-align: center;
+}
+
+.auth-card h1 {
+  margin-bottom: 12px;
+}
+
+.auth-card p,
+.settings-card p {
+  color: #64748b;
+  line-height: 1.7;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 8px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.auth-form input,
+.auth-form textarea,
+.admin-toolbar input,
+.admin-toolbar select {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #111827;
+  outline: none;
+  padding: 11px 12px;
+}
+
+.auth-form input:focus,
+.auth-form textarea:focus,
+.admin-toolbar input:focus,
+.admin-toolbar select:focus {
+  border-color: #0f766e;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+}
+
+.auth-message {
+  margin: 14px 0 0;
+  border: 1px solid #ccfbf1;
+  border-radius: 10px;
+  background: #f0fdfa;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.6;
+  padding: 10px 12px;
+}
+
+.link-button {
+  margin-top: 16px;
+  cursor: pointer;
+  background: transparent;
+  color: #0f766e;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.app-shell {
+  min-height: 100vh;
+  background: #eef2f6;
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid #dbe3ee;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(14px);
+  padding: 14px 28px;
+}
+
+.app-header h1 {
+  font-size: 22px;
+}
+
+.app-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.app-nav button,
+.admin-actions button {
+  min-height: 34px;
+  cursor: pointer;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 900;
+  padding: 0 12px;
+}
+
+.app-nav button.active,
+.app-nav button:hover,
+.admin-actions button:hover {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: #ffffff;
+}
+
+.user-badge {
+  border: 1px solid #ccfbf1;
+  border-radius: 999px;
+  background: #f0fdfa;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 900;
+  padding: 8px 12px;
+}
+
+.settings-page {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+}
+
+.settings-card {
+  width: min(1120px, 100%);
+  margin: 0 auto;
+}
+
+.settings-card.two-column {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.account-kv {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 18px 0 0;
+}
+
+.account-kv div {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 12px;
+}
+
+.account-kv dt {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.account-kv dd {
+  margin: 6px 0 0;
+  color: #111827;
+  font-weight: 900;
+}
+
+.admin-toolbar {
+  display: grid;
+  grid-template-columns: minmax(140px, 180px) minmax(200px, 1fr) minmax(110px, 140px);
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.admin-toolbar .primary-button {
+  margin-top: 0;
+}
+
+.admin-user-table-wrap {
+  overflow-x: auto;
+}
+
+.admin-user-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.admin-user-table th,
+.admin-user-table td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 12px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.admin-user-table th {
+  color: #475569;
+  font-weight: 900;
+}
+
+.admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.insight-mode-button {
+  width: 100%;
+  min-height: 42px;
+  margin-top: 10px;
+  cursor: pointer;
+  border: 1px solid #99f6e4;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #ecfdf5, #f0fdfa);
+  color: #0f766e;
+  font-weight: 900;
+}
+
+.insight-mode-button:hover:not(:disabled) {
+  border-color: #0f766e;
+  background: #ccfbf1;
+}
+
+.insight-mode-button:disabled {
+  cursor: not-allowed;
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+  color: #94a3b8;
+}
+
+@media (max-width: 900px) {
+  .app-header,
+  .app-nav {
+    align-items: flex-start;
+    justify-content: flex-start;
+  }
+
+  .app-header,
+  .settings-card.two-column,
+  .admin-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .app-header {
+    display: grid;
+  }
+}

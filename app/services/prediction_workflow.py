@@ -33,6 +33,7 @@ def create_prediction_job_record(
     user_goal: str,
     max_retries: int = 3,
     timeout_seconds: int = 90,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
     effective_max_retries = _validate_max_retries(max_retries)
     job_id = uuid4().hex
@@ -50,6 +51,7 @@ def create_prediction_job_record(
         events=events,
         max_retries=effective_max_retries,
         timeout_seconds=timeout_seconds,
+        owner_user_id=owner_user_id,
     )
 
 
@@ -59,6 +61,7 @@ def run_prediction_job_background(
     user_goal: str,
     max_retries: int = 3,
     timeout_seconds: int = 90,
+    owner_user_id: str | None = None,
 ) -> None:
     try:
         run_prediction_job(
@@ -67,6 +70,7 @@ def run_prediction_job_background(
             max_retries=max_retries,
             timeout_seconds=timeout_seconds,
             job_id=job_id,
+            owner_user_id=owner_user_id,
         )
     except JobCancelled:
         job_dir = (JOB_ROOT / job_id).resolve()
@@ -84,6 +88,7 @@ def run_prediction_job_background(
             events=events,
             max_retries=min(max_retries, MAX_RETRIES),
             timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
         )
     except Exception as exc:  # pragma: no cover
         job_dir = (JOB_ROOT / job_id).resolve()
@@ -106,6 +111,7 @@ def run_prediction_job_background(
                 "message": str(exc),
                 "traceback": traceback.format_exc(limit=8),
             },
+            owner_user_id=owner_user_id,
         )
 
 
@@ -129,12 +135,15 @@ def run_prediction_job(
     max_retries: int = 3,
     timeout_seconds: int = 90,
     job_id: str | None = None,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
     effective_max_retries = _validate_max_retries(max_retries)
     job_id = job_id or uuid4().hex
     job_dir = (JOB_ROOT / job_id).resolve()
     job_dir.mkdir(parents=True, exist_ok=bool(job_id))
-    events = _event_list((_read_json_if_exists(job_dir / "prediction_task_status.json") or {}).get("events"))
+    current_status = _read_json_if_exists(job_dir / "prediction_task_status.json") or {}
+    owner_user_id = owner_user_id or str(current_status.get("owner_user_id") or "") or _owner_from_existing(job_dir)
+    events = _event_list(current_status.get("events"))
     if not events:
         events.append(create_event("queued", "pending", "情景预测任务已创建。"))
 
@@ -171,6 +180,7 @@ def run_prediction_job(
             events=events,
             max_retries=effective_max_retries,
             timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
             final_prediction_result_path=final_prediction_result_path,
             final_report_data_path=final_report_data_path,
             final_validation_result_path=final_validation_result_path,
@@ -307,6 +317,7 @@ def run_prediction_job(
             events=events,
             max_retries=effective_max_retries,
             timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
             dataset_profile_path=str(job_dir / "dataset_profile.json"),
             rag_retrieval_path=str(job_dir / "rag_retrieval.json"),
             hypothesis_plan_path=str(job_dir / "hypothesis_plan.json"),
@@ -421,6 +432,7 @@ def run_prediction_job(
             events=events,
             max_retries=effective_max_retries,
             timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
             final_prediction_result_path=final_prediction_result_path,
             final_report_data_path=final_report_data_path,
             final_validation_result_path=final_validation_result_path,
@@ -468,6 +480,7 @@ def run_prediction_job(
         events=events,
         max_retries=effective_max_retries,
         timeout_seconds=timeout_seconds,
+        owner_user_id=owner_user_id,
         final_prediction_result_path=final_prediction_result_path,
         final_report_data_path=final_report_data_path,
         final_validation_result_path=final_validation_result_path,
@@ -512,10 +525,13 @@ def _write_progress(
     hypothesis_plan_path: str | None = None,
     prediction_plan_path: str | None = None,
     error: dict[str, Any] | None = None,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
+    owner_user_id = owner_user_id or _owner_from_existing(job_dir)
     status_data = {
         "job_id": job_id,
         "dataset_id": dataset_id,
+        "owner_user_id": owner_user_id,
         "user_goal": user_goal,
         "status": status_value,
         "current_stage": current_stage,
@@ -563,6 +579,7 @@ def _build_execution_log(status_data: dict[str, Any]) -> dict[str, Any]:
     return {
         "job_id": str(status_data.get("job_id") or ""),
         "dataset_id": status_data.get("dataset_id"),
+        "owner_user_id": status_data.get("owner_user_id"),
         "status": str(status_data.get("status") or "pending"),
         "workflow_type": "what_if_prediction",
         "user_goal": str(status_data.get("user_goal") or ""),
@@ -633,6 +650,14 @@ def _normalize_status_payload(data: dict[str, Any]) -> dict[str, Any]:
         "events": _event_list(data.get("events")),
         "error": data.get("error") if isinstance(data.get("error"), dict) else None,
     }
+
+
+def _owner_from_existing(job_dir: Path) -> str | None:
+    for filename in ("workflow_task_status.json", "prediction_task_status.json", "task_status.json"):
+        data = _read_json_if_exists(job_dir / filename)
+        if data and data.get("owner_user_id"):
+            return str(data.get("owner_user_id"))
+    return None
 
 
 def _clear_attempt_outputs(job_dir: Path) -> None:
@@ -728,6 +753,7 @@ def _existing_or_none(value: Any, fallback_path: Path) -> str | None:
     if isinstance(value, str) and value:
         return value
     return str(fallback_path) if fallback_path.exists() else None
+
 
 
 

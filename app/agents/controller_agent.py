@@ -10,6 +10,7 @@ ALLOWED_TASK_TYPES = {
     "sales_decline_analysis",
     "general_data_analysis",
     "what_if_prediction",
+    "insight_mining",
 }
 
 PLAN_KEYS = [
@@ -43,6 +44,7 @@ You must classify the task_type as exactly one of:
 - sales_decline_analysis
 - general_data_analysis
 - what_if_prediction
+- insight_mining
 
 Return only one valid JSON object. Do not output markdown, code fences, comments, or extra explanation.
 The JSON object must contain exactly these keys:
@@ -62,7 +64,8 @@ Guidance:
 - Choose grade_analysis for score, exam, student, class, pass rate, excellent rate, or grade summary goals.
 - Choose sales_decline_analysis for revenue, sales, GMV, order, conversion, customer, region, category, or time trend decline goals.
 - Choose what_if_prediction for hypothetical, forecast, prediction, simulation, what-if, intervention, budget/weight adjustment, increase/decrease impact, or possible change goals.
-- Choose general_data_analysis when the goal does not clearly match the two specialized task types.
+- Choose insight_mining when the user explicitly asks for automatic insight discovery, no-goal analysis, autonomous scanning, potential pattern mining, or “智能洞察”.
+- Choose general_data_analysis when the goal does not clearly match the specialized task types.
 - Use only columns that appear in the dataset profile when filling required_columns and charts.
 - Do not propose proxy substitution for an absent intervention variable. For example, do not replace a floor-level question with HouseStyle, and do not replace a subway/metro-station question with neighborhood or road-condition fields unless a direct transit-distance/station field exists.
 - All user-facing text in task_name, reasoning_summary, steps, analysis_methods, charts, expected_artifacts, and risks must be Simplified Chinese.
@@ -213,6 +216,8 @@ def _clean_controller_text(value: Any, user_goal: str) -> str:
 
 
 def _default_task_name(task_type: str, user_goal: str) -> str:
+    if task_type == "insight_mining":
+        return "智能洞察挖掘"
     if task_type == "what_if_prediction":
         if "楼层" in user_goal:
             return "楼层调整对房价影响预测"
@@ -233,11 +238,16 @@ def _default_task_name(task_type: str, user_goal: str) -> str:
 
 
 def _default_reasoning_summary(task_type: str, user_goal: str) -> str:
+    if task_type == "insight_mining":
+        return "智能洞察挖掘"
     if task_type == "what_if_prediction":
         return "用户目标包含假设变量变化或预测诉求，应进入情景预测工作流。"
+    if task_type == "insight_mining":
+        return "用户未提供具体分析目标，系统将自动扫描数据并挖掘潜在洞察。"
     return "用户目标适合进入数据分析工作流。"
 
 
 def _columns_from_profile(dataset_profile: dict[str, Any]) -> list[str]:
     columns = dataset_profile.get("columns")
     return [str(column) for column in columns] if isinstance(columns, list) else []
+

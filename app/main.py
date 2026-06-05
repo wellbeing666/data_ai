@@ -1,7 +1,10 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
+from app.services.auth_service import init_auth_storage
 
 
 app = FastAPI(
@@ -10,5 +13,11 @@ app = FastAPI(
     version="0.1.0",
 )
 
+init_auth_storage()
+Path("storage").mkdir(parents=True, exist_ok=True)
+Path("storage/uploads").mkdir(parents=True, exist_ok=True)
+Path("storage/jobs").mkdir(parents=True, exist_ok=True)
+
 app.include_router(api_router)
 app.mount("/storage", StaticFiles(directory="storage"), name="storage")
+

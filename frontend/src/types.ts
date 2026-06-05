@@ -1,3 +1,41 @@
+export interface AuthUser {
+  id: string;
+  login_account: string;
+  username: string;
+  role: "user" | "admin" | string;
+  status: "pending" | "active" | "frozen" | "rejected" | string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  approved_at?: string | null;
+  last_login_at?: string | null;
+  audit_reason?: string | null;
+}
+
+export interface AuthLoginResponse {
+  token: string;
+  token_type: string;
+  expires_at: string;
+  user: AuthUser;
+}
+
+export interface AuthRegisterResponse {
+  user: AuthUser;
+  message: string;
+}
+
+export interface AuthCurrentUserResponse {
+  user: AuthUser;
+}
+
+export interface AuthUserListResponse {
+  users: AuthUser[];
+}
+
+export interface AuthMessageResponse {
+  message: string;
+  data?: Record<string, unknown>;
+}
+
 export interface DatasetUploadResponse {
   dataset_id: string;
   filename: string;
@@ -135,6 +173,7 @@ export interface AutoRepairAttemptResult {
 
 export interface AutoRepairAnalysisJobResponse {
   job_id: string;
+  owner_user_id?: string | null;
   status: string;
   current_stage?: string | null;
   attempts: AutoRepairAttemptResult[];
@@ -332,6 +371,7 @@ export interface ValidationAttemptLog {
 
 export interface ExecutionLog {
   job_id: string;
+  owner_user_id?: string | null;
   dataset_id?: string | null;
   status: string;
   workflow_type: string;
@@ -361,6 +401,7 @@ export interface PredictionAttemptResult {
 
 export interface PredictionJobResponse {
   job_id: string;
+  owner_user_id?: string | null;
   status: string;
   current_stage?: string | null;
   attempts: PredictionAttemptResult[];
@@ -420,6 +461,7 @@ export interface PredictionExplanationResult {
 
 export interface PredictionLogResponse {
   job_id: string;
+  owner_user_id?: string | null;
   dataset_id?: string | null;
   status: string;
   workflow_type: string;
@@ -436,6 +478,7 @@ export interface PredictionLogResponse {
 
 export interface WorkflowJobResponse {
   job_id: string;
+  owner_user_id?: string | null;
   dataset_id?: string | null;
   user_goal?: string | null;
   status: string;
@@ -470,6 +513,8 @@ export interface WorkflowJobResponse {
   final_prediction_result_path: string | null;
   final_report_data_path: string | null;
   final_validation_result_path: string | null;
+  insight_result_path?: string | null;
+  debate_reflection_path?: string | null;
   chart_paths?: string[];
   effective_max_retries?: number | null;
   events?: ExecutionLogEvent[];
@@ -478,6 +523,7 @@ export interface WorkflowJobResponse {
 
 export interface WorkflowJobListItem {
   job_id: string;
+  owner_user_id?: string | null;
   dataset_id?: string | null;
   dataset_filename?: string | null;
   file_type?: string | null;
@@ -504,6 +550,7 @@ export interface WorkflowJobDeleteResponse {
 
 export interface WorkflowLogResponse {
   job_id: string;
+  owner_user_id?: string | null;
   dataset_id?: string | null;
   status: string;
   workflow_type: string;
@@ -703,4 +750,5 @@ export interface PptPreview {
   pptx_path?: string | null;
   slides: PptPreviewSlide[];
 }
+
 

@@ -8,6 +8,8 @@ def create_rule_based_analysis_plan(
     task_type = _detect_task_type(user_goal)
     if task_type == "grade_analysis":
         return _create_grade_analysis_plan(user_goal, dataset_profile)
+    if task_type == "insight_mining":
+        return _create_insight_mining_plan(user_goal, dataset_profile)
 
     return {
         "task_type": task_type,
@@ -30,6 +32,8 @@ def create_rule_based_analysis_plan(
 
 def _detect_task_type(user_goal: str) -> str:
     goal = user_goal.lower()
+    if _looks_like_insight_goal(goal):
+        return "insight_mining"
     if _looks_like_prediction_goal(goal):
         return "what_if_prediction"
     if all(keyword in goal for keyword in ("成绩", "班级", "统计")):
@@ -37,6 +41,47 @@ def _detect_task_type(user_goal: str) -> str:
     if any(keyword in goal for keyword in ("销量下降", "销售下滑", "收入下降", "gmv 下降")):
         return "sales_decline_analysis"
     return "general_data_analysis"
+
+
+def _looks_like_insight_goal(goal: str) -> bool:
+    insight_keywords = (
+        "智能洞察",
+        "洞察挖掘",
+        "自动洞察",
+        "自动扫描",
+        "无需目标",
+        "不提交分析目标",
+        "potential insight",
+        "insight mining",
+        "auto insight",
+    )
+    return any(keyword in goal for keyword in insight_keywords)
+
+
+def _create_insight_mining_plan(user_goal: str, dataset_profile: dict[str, Any]) -> dict[str, Any]:
+    columns = [str(column) for column in dataset_profile.get("columns", [])]
+    return {
+        "task_type": "insight_mining",
+        "task_name": "智能洞察挖掘",
+        "reasoning_summary": "用户选择无目标智能洞察模式，系统将自动扫描数据中的趋势、分组差异、相关性、异常和序列模式。",
+        "steps": [
+            {"step_id": "step_001", "name": "字段自动识别", "description": "识别日期、数值、类别、客户和商品字段。"},
+            {"step_id": "step_002", "name": "批量模式扫描", "description": "扫描趋势、周末效应、分组差异、相关性、数据质量和简单购买序列。"},
+            {"step_id": "step_003", "name": "洞察评分排序", "description": "按效应大小、样本覆盖和置信度排序，优先展示高价值洞察。"},
+            {"step_id": "step_004", "name": "生成洞察报告", "description": "生成洞察说明、图表、建议动作和限制条件。"},
+        ],
+        "required_columns": columns[:12],
+        "analysis_methods": ["模式识别", "分组对比", "趋势扫描", "相关性分析", "数据质量检查"],
+        "charts": ["高分洞察图表", "趋势图", "分组差异图", "相关性散点图"],
+        "expected_artifacts": [
+            {"artifact_type": "json", "name": "analysis_result.json"},
+            {"artifact_type": "json", "name": "explanation.json"},
+            {"artifact_type": "image", "name": "charts/insight_*.png"},
+        ],
+        "risks": [
+            {"risk_type": "correlation_not_causation", "severity": "medium", "description": "自动洞察只能提供相关信号，需要业务复核和实验验证。"}
+        ],
+    }
 
 
 def _looks_like_prediction_goal(goal: str) -> bool:
@@ -197,3 +242,4 @@ def _find_column(columns: list[str], keywords: tuple[str, ...]) -> str | None:
         if any(keyword in normalized_column for keyword in lowered_keywords):
             return column
     return None
+

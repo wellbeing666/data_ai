@@ -13,6 +13,7 @@ from app.agents.chart_code_refiner_agent import create_refined_chart_script
 from app.agents.chart_config_agent import create_chart_config
 from app.agents.chart_suggestion_agent import create_chart_refine_suggestions
 from app.agents.controller_agent import create_controller_plan
+from app.agents.insight_mining_agent import DEFAULT_INSIGHT_GOAL
 from app.agents.preflight_agent import create_preflight_assessment
 from app.agents.roadmap_agent import create_analysis_roadmap, render_analysis_roadmap
 from app.agents.vision_parsing_agent import VisionParsingAgent, write_visual_extracted_csv
@@ -22,6 +23,7 @@ from app.services.auto_repair_analysis import run_auto_repair_analysis_job
 from app.services.dataset_profile import generate_dataset_profile
 from app.services.dataset_reader import find_uploaded_image_file, get_dataset_dir, get_uploaded_asset_type, load_uploaded_dataset
 from app.services.execution_log_service import create_event, get_execution_log, write_execution_log
+from app.services.insight_mining_service import INSIGHT_TASK_TYPE, INSIGHT_WORKFLOW_TYPE, run_insight_mining_job
 from app.services.job_control_service import JobCancelled, checkpoint_job_control, read_job_control, request_job_action, reset_runtime_control, write_job_control
 from app.services.llm_client import get_llm_client
 from app.services.prediction_workflow import run_prediction_job
@@ -64,6 +66,7 @@ def create_workflow_job_record(
     user_goal: str,
     max_retries: int = 3,
     timeout_seconds: int = 90,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
     effective_max_retries = _validate_max_retries(max_retries)
     job_id = uuid4().hex
@@ -86,15 +89,17 @@ def create_workflow_job_record(
         events=events,
         max_retries=effective_max_retries,
         timeout_seconds=timeout_seconds,
+        owner_user_id=owner_user_id,
     )
 
 
 
-def create_workflow_preflight(dataset_id: str, user_goal: str) -> dict[str, Any]:
+def create_workflow_preflight(dataset_id: str, user_goal: str, owner_user_id: str | None = None) -> dict[str, Any]:
     asset_type = _safe_asset_type(dataset_id)
     if asset_type == IMAGE_ASSET_TYPE:
         return {
             "dataset_id": dataset_id,
+            "owner_user_id": owner_user_id,
             "user_goal": user_goal,
             "asset_type": asset_type,
             "preflight_path": None,
@@ -135,6 +140,7 @@ def create_workflow_preflight(dataset_id: str, user_goal: str) -> dict[str, Any]
     _write_json(preflight_path, preflight)
     return {
         "dataset_id": dataset_id,
+        "owner_user_id": owner_user_id,
         "user_goal": user_goal,
         "asset_type": asset_type,
         "preflight_path": str(preflight_path),
@@ -211,6 +217,7 @@ def refine_workflow_chart(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前任务缺少数据集信息。")
 
     workflow_type = str(status_data.get("workflow_type") or _workflow_type_for_job_dir(job_dir))
+    owner_user_id = str(status_data.get("owner_user_id") or "") or None
     result_filename = "prediction_result.json" if workflow_type == PREDICTION_TASK_TYPE else "analysis_result.json"
     result_payload = _read_json_if_exists(job_dir / result_filename) or {}
     dataset_profile = _read_json_if_exists(job_dir / "dataset_profile.json") or {}
@@ -264,6 +271,7 @@ def refine_workflow_chart(
         input_file=str(input_file.resolve()),
         output_dir=str(job_dir),
         timeout_seconds=timeout_seconds,
+        owner_user_id=owner_user_id,
     )
     if execution_result.get("success"):
         _replace_target_chart_if_new_chart_created(
@@ -297,6 +305,7 @@ def run_workflow_job_background(
     user_goal: str,
     max_retries: int = 3,
     timeout_seconds: int = 90,
+    owner_user_id: str | None = None,
 ) -> None:
     job_dir = (JOB_ROOT / job_id).resolve()
     try:
@@ -306,6 +315,7 @@ def run_workflow_job_background(
             user_goal=user_goal,
             max_retries=max_retries,
             timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
         )
         final_status = str(result.get("status") or "")
         if final_status == "success":
@@ -370,11 +380,15 @@ def run_workflow_job(
     user_goal: str,
     max_retries: int = 3,
     timeout_seconds: int = 90,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
     effective_max_retries = _validate_max_retries(max_retries)
     job_dir = (JOB_ROOT / job_id).resolve()
     job_dir.mkdir(parents=True, exist_ok=True)
     current_status = _read_json_if_exists(job_dir / WORKFLOW_STATUS_FILENAME) or {}
+    owner_user_id = owner_user_id or str(current_status.get("owner_user_id") or "") or _owner_from_existing(job_dir)
+    if _is_insight_goal(user_goal):
+        user_goal = DEFAULT_INSIGHT_GOAL
     events = _event_list(current_status.get("events"))
     if not events:
         events.append(create_event("queued", "pending", "统一分析任务已创建。"))
@@ -467,7 +481,15 @@ def run_workflow_job(
     events.append(create_event("controller", "running", "主控 Agent 正在选择分析工作流。"))
     controller_plan = create_controller_plan(user_goal, dataset_profile, rag_context=rag_context)
     task_type = str(controller_plan.get("task_type") or "general_data_analysis")
-    workflow_type = PREDICTION_TASK_TYPE if task_type == PREDICTION_TASK_TYPE else ANALYSIS_WORKFLOW_TYPE
+    if _is_insight_goal(user_goal):
+        task_type = INSIGHT_TASK_TYPE
+        controller_plan = {**controller_plan, "task_type": INSIGHT_TASK_TYPE, "task_name": "智能洞察挖掘"}
+    if task_type == PREDICTION_TASK_TYPE:
+        workflow_type = PREDICTION_TASK_TYPE
+    elif task_type == INSIGHT_TASK_TYPE:
+        workflow_type = INSIGHT_WORKFLOW_TYPE
+    else:
+        workflow_type = ANALYSIS_WORKFLOW_TYPE
     _write_json(job_dir / "controller_plan.json", controller_plan)
     events.append(create_event("controller", "success", f"主控 Agent 已选择任务类型：{task_type}。"))
 
@@ -507,6 +529,16 @@ def run_workflow_job(
     )
     checkpoint_job_control(job_dir)
 
+    if task_type == INSIGHT_TASK_TYPE:
+        result = run_insight_mining_job(
+            dataset_id=dataset_id,
+            user_goal=user_goal,
+            timeout_seconds=timeout_seconds,
+            job_id=job_id,
+            owner_user_id=owner_user_id,
+        )
+        return _normalize_workflow_status(result, workflow_type=INSIGHT_WORKFLOW_TYPE, task_type=task_type)
+
     if task_type == PREDICTION_TASK_TYPE:
         result = run_prediction_job(
             dataset_id=dataset_id,
@@ -514,6 +546,7 @@ def run_workflow_job(
             max_retries=effective_max_retries,
             timeout_seconds=timeout_seconds,
             job_id=job_id,
+            owner_user_id=owner_user_id,
         )
         return _normalize_workflow_status(result, workflow_type=PREDICTION_TASK_TYPE, task_type=task_type)
 
@@ -523,11 +556,17 @@ def run_workflow_job(
         max_retries=effective_max_retries,
         timeout_seconds=timeout_seconds,
         job_id=job_id,
+        owner_user_id=owner_user_id,
     )
     return _normalize_workflow_status(result, workflow_type=ANALYSIS_WORKFLOW_TYPE, task_type=task_type)
 
 
-def list_workflow_jobs(limit: int = 30, query: str | None = None) -> dict[str, Any]:
+def list_workflow_jobs(
+    limit: int = 30,
+    query: str | None = None,
+    owner_user_id: str | None = None,
+    include_all: bool = False,
+) -> dict[str, Any]:
     safe_limit = max(1, min(int(limit), 100))
     normalized_query = _normalize_search_query(query)
     if not JOB_ROOT.exists():
@@ -539,6 +578,9 @@ def list_workflow_jobs(limit: int = 30, query: str | None = None) -> dict[str, A
     for job_dir in job_dirs:
         status_data = _history_status_data(job_dir)
         if not status_data:
+            continue
+        job_owner = str(status_data.get("owner_user_id") or "") or None
+        if owner_user_id and not include_all and job_owner != owner_user_id:
             continue
         workflow_type = _workflow_type_for_job_dir(job_dir)
         task_type = _controller_task_type(job_dir) or str(status_data.get("task_type") or "")
@@ -556,6 +598,7 @@ def list_workflow_jobs(limit: int = 30, query: str | None = None) -> dict[str, A
             "workflow_type": normalized.get("workflow_type"),
             "task_type": normalized.get("task_type"),
             "asset_type": normalized.get("asset_type"),
+            "owner_user_id": normalized.get("owner_user_id") or job_owner,
             "chart_count": len(normalized.get("chart_paths") or []),
             "created_at": _iso_from_timestamp(job_dir.stat().st_ctime),
             "updated_at": _iso_from_timestamp(job_dir.stat().st_mtime),
@@ -568,9 +611,17 @@ def list_workflow_jobs(limit: int = 30, query: str | None = None) -> dict[str, A
     return {"jobs": jobs}
 
 
-def delete_workflow_job(job_id: str) -> dict[str, Any]:
+def delete_workflow_job(
+    job_id: str,
+    requester_user_id: str | None = None,
+    requester_is_admin: bool = False,
+) -> dict[str, Any]:
     job_dir = _get_job_dir(job_id)
     status_data = _history_status_data(job_dir) or {}
+    if requester_user_id and not requester_is_admin:
+        owner = str(status_data.get("owner_user_id") or "") or None
+        if owner and owner != requester_user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="不能删除其他用户的分析记录。")
     status_value = str(status_data.get("status") or "")
     if status_value not in {"success", "failed", "cancelled"}:
         raise HTTPException(
@@ -609,10 +660,12 @@ def get_workflow_job_status(job_id: str) -> dict[str, Any]:
         )
 
     if analysis_status is not None:
+        branch_task_type = _controller_task_type(job_dir) or str(analysis_status.get("task_type") or "general_data_analysis")
+        branch_workflow_type = INSIGHT_WORKFLOW_TYPE if branch_task_type == INSIGHT_TASK_TYPE or str(analysis_status.get("workflow_type") or "") == INSIGHT_WORKFLOW_TYPE else ANALYSIS_WORKFLOW_TYPE
         return _normalize_workflow_status(
             analysis_status,
-            workflow_type=ANALYSIS_WORKFLOW_TYPE,
-            task_type=_controller_task_type(job_dir) or "general_data_analysis",
+            workflow_type=branch_workflow_type,
+            task_type=branch_task_type,
         )
 
     if workflow_status is None:
@@ -650,6 +703,7 @@ def get_workflow_job_log(job_id: str) -> dict[str, Any]:
         "workflow_type": status_data.get("workflow_type") or log_data.get("workflow_type") or "pending",
         "task_type": status_data.get("task_type"),
         "asset_type": status_data.get("asset_type"),
+        "owner_user_id": status_data.get("owner_user_id"),
     }
     artifacts = log_data.get("artifacts") if isinstance(log_data.get("artifacts"), dict) else {}
     log_data["artifacts"] = {
@@ -660,6 +714,8 @@ def get_workflow_job_log(job_id: str) -> dict[str, Any]:
         "analysis_roadmap": status_data.get("analysis_roadmap_path"),
         "quality_review": status_data.get("quality_review_path"),
         "evidence_chain": status_data.get("evidence_chain_path"),
+        "debate_reflection": status_data.get("debate_reflection_path"),
+        "insight_result": status_data.get("insight_result_path"),
         "cleaning_report": status_data.get("cleaning_report_path"),
         "report": status_data.get("report_path"),
         "pptx": status_data.get("pptx_path"),
@@ -1042,6 +1098,7 @@ def _follow_up_artifacts(job_dir: Path) -> dict[str, Any]:
         "prediction_explanation.json",
         "quality_review.json",
         "evidence_chain.json",
+        "debate_reflection.json",
         "cleaning_report.json",
     ):
         value = _read_json_if_exists(job_dir / filename)
@@ -1257,11 +1314,16 @@ def _write_workflow_status(
     report_path: str | None = None,
     pptx_path: str | None = None,
     pptx_preview_path: str | None = None,
+    insight_result_path: str | None = None,
+    debate_reflection_path: str | None = None,
     error: dict[str, Any] | None = None,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
+    owner_user_id = owner_user_id or _owner_from_existing(job_dir)
     status_data = {
         "job_id": job_id,
         "dataset_id": dataset_id,
+        "owner_user_id": owner_user_id,
         "user_goal": user_goal,
         "status": status_value,
         "current_stage": current_stage,
@@ -1283,6 +1345,8 @@ def _write_workflow_status(
         "report_path": report_path,
         "pptx_path": pptx_path,
         "pptx_preview_path": pptx_preview_path,
+        "insight_result_path": insight_result_path,
+        "debate_reflection_path": debate_reflection_path,
         "effective_max_retries": max_retries,
         "timeout_seconds": timeout_seconds,
         "events": events,
@@ -1294,6 +1358,7 @@ def _write_workflow_status(
         {
             "job_id": job_id,
             "dataset_id": dataset_id,
+            "owner_user_id": owner_user_id,
             "status": status_value,
             "workflow_type": str(workflow_type or "pending"),
             "task_type": task_type,
@@ -1312,6 +1377,8 @@ def _write_workflow_status(
                 "report": report_path,
                 "pptx": pptx_path,
                 "pptx_preview": pptx_preview_path,
+                "insight_result": insight_result_path,
+                "debate_reflection": debate_reflection_path,
             },
             "visual_parse_result": visual_parse_result_path,
             "visual_extracted_dataset": visual_extracted_dataset_path,
@@ -1341,6 +1408,8 @@ def _normalize_workflow_status(
             "report_path": _existing_or_none(data.get("report_path"), job_dir / "report.md"),
             "pptx_path": _existing_or_none(data.get("pptx_path"), job_dir / "report.pptx"),
             "pptx_preview_path": _existing_or_none(data.get("pptx_preview_path"), job_dir / "pptx_preview.json"),
+            "insight_result_path": _existing_or_none(data.get("insight_result_path"), job_dir / "analysis_result.json") if str(workflow_type or data.get("workflow_type") or "") == INSIGHT_WORKFLOW_TYPE else data.get("insight_result_path"),
+            "debate_reflection_path": _existing_or_none(data.get("debate_reflection_path"), job_dir / "debate_reflection.json"),
             "job_control_path": _existing_or_none(data.get("job_control_path"), job_dir / "job_control.json"),
             "visual_parse_result_path": _existing_or_none(data.get("visual_parse_result_path"), job_dir / "visual_parse_result.json"),
             "visual_extracted_dataset_path": data.get("visual_extracted_dataset_path"),
@@ -1362,6 +1431,7 @@ def _normalize_workflow_status(
     return {
         "job_id": str(data.get("job_id") or ""),
         "dataset_id": str(data.get("dataset_id") or "") or None,
+        "owner_user_id": str(data.get("owner_user_id") or "") or None,
         "user_goal": str(data.get("user_goal") or "") or None,
         "status": str(data.get("status") or "pending"),
         "current_stage": str(data.get("current_stage") or data.get("status") or "pending"),
@@ -1380,6 +1450,8 @@ def _normalize_workflow_status(
         "report_path": data.get("report_path"),
         "pptx_path": data.get("pptx_path"),
         "pptx_preview_path": data.get("pptx_preview_path"),
+        "insight_result_path": data.get("insight_result_path"),
+        "debate_reflection_path": data.get("debate_reflection_path"),
         "job_control_path": data.get("job_control_path"),
         "control_state": read_job_control(job_dir) if job_dir.exists() else {},
         "visual_parse_result_path": data.get("visual_parse_result_path"),
@@ -1479,6 +1551,8 @@ def _status_search_label(value: Any) -> str:
 def _workflow_search_label(workflow_type: Any, task_type: Any) -> str:
     if str(workflow_type or task_type or "") == PREDICTION_TASK_TYPE:
         return "情景预测 what-if 预测"
+    if str(workflow_type or task_type or "") == INSIGHT_WORKFLOW_TYPE:
+        return "智能洞察 自动洞察 insight mining"
     return "数据分析 普通分析"
 
 
@@ -1515,6 +1589,28 @@ def _controller_task_type(job_dir: Path) -> str | None:
 
 def _validate_max_retries(max_retries: int) -> int:
     return max(0, min(int(max_retries), MAX_RETRIES))
+
+
+def _is_insight_goal(user_goal: str) -> bool:
+    text = str(user_goal or "").lower()
+    return any(keyword in text for keyword in (
+        "智能洞察",
+        "洞察挖掘",
+        "自动洞察",
+        "自动扫描",
+        "无需目标",
+        "不提交分析目标",
+        "insight mining",
+        "auto insight",
+    ))
+
+
+def _owner_from_existing(job_dir: Path) -> str | None:
+    for filename in (WORKFLOW_STATUS_FILENAME, "task_status.json", "prediction_task_status.json"):
+        data = _read_json_if_exists(job_dir / filename)
+        if data and data.get("owner_user_id"):
+            return str(data.get("owner_user_id"))
+    return None
 
 
 def _get_job_dir(job_id: str) -> Path:
@@ -1689,8 +1785,11 @@ def _normalize_chart_path(value: Any, job_dir: Path) -> str | None:
 def _workflow_type_for_job_dir(job_dir: Path) -> str:
     if (job_dir / "prediction_result.json").exists() or (job_dir / "prediction_task_status.json").exists():
         return PREDICTION_TASK_TYPE
-    status_data = _read_json_if_exists(job_dir / WORKFLOW_STATUS_FILENAME) or {}
+    status_data = _read_json_if_exists(job_dir / WORKFLOW_STATUS_FILENAME) or _read_json_if_exists(job_dir / "task_status.json") or {}
     workflow_type = str(status_data.get("workflow_type") or "")
+    task_type = str(status_data.get("task_type") or _controller_task_type(job_dir) or "")
+    if workflow_type == INSIGHT_WORKFLOW_TYPE or task_type == INSIGHT_TASK_TYPE:
+        return INSIGHT_WORKFLOW_TYPE
     return workflow_type or ANALYSIS_WORKFLOW_TYPE
 
 
@@ -1881,6 +1980,7 @@ def _event_list(value: Any) -> list[dict[str, Any]]:
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
 
 
 

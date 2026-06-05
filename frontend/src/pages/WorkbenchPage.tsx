@@ -110,6 +110,8 @@ interface SamplePreviewState {
   rows: AnyRecord[];
 }
 
+const SMART_INSIGHT_GOAL = "智能洞察挖掘：系统自动扫描数据，挖掘潜在规律和高价值异常，无需用户预设目标。";
+
 export function WorkbenchPage() {
   const [activePage, setActivePage] = useState<PageKey>("setup");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -172,6 +174,7 @@ export function WorkbenchPage() {
   const [cleaningModalOpen, setCleaningModalOpen] = useState(false);
   const [cleaningLoading, setCleaningLoading] = useState(false);
   const [pendingAnalysisGoal, setPendingAnalysisGoal] = useState("");
+  const [pendingInsightMode, setPendingInsightMode] = useState(false);
   const [evidenceChain, setEvidenceChain] = useState<EvidenceChain | null>(null);
   const [pptPreview, setPptPreview] = useState<PptPreview | null>(null);
   const [pptGenerating, setPptGenerating] = useState(false);
@@ -623,6 +626,7 @@ export function WorkbenchPage() {
     setCleaningModalOpen(false);
     setCleaningLoading(false);
     setPendingAnalysisGoal("");
+    setPendingInsightMode(false);
     setEvidenceChain(null);
     setPptPreview(null);
     setPptGenerating(false);
@@ -1023,8 +1027,29 @@ export function WorkbenchPage() {
     }
   }
 
-  async function prepareCleaningAndStart(dataset: DatasetUploadResponse, effectiveGoal: string, knownProfile?: DatasetProfile) {
+  async function handleRunSmartInsights() {
+    if (!selectedFile && !uploadInfo?.dataset_id) {
+      setMessage("请先选择 CSV / Excel 文件、图片，或生成一份样例数据。");
+      return;
+    }
+
+    clearCurrentWorkflowView();
+    setStatus("uploading");
+    setActivePage("process");
+    setMessage("正在准备数据并进入智能洞察挖掘模式。");
+
+    try {
+      const uploaded = await ensureAnalysisDataset();
+      await prepareCleaningAndStart(uploaded, SMART_INSIGHT_GOAL, undefined, true);
+    } catch (error) {
+      setStatus("failed");
+      setMessage(error instanceof Error ? error.message : "智能洞察任务启动失败。");
+    }
+  }
+
+  async function prepareCleaningAndStart(dataset: DatasetUploadResponse, effectiveGoal: string, knownProfile?: DatasetProfile, insightMode = false) {
     setPendingAnalysisGoal(effectiveGoal);
+    setPendingInsightMode(insightMode);
     setCleaningLoading(true);
     setMessage("正在检查数据质量并生成修复建议。");
     try {
@@ -1051,9 +1076,9 @@ export function WorkbenchPage() {
       setMessage("请先选择数据并生成修复建议。");
       return;
     }
-    const effectiveGoal = pendingAnalysisGoal || userGoal.trim();
-    if (!effectiveGoal) {
-      setMessage("请输入自然语言分析目标。");
+    const effectiveGoal = pendingAnalysisGoal || (pendingInsightMode ? SMART_INSIGHT_GOAL : userGoal.trim());
+    if (!effectiveGoal && !pendingInsightMode) {
+      setMessage("请输入自然语言分析目标，或选择智能洞察模式。");
       return;
     }
 
@@ -1078,7 +1103,7 @@ export function WorkbenchPage() {
     setActivePage("process");
     setMessage("任务已启动，Agent 状态将实时刷新。");
     try {
-      const createdJob = await createWorkflowJobAsync(uploadInfo.dataset_id, effectiveGoal, 3);
+      const createdJob = await createWorkflowJobAsync(uploadInfo.dataset_id, effectiveGoal || SMART_INSIGHT_GOAL, 3, pendingInsightMode);
       await applyJobUpdate(createdJob);
     } catch (error) {
       setStatus("failed");
@@ -1402,6 +1427,14 @@ export function WorkbenchPage() {
                 启动 Agent 分析
               </button>
             </div>
+            <button
+              className="insight-mode-button"
+              type="button"
+              disabled={status === "uploading" || status === "running" || samplePreviewLoading}
+              onClick={handleRunSmartInsights}
+            >
+              不提交分析目标，进入智能洞察
+            </button>
             {message ? (
               <p className={`message ${status === "failed" ? "error" : "success"}`}>{message}</p>
             ) : null}
@@ -1627,6 +1660,7 @@ export function WorkbenchPage() {
     </main>
   );
 }
+
 
 
 

@@ -7,6 +7,7 @@ from app.services.llm_client import LLMClient, get_llm_client
 
 
 LLM_ONLY_ATTEMPTS = 3
+SALES_DECLINE_EARLY_FALLBACK_ATTEMPT = 2
 
 ALLOWED_IMPORT_ROOTS = {
     "pandas",
@@ -162,6 +163,16 @@ class CodeAgent:
             _validate_generated_script(script, input_file=input_file, output_dir=output_dir)
             return script
         except Exception as exc:
+            if _should_use_sales_decline_fallback(analysis_plan, attempt, previous_execution_result, previous_validation_result):
+                return self.rule_based_agent.generate_script(
+                    input_file=input_file,
+                    output_dir=output_dir,
+                    analysis_plan=_to_rule_based_plan(analysis_plan, dataset_profile),
+                    dataset_profile=dataset_profile,
+                    attempt=attempt,
+                    previous_execution_result=previous_execution_result,
+                    previous_validation_result=previous_validation_result,
+                )
             if attempt <= LLM_ONLY_ATTEMPTS:
                 raise CodeGenerationError(
                     f"LLM code generation failed on attempt {attempt}: {exc}"
@@ -175,6 +186,20 @@ class CodeAgent:
                 previous_execution_result=previous_execution_result,
                 previous_validation_result=previous_validation_result,
             )
+
+
+def _should_use_sales_decline_fallback(
+    analysis_plan: dict[str, Any],
+    attempt: int,
+    previous_execution_result: dict[str, Any] | None,
+    previous_validation_result: dict[str, Any] | None,
+) -> bool:
+    task_type = str(analysis_plan.get("task_type") or "")
+    if task_type != "sales_decline_analysis":
+        return False
+    if attempt < SALES_DECLINE_EARLY_FALLBACK_ATTEMPT:
+        return False
+    return previous_execution_result is not None or previous_validation_result is not None
 
 
 class CodeGenerationError(RuntimeError):
@@ -193,6 +218,13 @@ class RuleBasedCodeAgent:
         previous_validation_result: dict[str, Any] | None = None,
     ) -> str:
         task_type = analysis_plan.get("task_type")
+        if task_type == "sales_decline_analysis":
+            return self._generate_sales_decline_script(
+                input_file=input_file,
+                output_dir=output_dir,
+                analysis_plan=analysis_plan,
+                dataset_profile=dataset_profile,
+            )
         if task_type != "grade_analysis":
             return self._generate_general_analysis_script(
                 input_file=input_file,
@@ -413,6 +445,210 @@ def main():
     except Exception as error:
         write_error_result(error)
         raise
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+    def _generate_sales_decline_script(
+        self,
+        input_file: str,
+        output_dir: str,
+        analysis_plan: dict[str, Any],
+        dataset_profile: dict[str, Any],
+    ) -> str:
+        columns = [str(column) for column in dataset_profile.get("columns") or []]
+        numeric_summary = dataset_profile.get("numeric_summary") if isinstance(dataset_profile.get("numeric_summary"), dict) else {}
+        metric = _find_column(columns, ("销量", "销售额", "收入", "gmv", "sales", "revenue", "amount", "订单"))
+        if not metric:
+            metrics = [item for item in analysis_plan.get("metrics") or [] if str(item) in columns]
+            metric = str(metrics[0]) if metrics else next((col for col in columns if col in numeric_summary), columns[0] if columns else "")
+        date_col = _find_column(columns, ("日期", "时间", "月份", "年月", "date", "month", "time", "day"))
+        dimensions = [str(item) for item in analysis_plan.get("grouping_dimensions") or [] if str(item) in columns and str(item) != metric]
+        if not dimensions:
+            dimensions = [col for col in columns if col != metric and col != date_col and col not in numeric_summary][:3]
+        return f'''import json
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+from matplotlib import font_manager
+import matplotlib.pyplot as plt
+import pandas as pd
+
+INPUT_FILE = Path(r"{input_file}")
+OUTPUT_DIR = Path(r"{output_dir}")
+CHARTS_DIR = OUTPUT_DIR / "charts"
+TASK_TYPE = "sales_decline_analysis"
+METRIC_COLUMN = {metric!r}
+DATE_COLUMN = {date_col!r}
+DIMENSION_COLUMNS = {dimensions!r}
+
+
+def _configure_generated_chart_fonts():
+    available_fonts = {{font.name for font in font_manager.fontManager.ttflist}}
+    preferred_fonts = ["Noto Sans CJK SC", "Noto Sans CJK JP", "Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
+    font_name = next((font for font in preferred_fonts if font in available_fonts), "DejaVu Sans")
+    plt.rcParams["font.sans-serif"] = [font_name]
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+def _read_input(path):
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        for encoding in ("utf-8", "utf-8-sig", "gbk"):
+            try:
+                return pd.read_csv(path, encoding=encoding)
+            except UnicodeDecodeError:
+                continue
+        return pd.read_csv(path)
+    if suffix in (".xlsx", ".xls"):
+        return pd.read_excel(path)
+    raise ValueError("unsupported input file")
+
+
+def _safe_numeric(series):
+    return pd.to_numeric(series, errors="coerce")
+
+
+def _save_line_chart(monthly):
+    chart_path = CHARTS_DIR / "sales_decline_trend.png"
+    plt.figure(figsize=(9, 4.8))
+    if len(monthly) > 0:
+        plt.plot(monthly["period"].astype(str), monthly["value"], marker="o")
+    else:
+        plt.plot(["无有效日期"], [0], marker="o")
+    plt.title("销量/销售指标趋势")
+    plt.xlabel("时间")
+    plt.ylabel(METRIC_COLUMN or "指标")
+    plt.xticks(rotation=30, ha="right")
+    plt.tight_layout()
+    plt.savefig(chart_path, dpi=150)
+    plt.close()
+    return str(chart_path)
+
+
+def _save_contribution_chart(contribution, dim):
+    chart_path = CHARTS_DIR / f"contribution_{{dim}}.png"
+    plt.figure(figsize=(9, 4.8))
+    if len(contribution) > 0:
+        plot_df = contribution.head(12).sort_values("change")
+        plt.barh(plot_df[dim].astype(str), plot_df["change"])
+    else:
+        plt.barh(["无有效分组"], [0])
+    plt.title(f"{{dim}} 下降贡献")
+    plt.xlabel("变化量")
+    plt.ylabel(dim)
+    plt.tight_layout()
+    plt.savefig(chart_path, dpi=150)
+    plt.close()
+    return str(chart_path)
+
+
+def main():
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+    _configure_generated_chart_fonts()
+    df = _read_input(INPUT_FILE)
+    df.columns = [str(col).strip() for col in df.columns]
+    if not METRIC_COLUMN or METRIC_COLUMN not in df.columns:
+        numeric_candidates = []
+        for col in df.columns:
+            values = _safe_numeric(df[col])
+            if values.notna().sum() >= max(3, len(df) * 0.4):
+                numeric_candidates.append(col)
+        metric = numeric_candidates[0] if numeric_candidates else df.columns[0]
+    else:
+        metric = METRIC_COLUMN
+    df["__metric__"] = _safe_numeric(df[metric]).fillna(0)
+    charts = []
+    findings = []
+    limitations = ["当前自动脚本用于降低重复修复次数，输出为稳健的趋势和分组相关信号，不能证明确定因果。"]
+    trend = {{}}
+    if DATE_COLUMN and DATE_COLUMN in df.columns:
+        parsed = pd.to_datetime(df[DATE_COLUMN], errors="coerce")
+        temp = df.copy()
+        temp["__period__"] = parsed.dt.to_period("M").astype(str)
+        temp = temp[parsed.notna()]
+        if len(temp) > 0:
+            monthly = temp.groupby("__period__")["__metric__"].sum().reset_index().rename(columns={{"__period__": "period", "__metric__": "value"}}).sort_values("period")
+        else:
+            monthly = pd.DataFrame(columns=["period", "value"])
+    else:
+        monthly = pd.DataFrame({{"period": ["全量"], "value": [float(df["__metric__"].sum())]}})
+        limitations.append("未识别到可靠日期字段，因此无法完成严格时间趋势拆解。")
+    if len(monthly) >= 2:
+        first_value = float(monthly["value"].iloc[0])
+        last_value = float(monthly["value"].iloc[-1])
+        delta = last_value - first_value
+        delta_pct = (delta / abs(first_value) * 100) if abs(first_value) > 1e-12 else None
+        trend = {{"start_period": str(monthly["period"].iloc[0]), "end_period": str(monthly["period"].iloc[-1]), "start_value": first_value, "end_value": last_value, "delta": delta, "delta_pct": delta_pct}}
+        if delta_pct is not None:
+            findings.append(f"从 {{trend['start_period']}} 到 {{trend['end_period']}}，{{metric}} 变化约 {{delta_pct:+.2f}}%，属于需要重点复核的趋势信号。")
+        else:
+            findings.append(f"从 {{trend['start_period']}} 到 {{trend['end_period']}}，{{metric}} 变化量为 {{delta:+.3g}}。")
+    else:
+        trend = {{"total_value": float(df["__metric__"].sum())}}
+        findings.append(f"当前数据可统计 {{metric}} 全量合计，但时间点不足，无法判断连续下降趋势。")
+    charts.append(_save_line_chart(monthly))
+    contribution_tables = {{}}
+    if len(monthly) >= 2 and DATE_COLUMN and DATE_COLUMN in df.columns:
+        start_period = str(monthly["period"].iloc[0])
+        end_period = str(monthly["period"].iloc[-1])
+        parsed = pd.to_datetime(df[DATE_COLUMN], errors="coerce")
+        work = df.copy()
+        work["__period__"] = parsed.dt.to_period("M").astype(str)
+        for dim in DIMENSION_COLUMNS[:3]:
+            if dim not in work.columns:
+                continue
+            pivot = work[work["__period__"].isin([start_period, end_period])].groupby([dim, "__period__"])["__metric__"].sum().unstack(fill_value=0)
+            if start_period not in pivot.columns:
+                pivot[start_period] = 0
+            if end_period not in pivot.columns:
+                pivot[end_period] = 0
+            contribution = pivot.reset_index()
+            contribution["start_value"] = contribution[start_period]
+            contribution["end_value"] = contribution[end_period]
+            contribution["change"] = contribution["end_value"] - contribution["start_value"]
+            contribution["change_pct"] = contribution.apply(lambda row: (row["change"] / abs(row["start_value"]) * 100) if abs(row["start_value"]) > 1e-12 else None, axis=1)
+            contribution = contribution[[dim, "start_value", "end_value", "change", "change_pct"]].sort_values("change")
+            contribution_tables[dim] = contribution.head(20).to_dict(orient="records")
+            charts.append(_save_contribution_chart(contribution, dim))
+            if len(contribution) > 0:
+                worst = contribution.iloc[0]
+                findings.append(f"{{dim}} 维度中，{{worst[dim]}} 的 {{metric}} 变化量最低（{{worst['change']:+.3g}}），可能是优先排查分组。")
+    if not contribution_tables:
+        for dim in DIMENSION_COLUMNS[:2]:
+            if dim not in df.columns:
+                continue
+            grouped = df.groupby(dim)["__metric__"].sum().reset_index().sort_values("__metric__", ascending=False).head(20)
+            contribution_tables[dim] = grouped.rename(columns={{"__metric__": "value"}}).to_dict(orient="records")
+    result = {{
+        "success": True,
+        "task_type": TASK_TYPE,
+        "analysis_type": TASK_TYPE,
+        "metric_column": metric,
+        "date_column": DATE_COLUMN,
+        "dimension_columns": DIMENSION_COLUMNS,
+        "rows": int(len(df)),
+        "trend": trend,
+        "findings": findings,
+        "key_findings": findings,
+        "contribution_tables": contribution_tables,
+        "charts": charts,
+        "chart_paths": charts,
+        "limitations": limitations,
+        "recommendations": [
+            "优先复核下降贡献最大的地区、渠道或品类，检查库存、价格、活动、投放和竞品变化。",
+            "补充外部业务事件和更长时间跨度数据，以验证当前下降信号是否持续。",
+            "把高风险分组转化为可验证假设，设计小规模运营实验或专项复盘。",
+        ],
+    }}
+    with (OUTPUT_DIR / "analysis_result.json").open("w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+    with (OUTPUT_DIR / "report_data.json").open("w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":
@@ -1049,4 +1285,5 @@ def _find_column(columns: list[str], keywords: tuple[str, ...]) -> str | None:
 def _json_string_literal(data: dict[str, Any]) -> str:
     json_text = json.dumps(data, ensure_ascii=False)
     return repr(json_text)
+
 

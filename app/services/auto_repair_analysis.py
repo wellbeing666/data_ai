@@ -11,6 +11,7 @@ from app.agents.analysis_agent import create_analysis_plan
 from app.agents.code_agent import CodeAgent, CodeGenerationError
 from app.agents.controller_agent import create_controller_plan
 from app.agents.data_understanding_agent import create_data_understanding
+from app.agents.debate_reflection_agent import create_debate_reflection
 from app.agents.explanation_agent import create_explanation
 from app.agents.quality_review_agent import create_quality_review
 from app.sandbox.code_safety import validate_script_static_safety
@@ -35,6 +36,7 @@ def create_auto_repair_job_record(
     user_goal: str,
     max_retries: int = 3,
     timeout_seconds: int = 60,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
     effective_max_retries = _validate_max_retries(max_retries)
     job_id = uuid4().hex
@@ -54,6 +56,7 @@ def create_auto_repair_job_record(
         attempts=[],
         events=events,
         timeout_seconds=timeout_seconds,
+        owner_user_id=owner_user_id,
     )
 
 
@@ -63,6 +66,7 @@ def run_auto_repair_analysis_job_background(
     user_goal: str,
     max_retries: int = 3,
     timeout_seconds: int = 60,
+    owner_user_id: str | None = None,
 ) -> None:
     try:
         run_auto_repair_analysis_job(
@@ -71,6 +75,7 @@ def run_auto_repair_analysis_job_background(
             max_retries=max_retries,
             timeout_seconds=timeout_seconds,
             job_id=job_id,
+            owner_user_id=owner_user_id,
         )
     except JobCancelled:
         job_dir = (JOB_ROOT / job_id).resolve()
@@ -88,6 +93,7 @@ def run_auto_repair_analysis_job_background(
             attempts=_dict_list(current_status.get("attempts")),
             events=events,
             timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
         )
     except Exception as exc:  # pragma: no cover - background safety net
         job_dir = (JOB_ROOT / job_id).resolve()
@@ -116,6 +122,7 @@ def run_auto_repair_analysis_job_background(
                 "message": str(exc),
                 "traceback": traceback.format_exc(limit=8),
             },
+            owner_user_id=owner_user_id,
         )
 
 
@@ -141,12 +148,14 @@ def run_auto_repair_analysis_job(
     max_retries: int = 3,
     timeout_seconds: int = 60,
     job_id: str | None = None,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
     effective_max_retries = _validate_max_retries(max_retries)
     job_id = job_id or uuid4().hex
     job_dir = (JOB_ROOT / job_id).resolve()
     job_dir.mkdir(parents=True, exist_ok=bool(job_id))
     current_status = _read_json_if_exists(job_dir / "task_status.json") or {}
+    owner_user_id = owner_user_id or str(current_status.get("owner_user_id") or "") or _owner_from_existing(job_dir)
     events = _event_list(current_status.get("events"))
     if not events:
         events.append(create_event("queued", "pending", "任务已创建。"))
@@ -167,6 +176,7 @@ def run_auto_repair_analysis_job(
     report_path = None
     pptx_path = None
     pptx_preview_path = None
+    debate_reflection_path = None
     rag_retrieval_path = None
     rag_context: list[dict[str, Any]] = []
 
@@ -186,6 +196,7 @@ def run_auto_repair_analysis_job(
             attempts=attempts,
             events=events,
             timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
             final_result_path=final_result_path,
             final_report_data_path=final_report_data_path,
             final_validation_result_path=final_validation_result_path,
@@ -196,6 +207,7 @@ def run_auto_repair_analysis_job(
             report_path=report_path,
             pptx_path=pptx_path,
             pptx_preview_path=pptx_preview_path,
+            debate_reflection_path=debate_reflection_path,
             controller_plan_path=existing_job_file("controller_plan.json"),
             rag_retrieval_path=rag_retrieval_path or existing_job_file("rag_retrieval.json"),
             dataset_profile_path=existing_job_file("dataset_profile.json"),
@@ -468,6 +480,7 @@ def run_auto_repair_analysis_job(
             attempts=attempts,
             events=events,
             timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
             controller_plan_path=str(job_dir / "controller_plan.json"),
             dataset_profile_path=str(job_dir / "dataset_profile.json"),
             data_understanding_path=str(job_dir / "data_understanding.json"),
@@ -693,6 +706,7 @@ def run_auto_repair_analysis_job(
             attempts=attempts,
             events=events,
             timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
             controller_plan_path=str(job_dir / "controller_plan.json"),
             dataset_profile_path=str(job_dir / "dataset_profile.json"),
             data_understanding_path=str(job_dir / "data_understanding.json"),
@@ -727,6 +741,7 @@ def run_auto_repair_analysis_job(
             attempts=attempts,
             events=events,
             timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
             final_result_path=final_result_path,
             final_report_data_path=final_report_data_path,
             final_validation_result_path=final_validation_result_path,
@@ -737,6 +752,45 @@ def run_auto_repair_analysis_job(
         )
         analysis_result_data = _read_json(Path(final_result_path))
         chart_paths = _collect_chart_paths(job_dir, analysis_result_data)
+        report_data_payload = _read_json_if_exists(job_dir / "report_data.json") or {}
+        validation_payload = _read_json_if_exists(Path(final_validation_result_path)) if final_validation_result_path else {}
+
+        events.append(create_event("debate_matrix", "running", "Debate Matrix 正在进行商业洞察与统计质检的动态辩论。"))
+        _write_progress(
+            job_dir=job_dir,
+            job_id=job_id,
+            dataset_id=dataset_id,
+            user_goal=user_goal,
+            status_value="running",
+            current_stage="debate_matrix",
+            max_retries=effective_max_retries,
+            attempts=attempts,
+            events=events,
+            timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
+            final_result_path=final_result_path,
+            final_report_data_path=final_report_data_path,
+            final_validation_result_path=final_validation_result_path,
+            controller_plan_path=str(job_dir / "controller_plan.json"),
+            rag_retrieval_path=rag_retrieval_path,
+            dataset_profile_path=str(job_dir / "dataset_profile.json"),
+            data_understanding_path=str(job_dir / "data_understanding.json"),
+            analysis_plan_path=str(job_dir / "analysis_plan.json"),
+        )
+        debate_reflection = create_debate_reflection(
+            user_goal=user_goal,
+            dataset_profile=dataset_profile,
+            result_payload=analysis_result_data,
+            report_data=report_data_payload,
+            chart_paths=chart_paths,
+            validation_result=validation_payload or {},
+            limitations=_string_list(analysis_plan.get("limitations")),
+            workflow_type="auto_repair",
+        )
+        debate_reflection_path = str(job_dir / "debate_reflection.json")
+        _write_json(job_dir / "debate_reflection.json", debate_reflection)
+        events.append(create_event("debate_matrix", "success", "Debate Matrix 已收敛为可交付给解释 Agent 的共识。"))
+
         explanation = create_explanation(
             user_goal=user_goal,
             dataset_profile=dataset_profile,
@@ -744,6 +798,7 @@ def run_auto_repair_analysis_job(
             chart_paths=chart_paths,
             limitations=_string_list(analysis_plan.get("limitations")),
             rag_context=rag_context,
+            debate_context=debate_reflection,
         )
         explanation_path = str(job_dir / "explanation.json")
         _write_json(job_dir / "explanation.json", explanation)
@@ -769,6 +824,7 @@ def run_auto_repair_analysis_job(
             attempts=attempts,
             events=events,
             timeout_seconds=timeout_seconds,
+            owner_user_id=owner_user_id,
             final_result_path=final_result_path,
             final_report_data_path=final_report_data_path,
             final_validation_result_path=final_validation_result_path,
@@ -829,6 +885,7 @@ def run_auto_repair_analysis_job(
         "explanation_path": explanation_path,
         "quality_review_path": quality_review_path,
         "evidence_chain_path": evidence_chain_path,
+        "debate_reflection_path": debate_reflection_path,
         "cleaning_report_path": cleaning_report_path,
         "report_path": report_path,
         "pptx_path": pptx_path,
@@ -852,6 +909,7 @@ def run_auto_repair_analysis_job(
         explanation_path=explanation_path,
         quality_review_path=quality_review_path,
         evidence_chain_path=evidence_chain_path,
+        debate_reflection_path=debate_reflection_path,
         cleaning_report_path=cleaning_report_path,
         report_path=report_path,
         pptx_path=pptx_path,
@@ -914,6 +972,7 @@ def _write_progress(
     explanation_path: str | None = None,
     quality_review_path: str | None = None,
     evidence_chain_path: str | None = None,
+    debate_reflection_path: str | None = None,
     cleaning_report_path: str | None = None,
     report_path: str | None = None,
     pptx_path: str | None = None,
@@ -924,11 +983,14 @@ def _write_progress(
     data_understanding_path: str | None = None,
     analysis_plan_path: str | None = None,
     error: dict[str, Any] | None = None,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
+    owner_user_id = owner_user_id or _owner_from_existing(job_dir)
     job_dir.mkdir(parents=True, exist_ok=True)
     status_data = {
         "job_id": job_id,
         "dataset_id": dataset_id,
+        "owner_user_id": owner_user_id,
         "user_goal": user_goal,
         "status": status_value,
         "current_stage": current_stage,
@@ -945,6 +1007,7 @@ def _write_progress(
         "explanation_path": explanation_path,
         "quality_review_path": quality_review_path,
         "evidence_chain_path": evidence_chain_path,
+        "debate_reflection_path": debate_reflection_path,
         "cleaning_report_path": cleaning_report_path,
         "report_path": report_path,
         "pptx_path": pptx_path,
@@ -972,6 +1035,7 @@ def _normalize_status_payload(data: dict[str, Any]) -> dict[str, Any]:
             "explanation_path": _existing_or_none(data.get("explanation_path"), job_dir / "explanation.json"),
             "quality_review_path": _existing_or_none(data.get("quality_review_path"), job_dir / "quality_review.json"),
             "evidence_chain_path": _existing_or_none(data.get("evidence_chain_path"), job_dir / "evidence_chain.json"),
+            "debate_reflection_path": _existing_or_none(data.get("debate_reflection_path"), job_dir / "debate_reflection.json"),
             "cleaning_report_path": _existing_or_none(data.get("cleaning_report_path"), job_dir / "cleaning_report.json"),
             "report_path": _existing_or_none(data.get("report_path"), job_dir / "report.md"),
             "pptx_path": _existing_or_none(data.get("pptx_path"), job_dir / "report.pptx"),
@@ -982,6 +1046,8 @@ def _normalize_status_payload(data: dict[str, Any]) -> dict[str, Any]:
         }
     return {
         "job_id": str(data.get("job_id") or ""),
+        "dataset_id": str(data.get("dataset_id") or "") or None,
+        "owner_user_id": str(data.get("owner_user_id") or "") or None,
         "status": str(data.get("status") or "pending"),
         "current_stage": str(data.get("current_stage") or data.get("status") or "pending"),
         "attempts": _dict_list(data.get("attempts")),
@@ -997,6 +1063,7 @@ def _normalize_status_payload(data: dict[str, Any]) -> dict[str, Any]:
         "explanation_path": data.get("explanation_path"),
         "quality_review_path": data.get("quality_review_path"),
         "evidence_chain_path": data.get("evidence_chain_path"),
+        "debate_reflection_path": data.get("debate_reflection_path"),
         "cleaning_report_path": data.get("cleaning_report_path"),
         "report_path": data.get("report_path"),
         "pptx_path": data.get("pptx_path"),
@@ -1053,6 +1120,7 @@ def _build_progress_execution_log(status_data: dict[str, Any]) -> dict[str, Any]
     return {
         "job_id": str(status_data.get("job_id") or ""),
         "dataset_id": status_data.get("dataset_id"),
+        "owner_user_id": status_data.get("owner_user_id"),
         "status": str(status_data.get("status") or "pending"),
         "workflow_type": "auto_repair",
         "user_goal": str(status_data.get("user_goal") or ""),
@@ -1070,6 +1138,7 @@ def _build_progress_execution_log(status_data: dict[str, Any]) -> dict[str, Any]
             "explanation": status_data.get("explanation_path"),
             "quality_review": status_data.get("quality_review_path"),
             "evidence_chain": status_data.get("evidence_chain_path"),
+            "debate_reflection": status_data.get("debate_reflection_path"),
             "cleaning_report": status_data.get("cleaning_report_path"),
             "report": status_data.get("report_path"),
             "pptx": status_data.get("pptx_path"),
@@ -1105,6 +1174,14 @@ def _dict_list(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
+
+
+def _owner_from_existing(job_dir: Path) -> str | None:
+    for filename in ("workflow_task_status.json", "task_status.json", "prediction_task_status.json"):
+        data = _read_json_if_exists(job_dir / filename)
+        if data and data.get("owner_user_id"):
+            return str(data.get("owner_user_id"))
+    return None
 
 
 def _clear_attempt_outputs(job_dir: Path) -> None:
@@ -1191,6 +1268,7 @@ def _build_static_safety_failure_result(
             "safety_issues": issues,
         },
     }
+
 
 
 

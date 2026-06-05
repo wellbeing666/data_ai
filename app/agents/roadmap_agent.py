@@ -16,7 +16,7 @@ Required schema:
 {
   "title": "路线图标题",
   "goal": "用户目标",
-  "workflow_type": "auto_repair|what_if_prediction",
+  "workflow_type": "auto_repair|what_if_prediction|insight_mining",
   "graph_type": "flowchart|hierarchy|network",
   "mermaid_code": "flowchart TD\n  S1[步骤] --> S2[步骤]",
   "steps": [
@@ -139,7 +139,15 @@ def create_rule_based_roadmap(
     workflow_type: str,
 ) -> dict[str, Any]:
     task_type = str(controller_plan.get("task_type") or "general_data_analysis")
-    if workflow_type == "what_if_prediction" or task_type == "what_if_prediction":
+    if workflow_type == "insight_mining" or task_type == "insight_mining":
+        steps = [
+            _step("S1", "数据服务", "数据画像", "读取上传数据，生成字段、样本量、缺失值和数值分布画像。", "loading_dataset", [], ["dataset_profile.json"]),
+            _step("S2", "InsightMiningAgent", "自动扫描", "无需用户目标，批量扫描时间趋势、周末效应、分组差异、相关性、异常和序列模式。", "insight_mining", ["S1"], ["analysis_result.json"]),
+            _step("S3", "评分排序器", "价值排序", "按效应大小、样本覆盖、置信度和可解释性对洞察进行评分排序。", "insight_mining", ["S2"], ["report_data.json"]),
+            _step("S4", "解释 Agent", "洞察报告", "生成中文洞察报告、可行动建议、限制说明和 PPT 大纲。", "explanation", ["S3"], ["explanation.json", "report.md"]),
+        ]
+        graph_type = "network"
+    elif workflow_type == "what_if_prediction" or task_type == "what_if_prediction":
         steps = [
             _step("S1", "数据服务", "数据画像", "读取表格或图片抽取结果，生成字段、样本量、缺失值和数值分布画像。", "loading_dataset", [], ["dataset_profile.json"]),
             _step("S2", "RAG 检索", "业务口径", "检索相关业务口径，辅助后续 Agent 选择更稳健的解释方式。", "rag_retrieval", ["S1"], ["rag_retrieval.json"]),
@@ -165,7 +173,10 @@ def create_rule_based_roadmap(
             _step("S8", "解释 Agent", "结论报告", "将通过验证的结果转成中文关键发现、建议、限制说明和 PPT 大纲。", "explanation", ["S7"], ["explanation.json", "report_data.json"]),
         ]
         graph_type = "flowchart"
-    normalized_workflow_type = "what_if_prediction" if workflow_type == "what_if_prediction" else "auto_repair"
+    if workflow_type == "insight_mining" or task_type == "insight_mining":
+        normalized_workflow_type = "insight_mining"
+    else:
+        normalized_workflow_type = "what_if_prediction" if workflow_type == "what_if_prediction" else "auto_repair"
     return {
         "title": "AI 分析路线图",
         "user_goal": str(user_goal or ""),
@@ -212,7 +223,7 @@ def _normalize_result(result: Any, fallback: dict[str, Any]) -> dict[str, Any]:
     if not normalized_steps:
         normalized_steps = fallback["steps"]
     workflow_type = str(result.get("workflow_type") or fallback.get("workflow_type") or "auto_repair")
-    if workflow_type not in {"auto_repair", "what_if_prediction"}:
+    if workflow_type not in {"auto_repair", "what_if_prediction", "insight_mining"}:
         workflow_type = fallback.get("workflow_type", "auto_repair")
     user_goal = str(result.get("user_goal") or result.get("goal") or fallback.get("user_goal") or fallback.get("goal") or "")
     graph_type = str(result.get("graph_type") or fallback.get("graph_type") or _select_graph_type(result, normalized_steps))
@@ -396,6 +407,8 @@ def _select_graph_type(roadmap: dict[str, Any], steps: list[dict[str, Any]]) -> 
     workflow_type = str(roadmap.get("workflow_type") or "")
     if workflow_type == "what_if_prediction":
         return "hierarchy"
+    if workflow_type == "insight_mining":
+        return "network"
     if len(steps) >= 9:
         return "network"
     return "flowchart"
@@ -492,4 +505,5 @@ def _short_label(value: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max(1, max_chars - 1)] + "…"
+
 

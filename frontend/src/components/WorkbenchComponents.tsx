@@ -368,13 +368,6 @@ export function RoadmapPage({
             ) : (
               <RoadmapRenderedDiagram steps={roadmap.steps} />
             )}
-            {roadmap.dot_code || roadmap.mermaid_code ? (
-              <details className="raw-json-details compact roadmap-code-details">
-                <summary>查看流程图代码</summary>
-                {roadmap.mermaid_code ? <pre>{roadmap.mermaid_code}</pre> : null}
-                {roadmap.dot_code ? <pre>{roadmap.dot_code}</pre> : null}
-              </details>
-            ) : null}
           </article>
         </>
       ) : (
@@ -2837,6 +2830,7 @@ export function EmptyState({ title, text, compact = false }: { title: string; te
     </div>
   );
 }
+
 
 
 

@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field
 
 class WorkflowJobRequest(BaseModel):
     dataset_id: str = Field(..., min_length=1)
-    user_goal: str = Field(..., min_length=1)
+    user_goal: str = Field(default="", max_length=2000)
+    insight_mode: bool = False
     max_retries: int = Field(default=3, ge=0, le=5)
     timeout_seconds: int = Field(default=90, ge=1, le=300)
 
@@ -127,6 +128,7 @@ class WorkflowJobResponse(BaseModel):
     workflow_type: str | None = None
     task_type: str | None = None
     asset_type: str | None = None
+    owner_user_id: str | None = None
     attempts: list[WorkflowAttemptResult] = Field(default_factory=list)
     job_dir: str
     controller_plan_path: str | None = None
@@ -155,6 +157,8 @@ class WorkflowJobResponse(BaseModel):
     final_report_data_path: str | None = None
     chart_paths: list[str] = Field(default_factory=list)
     final_validation_result_path: str | None = None
+    insight_result_path: str | None = None
+    debate_reflection_path: str | None = None
     effective_max_retries: int | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
     error: dict[str, Any] | None = None
@@ -171,6 +175,7 @@ class WorkflowJobListItem(BaseModel):
     workflow_type: str | None = None
     task_type: str | None = None
     asset_type: str | None = None
+    owner_user_id: str | None = None
     chart_count: int = 0
     created_at: str | None = None
     updated_at: str | None = None
@@ -192,6 +197,7 @@ class WorkflowLogResponse(BaseModel):
     workflow_type: str
     task_type: str | None = None
     asset_type: str | None = None
+    owner_user_id: str | None = None
     user_goal: str
     analysis_plan: dict[str, Any] | None = None
     prediction_plan: dict[str, Any] | None = None
@@ -203,6 +209,7 @@ class WorkflowLogResponse(BaseModel):
     max_retries: int = 0
     artifacts: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list)
+
 
 
 

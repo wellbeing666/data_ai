@@ -1,7 +1,8 @@
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 
+from app.agents.insight_mining_agent import DEFAULT_INSIGHT_GOAL
 from app.schemas.workflow import (
     ChartConfigRequest,
     ChartConfigResponse,
@@ -21,6 +22,7 @@ from app.schemas.workflow import (
     WorkflowPreflightRequest,
     WorkflowPreflightResponse,
 )
+from app.services.auth_service import get_current_user
 from app.services.workflow_service import (
     create_workflow_chart_config,
     create_workflow_chart_suggestions,
@@ -43,9 +45,24 @@ from app.services.workflow_service import (
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
 
+def _is_admin(user: dict[str, Any]) -> bool:
+    return str(user.get("role") or "") == "admin"
+
+
+def _ensure_job_access(job_id: str, user: dict[str, Any]) -> dict[str, Any]:
+    status_data = get_workflow_job_status(job_id)
+    owner_user_id = str(status_data.get("owner_user_id") or "") or None
+    if owner_user_id and owner_user_id != str(user.get("id")) and not _is_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="不能访问其他用户的分析记录。")
+    return status_data
+
+
 @router.post("/preflight", response_model=WorkflowPreflightResponse)
-def create_preflight(request: WorkflowPreflightRequest) -> WorkflowPreflightResponse:
-    result = create_workflow_preflight(dataset_id=request.dataset_id, user_goal=request.user_goal)
+def create_preflight(
+    request: WorkflowPreflightRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> WorkflowPreflightResponse:
+    result = create_workflow_preflight(dataset_id=request.dataset_id, user_goal=request.user_goal, owner_user_id=str(current_user.get("id")))
     return WorkflowPreflightResponse(**result)
 
 
@@ -53,20 +70,26 @@ def create_preflight(request: WorkflowPreflightRequest) -> WorkflowPreflightResp
 def create_workflow_job_async(
     request: WorkflowJobRequest,
     background_tasks: BackgroundTasks,
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> WorkflowJobResponse:
+    effective_goal = DEFAULT_INSIGHT_GOAL if request.insight_mode else str(request.user_goal or "").strip()
+    if not effective_goal:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请输入分析目标，或选择智能洞察模式。")
     result = create_workflow_job_record(
         dataset_id=request.dataset_id,
-        user_goal=request.user_goal,
+        user_goal=effective_goal,
         max_retries=request.max_retries,
         timeout_seconds=request.timeout_seconds,
+        owner_user_id=str(current_user.get("id")),
     )
     background_tasks.add_task(
         run_workflow_job_background,
         result["job_id"],
         request.dataset_id,
-        request.user_goal,
+        effective_goal,
         request.max_retries,
         request.timeout_seconds,
+        str(current_user.get("id")),
     )
     return WorkflowJobResponse(**result)
 
@@ -75,13 +98,24 @@ def create_workflow_job_async(
 def read_workflow_job_list(
     limit: int = Query(default=30, ge=1, le=100),
     query: str | None = Query(default=None, max_length=100),
+    include_all: bool = Query(default=False),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> WorkflowJobListResponse:
-    return WorkflowJobListResponse(**list_workflow_jobs(limit=limit, query=query))
+    result = list_workflow_jobs(
+        limit=limit,
+        query=query,
+        owner_user_id=str(current_user.get("id")),
+        include_all=include_all and _is_admin(current_user),
+    )
+    return WorkflowJobListResponse(**result)
 
 
 @router.get("/jobs/{job_id}", response_model=WorkflowJobResponse)
-def read_workflow_job_status(job_id: str) -> WorkflowJobResponse:
-    return WorkflowJobResponse(**get_workflow_job_status(job_id))
+def read_workflow_job_status(
+    job_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> WorkflowJobResponse:
+    return WorkflowJobResponse(**_ensure_job_access(job_id, current_user))
 
 
 @router.post("/jobs/{job_id}/control", response_model=WorkflowControlResponse)
@@ -89,7 +123,9 @@ def control_job(
     job_id: str,
     request: WorkflowControlRequest,
     background_tasks: BackgroundTasks,
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> WorkflowControlResponse:
+    _ensure_job_access(job_id, current_user)
     result = control_workflow_job(job_id=job_id, action=request.action)
     background_action = result.pop("background_action", None)
     if background_action:
@@ -98,24 +134,42 @@ def control_job(
 
 
 @router.post("/jobs/{job_id}/pptx", response_model=WorkflowPptxGenerateResponse)
-def generate_job_pptx(job_id: str) -> WorkflowPptxGenerateResponse:
+def generate_job_pptx(
+    job_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> WorkflowPptxGenerateResponse:
+    _ensure_job_access(job_id, current_user)
     result = generate_workflow_pptx(job_id=job_id)
     return WorkflowPptxGenerateResponse(**result)
 
 
 @router.post("/jobs/{job_id}/follow-up", response_model=WorkflowFollowUpResponse)
-def create_job_follow_up(job_id: str, request: WorkflowFollowUpRequest) -> WorkflowFollowUpResponse:
+def create_job_follow_up(
+    job_id: str,
+    request: WorkflowFollowUpRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> WorkflowFollowUpResponse:
+    _ensure_job_access(job_id, current_user)
     result = create_workflow_follow_up(job_id=job_id, question=request.question)
     return WorkflowFollowUpResponse(**result)
 
 
 @router.get("/jobs/{job_id}/logs", response_model=WorkflowLogResponse)
-def read_workflow_job_logs(job_id: str) -> WorkflowLogResponse:
+def read_workflow_job_logs(
+    job_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> WorkflowLogResponse:
+    _ensure_job_access(job_id, current_user)
     return WorkflowLogResponse(**get_workflow_job_log(job_id))
 
 
 @router.post("/jobs/{job_id}/chart-config", response_model=ChartConfigResponse)
-def create_job_chart_config(job_id: str, request: ChartConfigRequest) -> ChartConfigResponse:
+def create_job_chart_config(
+    job_id: str,
+    request: ChartConfigRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> ChartConfigResponse:
+    _ensure_job_access(job_id, current_user)
     result = create_workflow_chart_config(
         job_id=job_id,
         instruction=request.instruction,
@@ -128,13 +182,20 @@ def create_job_chart_config(job_id: str, request: ChartConfigRequest) -> ChartCo
 def read_job_chart_suggestions(
     job_id: str,
     chart_path: str = Query(..., min_length=1),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> ChartSuggestionResponse:
+    _ensure_job_access(job_id, current_user)
     result = create_workflow_chart_suggestions(job_id=job_id, chart_path=chart_path)
     return ChartSuggestionResponse(**result)
 
 
 @router.post("/jobs/{job_id}/chart-refine", response_model=ChartRefineResponse)
-def refine_job_chart(job_id: str, request: ChartRefineRequest) -> ChartRefineResponse:
+def refine_job_chart(
+    job_id: str,
+    request: ChartRefineRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> ChartRefineResponse:
+    _ensure_job_access(job_id, current_user)
     result = refine_workflow_chart(
         job_id=job_id,
         chart_path=request.chart_path,
@@ -144,17 +205,23 @@ def refine_job_chart(job_id: str, request: ChartRefineRequest) -> ChartRefineRes
 
 
 @router.delete("/jobs/{job_id}", response_model=WorkflowJobDeleteResponse)
-def remove_workflow_job(job_id: str) -> WorkflowJobDeleteResponse:
-    return WorkflowJobDeleteResponse(**delete_workflow_job(job_id))
+def remove_workflow_job(
+    job_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> WorkflowJobDeleteResponse:
+    _ensure_job_access(job_id, current_user)
+    return WorkflowJobDeleteResponse(**delete_workflow_job(
+        job_id,
+        requester_user_id=str(current_user.get("id")),
+        requester_is_admin=_is_admin(current_user),
+    ))
 
 
 @router.delete("/jobs/{job_id}/charts")
 def remove_workflow_chart(
     job_id: str,
     chart_path: str = Query(..., min_length=1),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
+    _ensure_job_access(job_id, current_user)
     return delete_workflow_chart(job_id, chart_path)
-
-
-
-

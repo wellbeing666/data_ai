@@ -42,6 +42,7 @@ Rules:
 - For grade analysis, emphasize class differences, pass rate, and excellent rate when those metrics are available.
 - Every chart path must come from the provided chart_paths list, or be an empty string.
 - Limitations must include any provided limitations and any constraints visible in the analysis result.
+- If Debate Matrix context is provided, prefer its consensus_findings and statistical_guardrails when drafting final wording.
 """
 
 
@@ -52,6 +53,7 @@ def build_user_prompt(
     chart_paths: list[str],
     limitations: list[str],
     rag_context: list[dict[str, Any]] | None = None,
+    debate_context: dict[str, Any] | None = None,
 ) -> str:
     return """请为本次分析生成中文解释 JSON。
 
@@ -73,7 +75,10 @@ def build_user_prompt(
 检索到的业务知识 JSON：
 {rag_context}
 
-请只返回符合 schema 的 JSON 对象。业务知识可用于术语和建议，但结论必须基于 analysis_result 和 chart_paths。所有面向用户的文本必须使用中文。
+Debate Matrix 动态辩论共识 JSON：
+{debate_context}
+
+请只返回符合 schema 的 JSON 对象。业务知识可用于术语和建议；Debate Matrix 可用于最终措辞、风险边界和优先建议；结论必须基于 analysis_result、chart_paths 和辩论共识。所有面向用户的文本必须使用中文。
 """.format(
         user_goal=user_goal,
         dataset_profile=json.dumps(dataset_profile, ensure_ascii=False, indent=2),
@@ -81,6 +86,7 @@ def build_user_prompt(
         chart_paths=json.dumps(chart_paths, ensure_ascii=False, indent=2),
         limitations=json.dumps(limitations, ensure_ascii=False, indent=2),
         rag_context=json.dumps(rag_context or [], ensure_ascii=False, indent=2),
+        debate_context=json.dumps(debate_context or {}, ensure_ascii=False, indent=2),
     )
 
 
@@ -96,6 +102,7 @@ class ExplanationAgent:
         chart_paths: list[str],
         limitations: list[str],
         rag_context: list[dict[str, Any]] | None = None,
+        debate_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
             result = self.llm_client.chat_json(
@@ -110,6 +117,7 @@ class ExplanationAgent:
                             chart_paths=chart_paths,
                             limitations=limitations,
                             rag_context=rag_context,
+                            debate_context=debate_context,
                         ),
                     },
                 ],
@@ -121,6 +129,7 @@ class ExplanationAgent:
                 analysis_result=analysis_result,
                 chart_paths=chart_paths,
                 limitations=limitations,
+                debate_context=debate_context,
             )
         except Exception:
             return create_template_explanation(
@@ -128,6 +137,7 @@ class ExplanationAgent:
                 analysis_result=analysis_result,
                 chart_paths=chart_paths,
                 limitations=limitations,
+                debate_context=debate_context,
             )
 
 
@@ -138,6 +148,7 @@ def create_explanation(
     chart_paths: list[str],
     limitations: list[str],
     rag_context: list[dict[str, Any]] | None = None,
+    debate_context: dict[str, Any] | None = None,
     llm_client: LLMClient | None = None,
 ) -> dict[str, Any]:
     return ExplanationAgent(llm_client=llm_client).explain(
@@ -147,6 +158,7 @@ def create_explanation(
         chart_paths=chart_paths,
         limitations=limitations,
         rag_context=rag_context,
+        debate_context=debate_context,
     )
 
 
@@ -155,13 +167,17 @@ def create_template_explanation(
     analysis_result: dict[str, Any],
     chart_paths: list[str],
     limitations: list[str],
+    debate_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     task_type = str(analysis_result.get("task_type") or "")
+    result = None
     if task_type == "grade_analysis" or _looks_like_grade_goal(user_goal):
-        return _grade_template_explanation(user_goal, analysis_result, chart_paths, limitations)
-    if _looks_like_sales_decline_goal(user_goal):
-        return _sales_decline_template_explanation(user_goal, analysis_result, chart_paths, limitations)
-    return _general_template_explanation(user_goal, analysis_result, chart_paths, limitations)
+        result = _grade_template_explanation(user_goal, analysis_result, chart_paths, limitations)
+    elif _looks_like_sales_decline_goal(user_goal):
+        result = _sales_decline_template_explanation(user_goal, analysis_result, chart_paths, limitations)
+    else:
+        result = _general_template_explanation(user_goal, analysis_result, chart_paths, limitations)
+    return _merge_debate_context(result, debate_context)
 
 
 def _normalize_result(
@@ -170,6 +186,7 @@ def _normalize_result(
     analysis_result: dict[str, Any],
     chart_paths: list[str],
     limitations: list[str],
+    debate_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise ValueError("Explanation result must be a JSON object.")
@@ -179,6 +196,7 @@ def _normalize_result(
         analysis_result=analysis_result,
         chart_paths=chart_paths,
         limitations=limitations,
+        debate_context=debate_context,
     )
     normalized = {
         "summary": _localize_text(str(result.get("summary") or fallback["summary"])),
@@ -199,7 +217,36 @@ def _normalize_result(
     if _looks_like_grade_goal(user_goal) or analysis_result.get("task_type") == "grade_analysis":
         _ensure_grade_focus(normalized)
 
+    normalized = _merge_debate_context(normalized, debate_context)
     return {key: normalized[key] for key in RESULT_KEYS}
+
+
+def _merge_debate_context(explanation: dict[str, Any], debate_context: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(debate_context, dict) or not debate_context:
+        return explanation
+    merged = {**explanation}
+    findings = _string_list(debate_context.get("consensus_findings"))
+    recommendations = _string_list(debate_context.get("consensus_recommendations"))
+    guardrails = _string_list(debate_context.get("statistical_guardrails"))
+    final_consensus = str(debate_context.get("final_consensus") or "").strip()
+    if final_consensus and final_consensus not in str(merged.get("summary") or ""):
+        merged["summary"] = f"{merged.get('summary') or ''} {final_consensus}".strip()
+    existing_findings = _string_list(merged.get("key_findings"))
+    for item in findings:
+        if item not in existing_findings:
+            existing_findings.append(item)
+    merged["key_findings"] = existing_findings[:8]
+    existing_recommendations = _string_list(merged.get("recommendations"))
+    for item in recommendations:
+        if item not in existing_recommendations:
+            existing_recommendations.append(item)
+    merged["recommendations"] = existing_recommendations[:8]
+    existing_limitations = _string_list(merged.get("limitations"))
+    for item in guardrails:
+        if item not in existing_limitations:
+            existing_limitations.append(item)
+    merged["limitations"] = existing_limitations[:8]
+    return merged
 
 
 def _grade_template_explanation(
@@ -417,3 +464,4 @@ def _localize_text(value: str) -> str:
         "Analysis Summary": "分析摘要",
     }
     return translations.get(text, text)
+
