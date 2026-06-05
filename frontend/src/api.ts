@@ -17,6 +17,7 @@ import type {
   ChartSuggestionResponse,
   DatasetProfile,
   DatasetUploadResponse,
+  DatasetDataMapResponse,
   ExecutionLog,
   HealthStatus,
   KnowledgeDeleteResponse,
@@ -29,6 +30,8 @@ import type {
   ReportGenerateResponse,
   SampleDatasetResponse,
   SampleDatasetTypeListResponse,
+  WorkflowAgentConsoleResponse,
+  WorkflowAgentUpdateRequest,
   WorkflowControlResponse,
   WorkflowFollowUpResponse,
   WorkflowJobDeleteResponse,
@@ -129,6 +132,12 @@ export async function fetchSampleDatasetTypes(): Promise<SampleDatasetTypeListRe
 export async function fetchDatasetProfile(datasetId: string): Promise<DatasetProfile> {
   const response = await apiFetch(`/api/datasets/${datasetId}/profile`);
   return parseResponse<DatasetProfile>(response);
+}
+
+
+export async function fetchDatasetDataMap(datasetId: string): Promise<DatasetDataMapResponse> {
+  const response = await apiFetch(`/api/datasets/${datasetId}/data-map`);
+  return parseResponse<DatasetDataMapResponse>(response);
 }
 
 export async function createCleaningPlan(datasetId: string): Promise<CleaningPlanResponse> {
@@ -360,11 +369,35 @@ export async function refreshWorkflowDashboard(jobId: string): Promise<Dashboard
   return parseResponse<DashboardConfigResponse>(response);
 }
 
-export async function shareWorkflowDashboard(jobId: string): Promise<DashboardConfigResponse> {
-  const response = await apiFetch(`/api/workflows/jobs/${jobId}/dashboard/share`, {
-    method: "POST"
+
+export async function fetchWorkflowAgents(jobId: string): Promise<WorkflowAgentConsoleResponse> {
+  const response = await apiFetch(`/api/workflows/jobs/${jobId}/agents`);
+  return parseResponse<WorkflowAgentConsoleResponse>(response);
+}
+
+export async function updateWorkflowAgent(
+  jobId: string,
+  agentId: string,
+  updates: WorkflowAgentUpdateRequest
+): Promise<WorkflowAgentConsoleResponse> {
+  const response = await apiFetch(`/api/workflows/jobs/${jobId}/agents/${agentId}`, {
+    method: "PATCH",
+    headers: jsonHeaders(),
+    body: JSON.stringify(updates)
   });
-  return parseResponse<DashboardConfigResponse>(response);
+  return parseResponse<WorkflowAgentConsoleResponse>(response);
+}
+
+export async function deleteWorkflowAgentMessage(
+  jobId: string,
+  agentId: string,
+  messageId: string
+): Promise<WorkflowAgentConsoleResponse> {
+  const response = await apiFetch(
+    `/api/workflows/jobs/${jobId}/agents/${agentId}/messages/${encodeURIComponent(messageId)}`,
+    { method: "DELETE" }
+  );
+  return parseResponse<WorkflowAgentConsoleResponse>(response);
 }
 
 export async function createWorkflowFollowUp(
@@ -609,6 +642,7 @@ export function toStorageUrl(path: string): string {
   }
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
+
 
 
 

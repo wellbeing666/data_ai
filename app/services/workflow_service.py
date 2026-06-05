@@ -14,6 +14,7 @@ from app.agents.chart_config_agent import create_chart_config
 from app.agents.chart_suggestion_agent import create_chart_refine_suggestions
 from app.agents.controller_agent import create_controller_plan
 from app.agents.insight_mining_agent import DEFAULT_INSIGHT_GOAL
+from app.agents.postprocess_sidecar_agent import create_dashboard_config
 from app.agents.preflight_agent import create_preflight_assessment
 from app.agents.roadmap_agent import create_analysis_roadmap, render_analysis_roadmap
 from app.agents.vision_parsing_agent import VisionParsingAgent, write_visual_extracted_csv
@@ -59,6 +60,162 @@ FOLLOW_UP_SYSTEM_PROMPT = """你是 AI 原生数据分析工作台的追问分�
   "limitations": ["限制说明"]
 }
 """
+
+
+AGENT_WORKSPACE_FILENAME = "agent_workspace.json"
+
+AGENT_BLUEPRINTS: list[dict[str, Any]] = [
+    {
+        "agent_id": "visual_parser",
+        "display_name": "视觉解析 Agent",
+        "avatar": "👁️",
+        "role": "多模态结构化专家",
+        "description": "把图片、截图或看板识别成可分析的表格数据，并记录识别置信度。",
+        "stage_names": ["visual_parsing"],
+        "tags": ["图片", "OCR替代", "结构化"],
+    },
+    {
+        "agent_id": "rag_retriever",
+        "display_name": "RAG 检索 Agent",
+        "avatar": "📚",
+        "role": "业务知识检索员",
+        "description": "从知识库召回业务口径、指标定义和分析约束，提供给主控和解释链路。",
+        "stage_names": ["rag_retrieval"],
+        "tags": ["知识库", "业务口径"],
+    },
+    {
+        "agent_id": "controller_agent",
+        "display_name": "主控 Agent",
+        "avatar": "🧭",
+        "role": "任务导演",
+        "description": "理解用户目标、识别任务类型，并决定进入普通分析、预测或智能洞察工作流。",
+        "stage_names": ["controller", "queued", "loading_dataset"],
+        "tags": ["规划", "分流"],
+    },
+    {
+        "agent_id": "data_understanding_agent",
+        "display_name": "数据理解 Agent",
+        "avatar": "🧬",
+        "role": "字段语义分析师",
+        "description": "识别指标、维度、日期、质量问题和字段业务含义。",
+        "stage_names": ["data_understanding"],
+        "tags": ["字段", "语义", "数据质量"],
+    },
+    {
+        "agent_id": "analysis_agent",
+        "display_name": "分析计划 Agent",
+        "avatar": "📐",
+        "role": "统计方案设计师",
+        "description": "选择分析方法、图表计划、指标口径和分组维度。",
+        "stage_names": ["analysis", "analysis_plan"],
+        "tags": ["统计", "图表计划"],
+    },
+    {
+        "agent_id": "hypothesis_agent",
+        "display_name": "假设解析 Agent",
+        "avatar": "🧪",
+        "role": "What-if 假设翻译官",
+        "description": "把用户的假设问题翻译为干预变量、目标指标和对象维度。",
+        "stage_names": ["hypothesis"],
+        "tags": ["预测", "假设"],
+    },
+    {
+        "agent_id": "prediction_agent",
+        "display_name": "预测计划 Agent",
+        "avatar": "🔮",
+        "role": "预测建模规划师",
+        "description": "选择预测目标、特征、模型候选和保守解释边界。",
+        "stage_names": ["prediction_plan"],
+        "tags": ["预测", "模型"],
+    },
+    {
+        "agent_id": "code_agent",
+        "display_name": "代码 Agent",
+        "avatar": "🐍",
+        "role": "Python 分析工程师",
+        "description": "生成可审计、可在沙箱执行的 Python 分析脚本。",
+        "stage_names": ["code_generation", "repair"],
+        "tags": ["代码生成", "修复"],
+    },
+    {
+        "agent_id": "safety_agent",
+        "display_name": "代码安全检查 Agent",
+        "avatar": "🛡️",
+        "role": "沙箱安全守门员",
+        "description": "检查危险导入、系统命令和越权文件访问。",
+        "stage_names": ["code_safety"],
+        "tags": ["安全", "审计"],
+    },
+    {
+        "agent_id": "sandbox_executor",
+        "display_name": "沙箱执行器",
+        "avatar": "⚙️",
+        "role": "隔离运行时",
+        "description": "执行通过安全检查的脚本并收集图表、stdout、stderr 和 JSON 产物。",
+        "stage_names": ["sandbox"],
+        "tags": ["执行", "产物"],
+    },
+    {
+        "agent_id": "validation_agent",
+        "display_name": "验证 Agent",
+        "avatar": "✅",
+        "role": "结果审计员",
+        "description": "验证输出结构、业务合理性、图表存在性和是否需要重试。",
+        "stage_names": ["validation"],
+        "tags": ["验证", "质量"],
+    },
+    {
+        "agent_id": "debate_matrix_agent",
+        "display_name": "Debate Matrix 双 Agent",
+        "avatar": "⚖️",
+        "role": "洞察辩论组",
+        "description": "让商业洞察与统计质检两种角色互相挑战，形成更稳健的结论。",
+        "stage_names": ["debate_matrix"],
+        "tags": ["辩论", "稳健性"],
+    },
+    {
+        "agent_id": "explanation_agent",
+        "display_name": "解释 Agent",
+        "avatar": "🗣️",
+        "role": "业务解读者",
+        "description": "把分析产物转化为结论、建议、限制和 PPT 大纲。",
+        "stage_names": ["explanation", "prediction_explanation"],
+        "tags": ["报告", "解释"],
+    },
+    {
+        "agent_id": "quality_review_agent",
+        "display_name": "质检 Agent",
+        "avatar": "🔍",
+        "role": "结论复核官",
+        "description": "检查数字证据、因果表述、样本限制和风险提示。",
+        "stage_names": ["quality_review"],
+        "tags": ["证据", "风险"],
+    },
+    {
+        "agent_id": "dashboard_agent",
+        "display_name": "Dashboard 生成 Agent",
+        "avatar": "📊",
+        "role": "交互看板设计师",
+        "description": "把一次性结果整理为可筛选、可拖拽、可刷新的 Dashboard 配置。",
+        "stage_names": ["sidecar_postprocess", "dashboard_generation", "dashboard_saved"],
+        "tags": ["Dashboard", "持续监控"],
+    },
+    {
+        "agent_id": "report_agent",
+        "display_name": "报告 Agent",
+        "avatar": "📄",
+        "role": "交付物生成器",
+        "description": "生成 Markdown 报告、PPTX 和预览材料。",
+        "stage_names": ["report", "pptx"],
+        "tags": ["报告", "PPT"],
+    },
+]
+
+STAGE_TO_AGENT: dict[str, str] = {}
+for _agent_blueprint in AGENT_BLUEPRINTS:
+    for _stage_name in _agent_blueprint.get("stage_names", []):
+        STAGE_TO_AGENT[str(_stage_name)] = str(_agent_blueprint["agent_id"])
+
 
 
 def create_workflow_job_record(
@@ -747,12 +904,238 @@ def get_workflow_job_log(job_id: str) -> dict[str, Any]:
 
 
 
+
+def get_workflow_agents(job_id: str) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    status_data = _history_status_data(job_dir) or {}
+    workspace = _read_agent_workspace(job_dir)
+    events = _event_list(status_data.get("events"))
+    artifact_messages = _agent_artifact_messages(job_dir, status_data)
+    messages_by_agent: dict[str, list[dict[str, Any]]] = {str(item["agent_id"]): [] for item in AGENT_BLUEPRINTS}
+
+    for index, event in enumerate(events):
+        stage = str(event.get("stage") or "")
+        agent_id = STAGE_TO_AGENT.get(stage) or _agent_id_from_stage(stage)
+        message_id = f"{agent_id}_{index}_{_safe_message_token(stage)}"
+        messages_by_agent.setdefault(agent_id, []).append(
+            {
+                "message_id": message_id,
+                "agent_id": agent_id,
+                "timestamp": event.get("timestamp"),
+                "stage": stage,
+                "status": event.get("status") or "info",
+                "title": _stage_agent_message_title(stage, str(event.get("status") or "")),
+                "content": event.get("message") or "",
+                "artifact_path": None,
+                "metadata": {},
+            }
+        )
+    for message in artifact_messages:
+        messages_by_agent.setdefault(str(message.get("agent_id") or "generic_agent"), []).append(message)
+
+    hidden_messages = set(str(item) for item in workspace.get("hidden_messages", []) if item)
+    overrides = workspace.get("agent_overrides") if isinstance(workspace.get("agent_overrides"), dict) else {}
+    agents: list[dict[str, Any]] = []
+    for blueprint in AGENT_BLUEPRINTS:
+        agent_id = str(blueprint["agent_id"])
+        raw_messages = [item for item in messages_by_agent.get(agent_id, []) if str(item.get("message_id")) not in hidden_messages]
+        raw_messages.sort(key=lambda item: str(item.get("timestamp") or ""))
+        override = overrides.get(agent_id) if isinstance(overrides.get(agent_id), dict) else {}
+        agent_payload = {
+            **blueprint,
+            **{key: value for key, value in override.items() if key in {"display_name", "description", "role", "avatar", "tags", "notes"}},
+            "status": _agent_runtime_status(agent_id, status_data, raw_messages),
+            "message_count": len(raw_messages),
+            "last_active_at": raw_messages[-1].get("timestamp") if raw_messages else None,
+            "messages": raw_messages[-40:],
+        }
+        agents.append(agent_payload)
+
+    return {
+        "job_id": job_id,
+        "agents": agents,
+        "workspace_path": str(job_dir / AGENT_WORKSPACE_FILENAME),
+        "message": "Agent 画像已读取。",
+    }
+
+
+def update_workflow_agent(job_id: str, agent_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    known_ids = {str(item["agent_id"]) for item in AGENT_BLUEPRINTS}
+    if agent_id not in known_ids:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent 不存在。")
+    workspace = _read_agent_workspace(job_dir)
+    overrides = workspace.get("agent_overrides") if isinstance(workspace.get("agent_overrides"), dict) else {}
+    current = overrides.get(agent_id) if isinstance(overrides.get(agent_id), dict) else {}
+    allowed: dict[str, Any] = {}
+    for key in ("display_name", "description", "role", "avatar", "notes"):
+        if key in updates and updates[key] is not None:
+            allowed[key] = str(updates[key])[:1200]
+    if isinstance(updates.get("tags"), list):
+        allowed["tags"] = [str(item)[:40] for item in updates["tags"] if str(item or "").strip()][:8]
+    overrides[agent_id] = {**current, **allowed, "updated_at": datetime.now(timezone.utc).isoformat()}
+    workspace["agent_overrides"] = overrides
+    workspace["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_json(job_dir / AGENT_WORKSPACE_FILENAME, workspace)
+    return get_workflow_agents(job_id)
+
+
+def delete_workflow_agent_message(job_id: str, agent_id: str, message_id: str) -> dict[str, Any]:
+    job_dir = _get_job_dir(job_id).resolve()
+    workspace = _read_agent_workspace(job_dir)
+    hidden = [str(item) for item in workspace.get("hidden_messages", []) if item]
+    if message_id not in hidden:
+        hidden.append(message_id)
+    workspace["hidden_messages"] = hidden
+    workspace["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_json(job_dir / AGENT_WORKSPACE_FILENAME, workspace)
+    return get_workflow_agents(job_id)
+
+
+def _read_agent_workspace(job_dir: Path) -> dict[str, Any]:
+    data = _read_json_if_exists(job_dir / AGENT_WORKSPACE_FILENAME)
+    if data:
+        data.setdefault("agent_overrides", {})
+        data.setdefault("hidden_messages", [])
+        return data
+    return {"agent_overrides": {}, "hidden_messages": [], "created_at": datetime.now(timezone.utc).isoformat()}
+
+
+def _agent_id_from_stage(stage: str) -> str:
+    text = str(stage or "").lower()
+    if "dashboard" in text or "sidecar" in text:
+        return "dashboard_agent"
+    if "report" in text or "ppt" in text:
+        return "report_agent"
+    if "code" in text:
+        return "code_agent"
+    if "validation" in text:
+        return "validation_agent"
+    if "sandbox" in text or "execution" in text:
+        return "sandbox_executor"
+    if "quality" in text:
+        return "quality_review_agent"
+    return "controller_agent"
+
+
+def _stage_agent_message_title(stage: str, status_value: str) -> str:
+    status_text = {"running": "执行中", "success": "已完成", "failed": "失败", "warning": "需关注", "pending": "等待中"}.get(status_value, status_value or "记录")
+    return f"{stage or 'stage'} · {status_text}"
+
+
+def _safe_message_token(value: str) -> str:
+    token = re.sub(r"[^0-9A-Za-z_\-]+", "_", str(value or "stage"))
+    return token[:48] or "stage"
+
+
+def _agent_runtime_status(agent_id: str, status_data: dict[str, Any], messages: list[dict[str, Any]]) -> str:
+    current_stage = str(status_data.get("current_stage") or "")
+    current_agent_id = STAGE_TO_AGENT.get(current_stage) or _agent_id_from_stage(current_stage)
+    if status_data.get("status") in {"failed", "cancelled"} and current_agent_id == agent_id:
+        return "failed"
+    if current_agent_id == agent_id and status_data.get("status") in {"running", "pending"}:
+        return "active"
+    if any(str(message.get("status")) == "failed" for message in messages):
+        return "failed"
+    if messages:
+        return "done"
+    return "idle"
+
+
+def _agent_artifact_messages(job_dir: Path, status_data: dict[str, Any]) -> list[dict[str, Any]]:
+    artifact_map = [
+        ("controller_agent", "controller_plan_path", "controller_plan.json", "主控计划产物"),
+        ("rag_retriever", "rag_retrieval_path", "rag_retrieval.json", "RAG 检索产物"),
+        ("visual_parser", "visual_parse_result_path", "visual_parse_result.json", "视觉解析产物"),
+        ("data_understanding_agent", "data_understanding_path", "data_understanding.json", "字段理解产物"),
+        ("analysis_agent", "analysis_plan_path", "analysis_plan.json", "分析计划产物"),
+        ("hypothesis_agent", "hypothesis_plan_path", "hypothesis_plan.json", "假设解析产物"),
+        ("prediction_agent", "prediction_plan_path", "prediction_plan.json", "预测计划产物"),
+        ("explanation_agent", "explanation_path", "explanation.json", "解释产物"),
+        ("explanation_agent", "prediction_explanation_path", "prediction_explanation.json", "预测解释产物"),
+        ("quality_review_agent", "quality_review_path", "quality_review.json", "质检产物"),
+        ("debate_matrix_agent", "debate_reflection_path", "debate_reflection.json", "辩论产物"),
+        ("report_agent", "report_path", "report.md", "报告文件"),
+        ("report_agent", "pptx_preview_path", "pptx_preview.json", "PPT 预览产物"),
+    ]
+    sidecar = _normalize_sidecar_results(status_data.get("sidecar_results"), job_dir)
+    messages: list[dict[str, Any]] = []
+    index = 0
+    for agent_id, status_key, fallback_name, title in artifact_map:
+        raw_path = status_data.get(status_key) or str(job_dir / fallback_name)
+        path = _resolve_job_path(job_dir, raw_path)
+        if not path or not path.exists():
+            continue
+        messages.append(_artifact_message(agent_id, index, title, path, job_dir))
+        index += 1
+    for key, raw_path in sidecar.items():
+        path = _resolve_job_path(job_dir, raw_path)
+        if not path or not path.exists():
+            continue
+        agent_id = "dashboard_agent" if key == "dashboard_config" else "quality_review_agent" if key == "significance_tests" else "explanation_agent"
+        title = {"dashboard_config": "Dashboard 配置产物", "next_step_suggestions": "追问推荐产物", "anomalies": "异常扫描产物", "significance_tests": "显著性建议产物"}.get(key, f"{key} 产物")
+        messages.append(_artifact_message(agent_id, index, title, path, job_dir))
+        index += 1
+    return messages
+
+
+def _artifact_message(agent_id: str, index: int, title: str, path: Path, job_dir: Path) -> dict[str, Any]:
+    summary = _summarize_artifact(path)
+    return {
+        "message_id": f"{agent_id}_artifact_{index}_{_safe_message_token(path.name)}",
+        "agent_id": agent_id,
+        "timestamp": _iso_from_timestamp(path.stat().st_mtime),
+        "stage": "artifact",
+        "status": "success",
+        "title": title,
+        "content": summary,
+        "artifact_path": str(path),
+        "metadata": {"relative_path": str(path.relative_to(job_dir)) if _is_relative_to(path, job_dir) else str(path)},
+    }
+
+
+def _summarize_artifact(path: Path) -> str:
+    if path.suffix.lower() == ".md":
+        text = _read_text_if_exists(path, max_chars=600)
+        return text.replace("\n", " ")[:260] or "报告文件已生成。"
+    data = _read_json_if_exists(path)
+    if not data:
+        return f"文件已生成：{path.name}。"
+    for key in ("summary", "reasoning_summary", "analysis_goal", "prediction_goal", "final_consensus", "message"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:300]
+    if isinstance(data.get("key_findings"), list) and data["key_findings"]:
+        return "；".join(str(item) for item in data["key_findings"][:3])[:300]
+    keys = "、".join(list(data.keys())[:8])
+    return f"结构化产物已生成，包含字段：{keys}。"
+
+
+def _resolve_job_path(job_dir: Path, raw_path: Any) -> Path | None:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    path = Path(raw_path)
+    if not path.is_absolute():
+        candidates = [(Path.cwd() / path).resolve(), (job_dir / path).resolve()]
+        path = next((candidate for candidate in candidates if candidate.exists()), candidates[0])
+    try:
+        return path.resolve()
+    except OSError:
+        return None
+
+
+
 def get_workflow_dashboard(job_id: str) -> dict[str, Any]:
     job_dir = _get_job_dir(job_id).resolve()
     dashboard_path = _dashboard_config_path(job_dir)
     dashboard = _read_json_if_exists(dashboard_path)
-    if not dashboard:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前任务尚未生成 Dashboard 配置。")
+    if not dashboard or _dashboard_needs_upgrade(dashboard):
+        dashboard = _build_fresh_dashboard(job_id, job_dir, previous_dashboard=dashboard)
+        _write_json(dashboard_path, dashboard)
+    else:
+        dashboard = _attach_dashboard_source_rows(job_dir, dashboard)
+        dashboard = _refresh_dashboard_filters(job_dir, dashboard)
+        _write_json(dashboard_path, dashboard)
     return {
         "job_id": job_id,
         "dashboard": dashboard,
@@ -761,16 +1144,23 @@ def get_workflow_dashboard(job_id: str) -> dict[str, Any]:
     }
 
 
+
 def update_workflow_dashboard(job_id: str, dashboard: dict[str, Any]) -> dict[str, Any]:
     job_dir = _get_job_dir(job_id).resolve()
     if not isinstance(dashboard, dict) or not dashboard:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Dashboard 配置不能为空。")
     dashboard_path = _dashboard_config_path(job_dir)
+    sanitized_dashboard = dict(dashboard)
+    sanitized_dashboard.pop("sharing", None)
+    sanitized_dashboard["permissions"] = {**(sanitized_dashboard.get("permissions") if isinstance(sanitized_dashboard.get("permissions"), dict) else {}), "can_save": True, "can_share": False, "can_embed": False}
     dashboard_payload = {
-        **dashboard,
-        "source_job_id": str(dashboard.get("source_job_id") or job_id),
+        **sanitized_dashboard,
+        "schema_version": int(sanitized_dashboard.get("schema_version") or 2),
+        "source_job_id": str(sanitized_dashboard.get("source_job_id") or job_id),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    dashboard_payload = _attach_dashboard_source_rows(job_dir, dashboard_payload)
+    dashboard_payload = _refresh_dashboard_filters(job_dir, dashboard_payload)
     _write_json(dashboard_path, dashboard_payload)
     sidecar_results = _normalize_sidecar_results({"dashboard_config": str(dashboard_path)}, job_dir)
     _set_job_status(
@@ -788,22 +1178,25 @@ def update_workflow_dashboard(job_id: str, dashboard: dict[str, Any]) -> dict[st
     }
 
 
+
 def refresh_workflow_dashboard(job_id: str) -> dict[str, Any]:
     job_dir = _get_job_dir(job_id).resolve()
     dashboard_path = _dashboard_config_path(job_dir)
-    dashboard = _read_json_if_exists(dashboard_path)
-    if not dashboard:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前任务尚未生成 Dashboard 配置。")
+    previous_dashboard = _read_json_if_exists(dashboard_path)
+    dashboard = _build_fresh_dashboard(job_id, job_dir, previous_dashboard=previous_dashboard)
     refresh_state = dashboard.get("refresh") if isinstance(dashboard.get("refresh"), dict) else {}
+    previous_refresh = previous_dashboard.get("refresh") if isinstance(previous_dashboard, dict) and isinstance(previous_dashboard.get("refresh"), dict) else {}
     refreshed_at = datetime.now(timezone.utc).isoformat()
     dashboard["refresh"] = {
         **refresh_state,
+        "enabled": bool(previous_refresh.get("enabled") or refresh_state.get("enabled")),
+        "interval_seconds": int(previous_refresh.get("interval_seconds") or refresh_state.get("interval_seconds") or 300),
         "last_refreshed_at": refreshed_at,
-        "refresh_count": int(refresh_state.get("refresh_count") or 0) + 1,
+        "refresh_count": int(previous_refresh.get("refresh_count") or refresh_state.get("refresh_count") or 0) + 1,
     }
     dashboard["updated_at"] = refreshed_at
     _write_json(dashboard_path, dashboard)
-    _append_job_event(job_dir, create_event("dashboard_generation", "success", "Dashboard 已完成一次刷新。"))
+    _append_job_event(job_dir, create_event("dashboard_generation", "success", "Dashboard 已重新读取数据并刷新。"))
     return {
         "job_id": job_id,
         "dashboard": dashboard,
@@ -812,47 +1205,213 @@ def refresh_workflow_dashboard(job_id: str) -> dict[str, Any]:
     }
 
 
-def share_workflow_dashboard(job_id: str) -> dict[str, Any]:
-    job_dir = _get_job_dir(job_id).resolve()
-    dashboard_path = _dashboard_config_path(job_dir)
-    dashboard = _read_json_if_exists(dashboard_path)
-    if not dashboard:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前任务尚未生成 Dashboard 配置。")
-    token = str(dashboard.get("sharing", {}).get("share_token") if isinstance(dashboard.get("sharing"), dict) else "") or uuid4().hex[:16]
-    sharing = dashboard.get("sharing") if isinstance(dashboard.get("sharing"), dict) else {}
-    dashboard["sharing"] = {
-        **sharing,
-        "share_token": token,
-        "share_url": f"/api/workflows/jobs/{job_id}/dashboard/shared/{token}",
-        "embed_code": f'<iframe src="/api/workflows/jobs/{job_id}/dashboard/shared/{token}" width="100%" height="720"></iframe>',
-    }
-    dashboard["updated_at"] = datetime.now(timezone.utc).isoformat()
-    _write_json(dashboard_path, dashboard)
-    _append_job_event(job_dir, create_event("dashboard_generation", "success", "Dashboard 分享信息已生成。"))
-    return {
-        "job_id": job_id,
-        "dashboard": dashboard,
-        "dashboard_path": str(dashboard_path),
-        "message": "Dashboard 分享链接和嵌入代码已生成。",
-    }
 
 
-def get_shared_workflow_dashboard(job_id: str, token: str) -> dict[str, Any]:
-    job_dir = _get_job_dir(job_id).resolve()
-    dashboard_path = _dashboard_config_path(job_dir)
-    dashboard = _read_json_if_exists(dashboard_path)
-    if not dashboard:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前任务尚未生成 Dashboard 配置。")
-    sharing = dashboard.get("sharing") if isinstance(dashboard.get("sharing"), dict) else {}
-    expected_token = str(sharing.get("share_token") or "")
-    if not token or token != expected_token:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Dashboard 分享令牌无效。")
-    return {
-        "job_id": job_id,
-        "dashboard": dashboard,
-        "dashboard_path": str(dashboard_path),
-        "message": "共享 Dashboard 配置已读取。",
+
+def _dashboard_needs_upgrade(dashboard: dict[str, Any]) -> bool:
+    if int(dashboard.get("schema_version") or 0) < 2:
+        return True
+    if dashboard.get("sharing"):
+        return True
+    widgets = dashboard.get("widgets") if isinstance(dashboard.get("widgets"), list) else []
+    if widgets and all(str(widget.get("type") or "") == "chart" and not widget.get("x") for widget in widgets if isinstance(widget, dict)):
+        return True
+    return False
+
+
+def _build_fresh_dashboard(job_id: str, job_dir: Path, previous_dashboard: dict[str, Any] | None = None) -> dict[str, Any]:
+    status_data = _history_status_data(job_dir) or {}
+    dataset_profile = _load_dashboard_dataset_profile(job_dir, status_data)
+    result_payload = _dashboard_result_payload(job_dir, status_data)
+    report_data = _dashboard_report_data(job_dir, status_data)
+    sidecar = _normalize_sidecar_results(status_data.get("sidecar_results"), job_dir)
+    anomalies = _read_json_if_exists(_resolve_job_path(job_dir, sidecar.get("anomalies")) or (job_dir / "anomaly_scan.json")) or {}
+    next_steps = _read_json_if_exists(_resolve_job_path(job_dir, sidecar.get("next_step_suggestions")) or (job_dir / "next_steps.json")) or {}
+    chart_paths = _string_list(status_data.get("chart_paths")) or _string_list(result_payload.get("charts"))
+    dashboard = create_dashboard_config(
+        job_dir=job_dir,
+        user_goal=str(status_data.get("user_goal") or (previous_dashboard or {}).get("source_goal") or ""),
+        dataset_profile=dataset_profile,
+        result_payload=result_payload,
+        report_data=report_data,
+        chart_paths=chart_paths,
+        anomalies=anomalies,
+        next_steps=next_steps,
+        workflow_type=str(status_data.get("workflow_type") or status_data.get("task_type") or "auto_repair"),
+    )
+    dashboard["source_job_id"] = job_id
+    dashboard = _attach_dashboard_source_rows(job_dir, dashboard)
+    dashboard = _refresh_dashboard_filters(job_dir, dashboard)
+    return _merge_dashboard_preferences(dashboard, previous_dashboard or {})
+
+
+def _load_dashboard_dataset_profile(job_dir: Path, status_data: dict[str, Any]) -> dict[str, Any]:
+    explicit = _resolve_job_path(job_dir, status_data.get("dataset_profile_path"))
+    if explicit and explicit.exists():
+        profile = _read_json_if_exists(explicit)
+        if profile:
+            return profile
+    fallback = _read_json_if_exists(job_dir / "dataset_profile.json")
+    if fallback:
+        return fallback
+    dataset_id = str(status_data.get("dataset_id") or "")
+    if dataset_id:
+        try:
+            return generate_dataset_profile(dataset_id)
+        except HTTPException:
+            pass
+    return {"columns": [], "row_count": 0, "column_count": 0, "sample_rows": [], "numeric_summary": {}, "text_summary": {}}
+
+
+def _dashboard_result_payload(job_dir: Path, status_data: dict[str, Any]) -> dict[str, Any]:
+    for key, fallback in (
+        ("final_result_path", "analysis_result.json"),
+        ("final_prediction_result_path", "prediction_result.json"),
+        ("insight_result_path", "insight_result.json"),
+    ):
+        path = _resolve_job_path(job_dir, status_data.get(key)) or (job_dir / fallback)
+        data = _read_json_if_exists(path)
+        if data:
+            return data
+    return {}
+
+
+def _dashboard_report_data(job_dir: Path, status_data: dict[str, Any]) -> dict[str, Any]:
+    path = _resolve_job_path(job_dir, status_data.get("final_report_data_path")) or (job_dir / "report_data.json")
+    return _read_json_if_exists(path) or {}
+
+
+def _attach_dashboard_source_rows(job_dir: Path, dashboard: dict[str, Any]) -> dict[str, Any]:
+    status_data = _history_status_data(job_dir) or {}
+    dataset_id = str(status_data.get("dataset_id") or "")
+    if not dataset_id:
+        return dashboard
+    try:
+        file_path, df = load_uploaded_dataset(dataset_id)
+    except HTTPException:
+        return dashboard
+    limit = 800
+    rows = _dataframe_records(df, limit=limit)
+    data_sources = dashboard.get("data_sources") if isinstance(dashboard.get("data_sources"), dict) else {}
+    data_sources["dataset_rows"] = {
+        "label": "原始/清洗后数据",
+        "file_path": str(file_path),
+        "rows": rows,
+        "columns": [str(column) for column in df.columns],
+        "row_count": int(len(df)),
+        "sampled": int(len(df)) > limit,
     }
+    dashboard["data_sources"] = data_sources
+    _sync_table_widget_rows(dashboard, rows)
+    return dashboard
+
+
+def _refresh_dashboard_filters(job_dir: Path, dashboard: dict[str, Any]) -> dict[str, Any]:
+    data_sources = dashboard.get("data_sources") if isinstance(dashboard.get("data_sources"), dict) else {}
+    dataset_rows = data_sources.get("dataset_rows") if isinstance(data_sources.get("dataset_rows"), dict) else {}
+    rows = dataset_rows.get("rows") if isinstance(dataset_rows.get("rows"), list) else []
+    filters = dashboard.get("filters") if isinstance(dashboard.get("filters"), list) else []
+    if not rows or not filters:
+        return dashboard
+    refreshed = []
+    for filter_item in filters:
+        if not isinstance(filter_item, dict):
+            continue
+        field = str(filter_item.get("field") or "")
+        if not field:
+            continue
+        options: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            value = row.get(field)
+            if value is None or value == "":
+                continue
+            text = str(value)
+            if text not in seen:
+                seen.add(text)
+                options.append(text)
+            if len(options) >= 80:
+                break
+        refreshed.append({**filter_item, "value": "" if str(filter_item.get("value") or "") == "全部" else str(filter_item.get("value") or ""), "options": options or filter_item.get("options") or []})
+    dashboard["filters"] = refreshed
+    return dashboard
+
+
+def _sync_table_widget_rows(dashboard: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    widgets = dashboard.get("widgets") if isinstance(dashboard.get("widgets"), list) else []
+    if not rows:
+        return
+    columns = list(rows[0].keys())[:10]
+    for widget in widgets:
+        if isinstance(widget, dict) and widget.get("type") == "table" and str(widget.get("source") or "dataset_rows") == "dataset_rows":
+            widget["rows"] = rows[:120]
+            widget["columns"] = columns
+
+
+def _merge_dashboard_preferences(new_dashboard: dict[str, Any], previous_dashboard: dict[str, Any]) -> dict[str, Any]:
+    if not previous_dashboard:
+        return new_dashboard
+    if isinstance(previous_dashboard.get("refresh"), dict):
+        new_refresh = new_dashboard.get("refresh") if isinstance(new_dashboard.get("refresh"), dict) else {}
+        old_refresh = previous_dashboard["refresh"]
+        new_dashboard["refresh"] = {
+            **new_refresh,
+            "enabled": bool(old_refresh.get("enabled", new_refresh.get("enabled", False))),
+            "interval_seconds": int(old_refresh.get("interval_seconds") or new_refresh.get("interval_seconds") or 300),
+            "last_refreshed_at": old_refresh.get("last_refreshed_at") or new_refresh.get("last_refreshed_at"),
+            "refresh_count": int(old_refresh.get("refresh_count") or new_refresh.get("refresh_count") or 0),
+        }
+    old_filter_values = {
+        str(item.get("field") or item.get("id")): item.get("value")
+        for item in previous_dashboard.get("filters", [])
+        if isinstance(item, dict)
+    }
+    if old_filter_values:
+        next_filters = []
+        for item in new_dashboard.get("filters", []):
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("field") or item.get("id"))
+            value = old_filter_values.get(key, item.get("value", ""))
+            next_filters.append({**item, "value": "" if str(value or "") == "全部" else value})
+        new_dashboard["filters"] = next_filters
+    if isinstance(previous_dashboard.get("layout"), list):
+        new_ids = {str(widget.get("id")) for widget in new_dashboard.get("widgets", []) if isinstance(widget, dict)}
+        preserved = [item for item in previous_dashboard["layout"] if isinstance(item, dict) and str(item.get("i")) in new_ids]
+        missing = [item for item in new_dashboard.get("layout", []) if isinstance(item, dict) and str(item.get("i")) not in {str(old.get("i")) for old in preserved}]
+        if preserved:
+            new_dashboard["layout"] = [*preserved, *missing]
+    new_dashboard.pop("sharing", None)
+    permissions = new_dashboard.get("permissions") if isinstance(new_dashboard.get("permissions"), dict) else {}
+    new_dashboard["permissions"] = {**permissions, "can_save": True, "can_share": False, "can_embed": False}
+    return new_dashboard
+
+
+def _dataframe_records(df: Any, *, limit: int) -> list[dict[str, Any]]:
+    sample = df.head(limit).astype(object).where(df.head(limit).notna(), None)
+    records: list[dict[str, Any]] = []
+    for row in sample.to_dict(orient="records"):
+        records.append({str(key): _jsonable_value(value) for key, value in row.items()})
+    return records
+
+
+def _jsonable_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except (TypeError, ValueError):
+            pass
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except (TypeError, ValueError):
+            pass
+    return value
+
 
 
 def _dashboard_config_path(job_dir: Path) -> Path:
@@ -2148,6 +2707,7 @@ def _event_list(value: Any) -> list[dict[str, Any]]:
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
 
 
 

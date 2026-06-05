@@ -8,6 +8,8 @@ from app.schemas.workflow import (
     ChartConfigResponse,
     DashboardConfigResponse,
     DashboardConfigUpdateRequest,
+    WorkflowAgentConsoleResponse,
+    WorkflowAgentUpdateRequest,
     ChartRefineRequest,
     ChartRefineResponse,
     ChartSuggestionResponse,
@@ -34,15 +36,16 @@ from app.services.workflow_service import (
     create_workflow_preflight,
     delete_workflow_chart,
     delete_workflow_job,
+    delete_workflow_agent_message,
+    get_workflow_agents,
     get_workflow_dashboard,
-    get_shared_workflow_dashboard,
     get_workflow_job_log,
     generate_workflow_pptx,
     get_workflow_job_status,
     list_workflow_jobs,
     refine_workflow_chart,
     refresh_workflow_dashboard,
-    share_workflow_dashboard,
+    update_workflow_agent,
     update_workflow_dashboard,
     rerun_workflow_job_background,
     run_workflow_job_background,
@@ -189,18 +192,36 @@ def refresh_job_dashboard(
     return DashboardConfigResponse(**refresh_workflow_dashboard(job_id))
 
 
-@router.post("/jobs/{job_id}/dashboard/share", response_model=DashboardConfigResponse)
-def share_job_dashboard(
+
+@router.get("/jobs/{job_id}/agents", response_model=WorkflowAgentConsoleResponse)
+def read_job_agents(
     job_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-) -> DashboardConfigResponse:
+) -> WorkflowAgentConsoleResponse:
     _ensure_job_access(job_id, current_user)
-    return DashboardConfigResponse(**share_workflow_dashboard(job_id))
+    return WorkflowAgentConsoleResponse(**get_workflow_agents(job_id))
 
 
-@router.get("/jobs/{job_id}/dashboard/shared/{token}")
-def read_shared_job_dashboard(job_id: str, token: str) -> dict[str, Any]:
-    return get_shared_workflow_dashboard(job_id, token)
+@router.patch("/jobs/{job_id}/agents/{agent_id}", response_model=WorkflowAgentConsoleResponse)
+def update_job_agent(
+    job_id: str,
+    agent_id: str,
+    request: WorkflowAgentUpdateRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> WorkflowAgentConsoleResponse:
+    _ensure_job_access(job_id, current_user)
+    return WorkflowAgentConsoleResponse(**update_workflow_agent(job_id, agent_id, request.model_dump(exclude_unset=True)))
+
+
+@router.delete("/jobs/{job_id}/agents/{agent_id}/messages/{message_id}", response_model=WorkflowAgentConsoleResponse)
+def delete_job_agent_message(
+    job_id: str,
+    agent_id: str,
+    message_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> WorkflowAgentConsoleResponse:
+    _ensure_job_access(job_id, current_user)
+    return WorkflowAgentConsoleResponse(**delete_workflow_agent_message(job_id, agent_id, message_id))
 
 
 @router.get("/jobs/{job_id}/logs", response_model=WorkflowLogResponse)
@@ -274,4 +295,5 @@ def remove_workflow_chart(
 ) -> dict[str, Any]:
     _ensure_job_access(job_id, current_user)
     return delete_workflow_chart(job_id, chart_path)
+
 

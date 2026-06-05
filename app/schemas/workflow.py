@@ -107,6 +107,51 @@ class ChartRefineResponse(BaseModel):
     safety_issues: list[str] = Field(default_factory=list)
 
 
+
+
+class WorkflowAgentUpdateRequest(BaseModel):
+    display_name: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=1200)
+    role: str | None = Field(default=None, max_length=160)
+    avatar: str | None = Field(default=None, max_length=16)
+    tags: list[str] | None = None
+    notes: str | None = Field(default=None, max_length=1200)
+
+
+class WorkflowAgentMessage(BaseModel):
+    message_id: str
+    agent_id: str
+    timestamp: str | None = None
+    stage: str = ""
+    status: str = "info"
+    title: str = ""
+    content: str = ""
+    artifact_path: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowAgentProfile(BaseModel):
+    agent_id: str
+    display_name: str
+    avatar: str = "🤖"
+    role: str = ""
+    description: str = ""
+    stage_names: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    status: str = "idle"
+    message_count: int = 0
+    last_active_at: str | None = None
+    notes: str | None = None
+    messages: list[WorkflowAgentMessage] = Field(default_factory=list)
+
+
+class WorkflowAgentConsoleResponse(BaseModel):
+    job_id: str
+    agents: list[WorkflowAgentProfile] = Field(default_factory=list)
+    workspace_path: str | None = None
+    message: str = ""
+
+
 class DashboardConfigUpdateRequest(BaseModel):
     dashboard: dict[str, Any] = Field(default_factory=dict)
 
@@ -221,6 +266,7 @@ class WorkflowLogResponse(BaseModel):
     max_retries: int = 0
     artifacts: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list)
+
 
 
 

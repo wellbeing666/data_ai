@@ -7,6 +7,8 @@ import type {
   AnalysisResult,
   DashboardConfig,
   DashboardWidget,
+  DatasetDataMap,
+  DatasetDataMapNode,
   DebateReflection,
   CleaningPlanResponse,
   CleaningReportResponse,
@@ -29,6 +31,9 @@ import type {
   ValidationAttemptLog,
   VisualParseResult,
   WorkflowFollowUpResponse,
+  WorkflowAgentConsoleResponse,
+  WorkflowAgentProfile,
+  WorkflowAgentUpdateRequest,
   FollowUpRecommendation,
   WorkflowJobListItem,
   WorkflowJobResponse,
@@ -1834,6 +1839,301 @@ export function ChartsPage({
 }
 
 
+export function DataMapPage({
+  dataMap,
+  profile,
+  loading,
+  message,
+  onRefresh,
+  onUseQuestion
+}: {
+  dataMap: DatasetDataMap | null;
+  profile: DatasetProfile | null;
+  loading?: boolean;
+  message?: string;
+  onRefresh?: () => void;
+  onUseQuestion?: (question: string) => void;
+}) {
+  const nodes = useMemo(() => normalizeDataMapNodes(dataMap), [dataMap]);
+  const edges = dataMap?.graph?.edges ?? [];
+  const [selectedNodeId, setSelectedNodeId] = useState<string>("");
+  const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? nodes[0] ?? null;
+  const positionedNodes = useMemo(() => layoutDataMapNodes(nodes), [nodes]);
+  const nodePosition = new Map<string, DatasetDataMapNode & { x: number; y: number }>(
+    positionedNodes.map((node) => [node.id, node] as const)
+  );
+  const questions = selectedNode ? questionsForDataMapNode(dataMap, selectedNode) : [];
+
+  useEffect(() => {
+    if (!nodes.length) {
+      setSelectedNodeId("");
+      return;
+    }
+    if (!nodes.some((node) => node.id === selectedNodeId)) {
+      setSelectedNodeId(nodes[0].id);
+    }
+  }, [nodes, selectedNodeId]);
+
+  return (
+    <section className="page-section data-map-page">
+      <div className="section-heading dashboard-heading">
+        <div>
+          <h2>数据地图</h2>
+          <span>Data Map Agent 将字段、实体、指标和可提问方向组织成可点击知识图谱。</span>
+        </div>
+        <button className="secondary-button" type="button" disabled={!profile || loading} onClick={onRefresh}>
+          {loading ? "生成中" : "刷新数据地图"}
+        </button>
+      </div>
+      {message ? <p className="message success">{message}</p> : null}
+      {!dataMap || !nodes.length ? (
+        <EmptyState
+          title="暂无数据地图"
+          text="上传表格并生成数据画像后，系统会自动抽取实体、指标、维度和推荐问题。"
+        />
+      ) : (
+        <div className="data-map-layout">
+          <section className="data-map-canvas" aria-label="可点击数据知识图谱">
+            <svg viewBox="0 0 720 460" role="img" aria-label="数据地图关系图">
+              <defs>
+                <radialGradient id="data-map-glow" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="rgba(20,184,166,0.28)" />
+                  <stop offset="100%" stopColor="rgba(20,184,166,0)" />
+                </radialGradient>
+              </defs>
+              <rect x="0" y="0" width="720" height="460" rx="24" className="data-map-svg-bg" />
+              <circle cx="360" cy="230" r="172" fill="url(#data-map-glow)" />
+              {edges.map((edge, index) => {
+                const source = nodePosition.get(edge.source);
+                const target = nodePosition.get(edge.target);
+                if (!source || !target) {
+                  return null;
+                }
+                return (
+                  <g key={`${edge.source}-${edge.target}-${index}`} className="data-map-edge">
+                    <line x1={source.x} y1={source.y} x2={target.x} y2={target.y} />
+                    {index < 28 ? (
+                      <text x={(source.x + target.x) / 2} y={(source.y + target.y) / 2}>
+                        {edge.relation || "关联"}
+                      </text>
+                    ) : null}
+                  </g>
+                );
+              })}
+              {positionedNodes.map((node) => (
+                <g
+                  key={node.id}
+                  className={`data-map-node node-${node.type} ${selectedNode?.id === node.id ? "selected" : ""}`}
+                  transform={`translate(${node.x}, ${node.y})`}
+                  onClick={() => setSelectedNodeId(node.id)}
+                  tabIndex={0}
+                  role="button"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      setSelectedNodeId(node.id);
+                    }
+                  }}
+                >
+                  <circle r={nodeRadius(node)} />
+                  <text>{node.label}</text>
+                </g>
+              ))}
+            </svg>
+          </section>
+          <aside className="data-map-detail">
+            <div className="data-map-summary-cards">
+              <article><strong>{dataMap.row_count ?? profile?.row_count ?? 0}</strong><span>行</span></article>
+              <article><strong>{dataMap.column_count ?? profile?.column_count ?? 0}</strong><span>列</span></article>
+              <article><strong>{dataMap.data_map?.metrics?.length ?? 0}</strong><span>指标</span></article>
+              <article><strong>{dataMap.data_map?.dimensions?.length ?? 0}</strong><span>维度</span></article>
+            </div>
+            {selectedNode ? (
+              <article className={`data-map-node-card node-${selectedNode.type}`}>
+                <span>{dataMapNodeTypeLabel(selectedNode.type)}</span>
+                <h3>{selectedNode.label}</h3>
+                <p>{selectedNode.description || "该节点来自 Data Map Agent 对字段和业务概念的自动识别。"}</p>
+                {selectedNode.field ? <small>字段：{selectedNode.field}</small> : null}
+              </article>
+            ) : null}
+            {questions.length ? (
+              <div className="data-map-question-list">
+                <strong>可以直接追问</strong>
+                {questions.map((question) => (
+                  <button key={question} type="button" onClick={() => onUseQuestion?.(question)}>
+                    {question}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {dataMap.insights?.length ? (
+              <div className="data-map-insights">
+                <strong>AI 观察</strong>
+                {dataMap.insights.slice(0, 4).map((item, index) => (
+                  <p key={`${String(item.title)}-${index}`}>{String(item.description || item.title || "")}</p>
+                ))}
+              </div>
+            ) : null}
+          </aside>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function AgentsPage({
+  agentConsole,
+  job,
+  loading,
+  message,
+  onRefresh,
+  onUpdateAgent,
+  onDeleteMessage
+}: {
+  agentConsole: WorkflowAgentConsoleResponse | null;
+  job: WorkflowJobResponse | null;
+  loading?: boolean;
+  message?: string;
+  onRefresh?: () => void;
+  onUpdateAgent?: (agentId: string, updates: WorkflowAgentUpdateRequest) => void;
+  onDeleteMessage?: (agentId: string, messageId: string) => void;
+}) {
+  const agents = agentConsole?.agents ?? [];
+  const [selectedAgentId, setSelectedAgentId] = useState("");
+  const selectedAgent = agents.find((agent) => agent.agent_id === selectedAgentId) ?? agents[0] ?? null;
+  const [draft, setDraft] = useState<WorkflowAgentUpdateRequest>({});
+
+  useEffect(() => {
+    if (!agents.length) {
+      setSelectedAgentId("");
+      return;
+    }
+    if (!agents.some((agent) => agent.agent_id === selectedAgentId)) {
+      setSelectedAgentId(agents[0].agent_id);
+    }
+  }, [agents, selectedAgentId]);
+
+  useEffect(() => {
+    if (!selectedAgent) {
+      setDraft({});
+      return;
+    }
+    setDraft({
+      display_name: selectedAgent.display_name,
+      role: selectedAgent.role || "",
+      avatar: selectedAgent.avatar || "🤖",
+      description: selectedAgent.description || "",
+      tags: selectedAgent.tags ?? [],
+      notes: selectedAgent.notes || ""
+    });
+  }, [selectedAgent?.agent_id]);
+
+  const submitAgentEdit = () => {
+    if (selectedAgent) {
+      onUpdateAgent?.(selectedAgent.agent_id, draft);
+    }
+  };
+
+  return (
+    <section className="page-section agents-page">
+      <div className="section-heading dashboard-heading">
+        <div>
+          <h2>Agent 画像</h2>
+          <span>每个Agent都是可查看、可编辑、有历史输出的实体。</span>
+        </div>
+        <button className="secondary-button" type="button" disabled={!job?.job_id || loading} onClick={onRefresh}>
+          {loading ? "同步中" : "刷新 Agent"}
+        </button>
+      </div>
+      {message ? <p className="message success">{message}</p> : null}
+      {!job?.job_id ? (
+        <EmptyState title="暂无 Agent 实体" text="启动或打开一个分析任务后，这里会展示参与本轮流程的所有 Agent。" />
+      ) : (
+        <div className="agents-console-layout">
+          <div className="agent-persona-grid">
+            {agents.map((agent) => (
+              <button
+                key={agent.agent_id}
+                type="button"
+                className={`agent-persona-card status-${agent.status || "idle"} ${selectedAgent?.agent_id === agent.agent_id ? "selected" : ""}`}
+                onClick={() => setSelectedAgentId(agent.agent_id)}
+              >
+                <span className="agent-persona-avatar">{agent.avatar || agentInitial(agent.display_name)}</span>
+                <strong>{agent.display_name}</strong>
+                <small>{agent.role}</small>
+                <em>{agent.message_count ?? 0} 条输出</em>
+              </button>
+            ))}
+          </div>
+          {selectedAgent ? (
+            <section className="agent-persona-detail">
+              <div className="agent-persona-hero">
+                <span>{selectedAgent.avatar || "🤖"}</span>
+                <div>
+                  <h3>{selectedAgent.display_name}</h3>
+                  <p>{selectedAgent.description}</p>
+                  <div className="tag-row">
+                    {(selectedAgent.tags ?? []).map((tag) => <small key={tag}>{tag}</small>)}
+                  </div>
+                </div>
+              </div>
+              <details className="agent-edit-box">
+                <summary>编辑这个 Agent 的展示信息</summary>
+                <label>
+                  名称
+                  <input value={draft.display_name ?? ""} onChange={(event) => setDraft((value) => ({ ...value, display_name: event.target.value }))} />
+                </label>
+                <label>
+                  头像
+                  <input value={draft.avatar ?? ""} onChange={(event) => setDraft((value) => ({ ...value, avatar: event.target.value }))} />
+                </label>
+                <label>
+                  角色
+                  <input value={draft.role ?? ""} onChange={(event) => setDraft((value) => ({ ...value, role: event.target.value }))} />
+                </label>
+                <label>
+                  简介
+                  <textarea rows={3} value={draft.description ?? ""} onChange={(event) => setDraft((value) => ({ ...value, description: event.target.value }))} />
+                </label>
+                <label>
+                  标签（用逗号分隔）
+                  <input
+                    value={(draft.tags ?? []).join("，")}
+                    onChange={(event) => setDraft((value) => ({ ...value, tags: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) }))}
+                  />
+                </label>
+                <button className="primary-button" type="button" onClick={submitAgentEdit}>保存 Agent 信息</button>
+              </details>
+              <div className="agent-message-timeline">
+                <div className="section-heading compact-heading">
+                  <h2>最近会话输出</h2>
+                  <span>{selectedAgent.messages?.length ?? 0} 条</span>
+                </div>
+                {(selectedAgent.messages ?? []).length ? (
+                  (selectedAgent.messages ?? []).slice().reverse().map((item) => (
+                    <article key={item.message_id} className={`agent-session-card status-${item.status || "info"}`}>
+                      <header>
+                        <strong>{item.title || stageLabel(item.stage || "")}</strong>
+                        <span>{item.timestamp ? formatDateTime(item.timestamp) : ""}</span>
+                      </header>
+                      <p>{item.content || "该步骤已产生输出。"}</p>
+                      {item.artifact_path ? <a href={toStorageUrl(item.artifact_path)} target="_blank" rel="noreferrer">打开产物</a> : null}
+                      <button className="danger-link" type="button" onClick={() => onDeleteMessage?.(selectedAgent.agent_id, item.message_id)}>
+                        删除这条输出
+                      </button>
+                    </article>
+                  ))
+                ) : (
+                  <p className="agent-muted">该 Agent 在当前任务中暂无可展示输出。</p>
+                )}
+              </div>
+            </section>
+          ) : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function DashboardPage({
   dashboard,
   job,
@@ -1843,8 +2143,7 @@ export function DashboardPage({
   refreshing,
   onDashboardChange,
   onSave,
-  onRefresh,
-  onShare
+  onRefresh
 }: {
   dashboard: DashboardConfig | null;
   job: WorkflowJobResponse | null;
@@ -1855,7 +2154,6 @@ export function DashboardPage({
   onDashboardChange?: (dashboard: DashboardConfig) => void;
   onSave?: () => void;
   onRefresh?: () => void;
-  onShare?: () => void;
 }) {
   const [draggingWidgetId, setDraggingWidgetId] = useState<string | null>(null);
 
@@ -1864,11 +2162,11 @@ export function DashboardPage({
       <section className="page-section">
         <div className="section-heading">
           <h2>自动 Dashboard</h2>
-          <span>等待后处理 Sidecar Agent</span>
+          <span>等待 Dashboard 生成 Agent</span>
         </div>
         <EmptyState
           title="暂无 Dashboard"
-          text="分析完成后，Dashboard 生成 Agent 会基于本轮结果自动生成 KPI 卡片、趋势图、对比图、明细表和筛选器。"
+          text="分析完成后，Dashboard 生成 Agent 会基于本轮结果自动生成 KPI 卡片、趋势图、对比图、结构拆解和明细表。"
         />
       </section>
     );
@@ -1877,6 +2175,9 @@ export function DashboardPage({
   const widgets = dashboard.widgets ?? [];
   const filters = dashboard.filters ?? [];
   const refreshInterval = dashboard.refresh?.interval_seconds ?? 300;
+  const sourceRows = dashboardRows(dashboard, "dataset_rows");
+  const filteredRows = applyDashboardFilters(sourceRows, filters);
+  const activeFilterCount = filters.filter((filter) => isActiveDashboardFilter(filter.value)).length;
 
   const emitChange = (next: DashboardConfig) => onDashboardChange?.(next);
   const updateRefreshInterval = (value: number) => {
@@ -1912,10 +2213,10 @@ export function DashboardPage({
       widgets: nextWidgets,
       layout: nextWidgets.map((widget, index) => ({
         i: widget.id,
-        x: index % 2,
+        x: (index % 12),
         y: Math.floor(index / 2),
-        w: widget.type === "table" ? 2 : 1,
-        h: widget.type === "table" ? 2 : 1
+        w: widget.type === "table" ? 12 : widget.type === "kpi" ? 3 : 6,
+        h: widget.type === "table" ? 4 : widget.type === "kpi" ? 2 : 4
       }))
     });
   };
@@ -1941,9 +2242,6 @@ export function DashboardPage({
           </button>
           <button className="secondary-button" type="button" disabled={!dashboard || saving} onClick={onSave}>
             {saving ? "保存中" : "保存布局"}
-          </button>
-          <button className="secondary-button" type="button" disabled={!job?.job_id} onClick={onShare}>
-            保存分享信息
           </button>
         </div>
       </div>
@@ -1980,6 +2278,9 @@ export function DashboardPage({
             <span className="agent-muted">本轮数据未生成可用筛选器。</span>
           )}
         </div>
+        <span className="dashboard-filter-summary">
+          {activeFilterCount ? `已筛选 ${filteredRows.length} / ${sourceRows.length} 行` : `当前展示 ${sourceRows.length || dashboardRows(dashboard, "result_rows").length} 行可交互数据`}
+        </span>
       </section>
 
       <div className="dashboard-grid" aria-label="可拖拽调整布局的 Dashboard 组件">
@@ -1987,6 +2288,7 @@ export function DashboardPage({
           <article
             className={`dashboard-widget dashboard-widget-${widget.type} ${draggingWidgetId === widget.id ? "dragging" : ""}`}
             key={widget.id}
+            style={dashboardWidgetStyle(dashboard, widget)}
             draggable
             onDragStart={(event) => {
               setDraggingWidgetId(widget.id);
@@ -1997,53 +2299,57 @@ export function DashboardPage({
             onDrop={(event) => handleDrop(event, widget.id)}
             onDragEnd={() => setDraggingWidgetId(null)}
           >
-            <DashboardWidgetView widget={widget} chartRefreshToken={chartRefreshToken} />
+            <DashboardWidgetView widget={widget} dashboard={dashboard} filteredRows={filteredRows} chartRefreshToken={chartRefreshToken} />
           </article>
         ))}
       </div>
-
-      {dashboard.sharing?.share_url || dashboard.sharing?.embed_code ? (
-        <section className="dashboard-share-box">
-          <strong>分享与嵌入</strong>
-          {dashboard.sharing.share_url ? <code>{dashboard.sharing.share_url}</code> : null}
-          {dashboard.sharing.embed_code ? <pre>{dashboard.sharing.embed_code}</pre> : null}
-        </section>
-      ) : null}
     </section>
   );
 }
 
-function DashboardWidgetView({ widget, chartRefreshToken }: { widget: DashboardWidget; chartRefreshToken: number }) {
+function DashboardWidgetView({
+  widget,
+  dashboard,
+  filteredRows,
+  chartRefreshToken
+}: {
+  widget: DashboardWidget;
+  dashboard: DashboardConfig;
+  filteredRows: AnyRecord[];
+  chartRefreshToken: number;
+}) {
+  const widgetRows = rowsForDashboardWidget(dashboard, widget, filteredRows);
   if (widget.type === "kpi") {
+    const value = resolveDashboardKpiValue(widget, widgetRows);
     return (
       <div className="dashboard-kpi-card">
         <span>{widget.title}</span>
-        <strong>{formatDashboardValue(widget.value)}{widget.unit ? <em>{widget.unit}</em> : null}</strong>
+        <strong>{formatDashboardValue(value)}{widget.unit ? <em>{widget.unit}</em> : null}</strong>
         {widget.description ? <p>{widget.description}</p> : null}
       </div>
     );
   }
 
   if (widget.type === "chart") {
-    return (
-      <div className="dashboard-chart-card">
-        <header>
-          <strong>{widget.title}</strong>
-          {widget.chart_role ? <span>{widget.chart_role}</span> : null}
-        </header>
-        {widget.chart_path ? (
-          <img alt={widget.title} src={toVersionedStorageUrl(widget.chart_path, chartRefreshToken)} />
-        ) : (
-          <p className="agent-muted">该图表组件尚未绑定图片。</p>
-        )}
-        {widget.description ? <p>{widget.description}</p> : null}
-      </div>
-    );
+    const points = aggregateDashboardWidget(widget, widgetRows);
+    if (!points.length && widget.chart_path) {
+      return <DashboardImageChart widget={widget} chartRefreshToken={chartRefreshToken} />;
+    }
+    return <DashboardInteractiveChart widget={widget} points={points} />;
+  }
+
+  if (widget.type === "breakdown") {
+    const points = aggregateDashboardWidget(widget, widgetRows);
+    return <DashboardBreakdownCard widget={widget} points={points} />;
+  }
+
+  if (widget.type === "image_chart") {
+    return <DashboardImageChart widget={widget} chartRefreshToken={chartRefreshToken} />;
   }
 
   if (widget.type === "table") {
-    const columns = widget.columns ?? [];
-    const rows = widget.rows ?? [];
+    const columns = (widget.columns?.length ? widget.columns : tableColumnsFromRows(widgetRows)) ?? [];
+    const rows = widgetRows.length ? widgetRows : (widget.rows ?? []);
     return (
       <div className="dashboard-table-card">
         <header>
@@ -2056,7 +2362,7 @@ function DashboardWidgetView({ widget, chartRefreshToken }: { widget: DashboardW
               <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
             </thead>
             <tbody>
-              {rows.slice(0, 8).map((row, rowIndex) => (
+              {rows.slice(0, Number(widget.page_size || 12)).map((row, rowIndex) => (
                 <tr key={`dashboard-row-${rowIndex}`}>
                   {columns.map((column) => <td key={`${rowIndex}-${column}`}>{formatCell(row[column])}</td>)}
                 </tr>
@@ -2076,7 +2382,243 @@ function DashboardWidgetView({ widget, chartRefreshToken }: { widget: DashboardW
   );
 }
 
-function formatDashboardValue(value: DashboardWidget["value"]): string {
+function DashboardInteractiveChart({ widget, points }: { widget: DashboardWidget; points: DashboardPoint[] }) {
+  const chartType = String(widget.chart_type || "bar");
+  return (
+    <div className="dashboard-chart-card interactive-chart-card">
+      <header>
+        <strong>{widget.title}</strong>
+        {widget.chart_role ? <span>{widget.chart_role}</span> : null}
+      </header>
+      {points.length ? (
+        chartType === "line" ? <DashboardLineChart points={points} /> : <DashboardBarChart points={points} />
+      ) : (
+        <p className="agent-muted">筛选后暂无可绘制数据。</p>
+      )}
+      {widget.description ? <p>{widget.description}</p> : null}
+    </div>
+  );
+}
+
+function DashboardLineChart({ points }: { points: DashboardPoint[] }) {
+  const width = 520;
+  const height = 220;
+  const padding = 34;
+  const values = points.map((point) => point.value);
+  const min = Math.min(0, ...values);
+  const max = Math.max(1, ...values);
+  const span = Math.max(max - min, 1);
+  const coordinates = points.map((point, index) => {
+    const x = padding + (points.length <= 1 ? 0 : (index / (points.length - 1)) * (width - padding * 2));
+    const y = height - padding - ((point.value - min) / span) * (height - padding * 2);
+    return { x, y, point };
+  });
+  return (
+    <svg className="dashboard-line-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="趋势折线图">
+      <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} />
+      <line x1={padding} y1={padding} x2={padding} y2={height - padding} />
+      <polyline points={coordinates.map((item) => `${item.x},${item.y}`).join(" ")} />
+      {coordinates.map((item, index) => (
+        <g key={`${item.point.label}-${index}`}>
+          <circle cx={item.x} cy={item.y} r="4" />
+          {(index === 0 || index === coordinates.length - 1 || coordinates.length <= 6) ? <text x={item.x} y={height - 8}>{item.point.label}</text> : null}
+          {(index === coordinates.length - 1) ? <text x={item.x} y={item.y - 10}>{formatDashboardValue(item.point.value)}</text> : null}
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+function DashboardBarChart({ points }: { points: DashboardPoint[] }) {
+  const max = Math.max(1, ...points.map((point) => Math.abs(point.value)));
+  return (
+    <div className="dashboard-bar-list">
+      {points.slice(0, 12).map((point) => (
+        <div className="dashboard-bar-row" key={point.label}>
+          <span title={point.label}>{point.label}</span>
+          <div><i style={{ width: `${Math.max(4, Math.abs(point.value) / max * 100)}%` }} /></div>
+          <strong>{formatDashboardValue(point.value)}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DashboardBreakdownCard({ widget, points }: { widget: DashboardWidget; points: DashboardPoint[] }) {
+  const total = points.reduce((sum, point) => sum + Math.abs(point.value), 0) || 1;
+  return (
+    <div className="dashboard-breakdown-card">
+      <header>
+        <strong>{widget.title}</strong>
+        <span>{widget.chart_role || "breakdown"}</span>
+      </header>
+      {points.length ? (
+        <div className="dashboard-breakdown-list">
+          {points.slice(0, 10).map((point) => {
+            const ratio = Math.abs(point.value) / total;
+            return (
+              <div key={point.label} className="dashboard-breakdown-row">
+                <span>{point.label}</span>
+                <div><i style={{ width: `${Math.max(3, ratio * 100)}%` }} /></div>
+                <strong>{(ratio * 100).toFixed(1)}%</strong>
+              </div>
+            );
+          })}
+        </div>
+      ) : <p className="agent-muted">筛选后暂无结构拆解数据。</p>}
+      {widget.description ? <p>{widget.description}</p> : null}
+    </div>
+  );
+}
+
+function DashboardImageChart({ widget, chartRefreshToken }: { widget: DashboardWidget; chartRefreshToken: number }) {
+  return (
+    <div className="dashboard-chart-card">
+      <header>
+        <strong>{widget.title}</strong>
+        {widget.chart_role ? <span>{widget.chart_role}</span> : null}
+      </header>
+      {widget.chart_path ? (
+        <img alt={widget.title} src={toVersionedStorageUrl(widget.chart_path, chartRefreshToken)} />
+      ) : (
+        <p className="agent-muted">该图表组件尚未绑定图片或结构化数据。</p>
+      )}
+      {widget.description ? <p>{widget.description}</p> : null}
+    </div>
+  );
+}
+
+interface DashboardPoint {
+  label: string;
+  value: number;
+  count: number;
+}
+
+function aggregateDashboardWidget(widget: DashboardWidget, rows: AnyRecord[]): DashboardPoint[] {
+  const ownRows = Array.isArray(widget.rows) ? (widget.rows as AnyRecord[]) : [];
+  const sourceRows = rows.length ? rows : ownRows;
+  const xField = String(widget.x || widget.dimension || widget.field || "");
+  const yField = String(widget.y || widget.metric || "");
+  if (!sourceRows.length || !xField) {
+    return [];
+  }
+  const aggregation = String(widget.aggregation || (yField ? "sum" : "count"));
+  const groups = new Map<string, { sum: number; count: number }>();
+  sourceRows.forEach((row) => {
+    const rawLabel = row[xField];
+    const label = rawLabel === null || rawLabel === undefined || rawLabel === "" ? "未填写" : String(rawLabel);
+    const rawValue = yField ? numberFromCell(row[yField]) : 1;
+    if (rawValue === null) {
+      return;
+    }
+    const current = groups.get(label) ?? { sum: 0, count: 0 };
+    current.sum += rawValue;
+    current.count += 1;
+    groups.set(label, current);
+  });
+  const points = Array.from(groups.entries()).map(([label, value]) => ({
+    label,
+    value: aggregation === "mean" ? value.sum / Math.max(1, value.count) : aggregation === "count" ? value.count : value.sum,
+    count: value.count
+  }));
+  if (String(widget.chart_type || "") === "line") {
+    return points.sort((left, right) => left.label.localeCompare(right.label, "zh-Hans-CN", { numeric: true })).slice(0, Number(widget.limit || 18));
+  }
+  return points.sort((left, right) => Math.abs(right.value) - Math.abs(left.value)).slice(0, Number(widget.limit || 12));
+}
+
+function resolveDashboardKpiValue(widget: DashboardWidget, rows: AnyRecord[]): string | number | null | undefined {
+  const calculation = String(widget.calculation || "");
+  const metric = String(widget.metric || "");
+  if (calculation === "count_rows") {
+    return rows.length || widget.value;
+  }
+  if (metric && rows.length && ["mean", "sum"].includes(calculation)) {
+    const values = rows.map((row) => numberFromCell(row[metric])).filter((value): value is number => value !== null);
+    if (!values.length) {
+      return widget.value;
+    }
+    const sum = values.reduce((total, value) => total + value, 0);
+    return calculation === "mean" ? sum / values.length : sum;
+  }
+  return widget.value;
+}
+
+function rowsForDashboardWidget(dashboard: DashboardConfig, widget: DashboardWidget, filteredRows: AnyRecord[]): AnyRecord[] {
+  const source = String(widget.source || "dataset_rows");
+  if (source === "dataset_rows") {
+    return filteredRows;
+  }
+  const rows = dashboardRows(dashboard, source);
+  if (rows.length) {
+    return rows;
+  }
+  return Array.isArray(widget.rows) ? (widget.rows as AnyRecord[]) : [];
+}
+
+function dashboardRows(dashboard: DashboardConfig, source: string): AnyRecord[] {
+  const dataSources = dashboard.data_sources as Record<string, { rows?: unknown[] } | undefined> | undefined;
+  const rows = dataSources?.[source]?.rows;
+  if (Array.isArray(rows)) {
+    return rows.filter((row): row is AnyRecord => Boolean(row) && typeof row === "object" && !Array.isArray(row));
+  }
+  return [];
+}
+
+function applyDashboardFilters(rows: AnyRecord[], filters: DashboardConfig["filters"]): AnyRecord[] {
+  const activeFilters = (filters ?? []).filter((filter) => isActiveDashboardFilter(filter.value));
+  if (!rows.length || !activeFilters.length) {
+    return rows;
+  }
+  return rows.filter((row) => activeFilters.every((filter) => dashboardFilterMatches(row, filter.field, filter.value ?? "")));
+}
+
+function dashboardFilterMatches(row: AnyRecord, field: string, value: string): boolean {
+  const raw = row[field];
+  if (!isActiveDashboardFilter(value)) {
+    return true;
+  }
+  if (raw === null || raw === undefined) {
+    return false;
+  }
+  return String(raw).toLowerCase().includes(String(value).toLowerCase());
+}
+
+function isActiveDashboardFilter(value: unknown): boolean {
+  const text = String(value ?? "").trim();
+  return Boolean(text && text !== "全部");
+}
+
+function dashboardWidgetStyle(dashboard: DashboardConfig, widget: DashboardWidget): Record<string, string> {
+  const item = (dashboard.layout ?? []).find((layout) => layout.i === widget.id);
+  const span = Math.max(3, Math.min(12, Number(item?.w || (widget.type === "kpi" ? 3 : widget.type === "table" ? 12 : 6))));
+  return { gridColumn: `span ${span}` };
+}
+
+function tableColumnsFromRows(rows: AnyRecord[]): string[] {
+  const seen: string[] = [];
+  rows.slice(0, 10).forEach((row) => {
+    Object.keys(row).forEach((key) => {
+      if (!seen.includes(key)) {
+        seen.push(key);
+      }
+    });
+  });
+  return seen.slice(0, 10);
+}
+
+function numberFromCell(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const numeric = Number(value.replace(/,/g, "").replace(/%$/, ""));
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+  return null;
+}
+
+function formatDashboardValue(value: DashboardWidget["value"] | number): string {
   if (value === null || value === undefined || value === "") {
     return "-";
   }
@@ -2085,6 +2627,62 @@ function formatDashboardValue(value: DashboardWidget["value"]): string {
   }
   return String(value);
 }
+
+function normalizeDataMapNodes(dataMap: DatasetDataMap | null): DatasetDataMapNode[] {
+  const explicitNodes = dataMap?.graph?.nodes ?? [];
+  if (explicitNodes.length) {
+    return explicitNodes;
+  }
+  const map = dataMap?.data_map;
+  const nodes: DatasetDataMapNode[] = [];
+  (map?.entities ?? []).forEach((label) => nodes.push({ id: `entity:${label}`, label, type: "entity" }));
+  (map?.metrics ?? []).forEach((label) => nodes.push({ id: `metric:${label}`, label, type: "metric", field: label }));
+  (map?.dimensions ?? []).forEach((label) => nodes.push({ id: `dimension:${label}`, label, type: "dimension", field: label }));
+  return nodes;
+}
+
+function layoutDataMapNodes(nodes: DatasetDataMapNode[]): Array<DatasetDataMapNode & { x: number; y: number }> {
+  if (!nodes.length) {
+    return [];
+  }
+  const centerX = 360;
+  const centerY = 230;
+  const entityNodes = nodes.filter((node) => node.type === "entity");
+  const otherNodes = nodes.filter((node) => node.type !== "entity");
+  const positioned: Array<DatasetDataMapNode & { x: number; y: number }> = [];
+  entityNodes.forEach((node, index) => {
+    const offset = (index - (entityNodes.length - 1) / 2) * 82;
+    positioned.push({ ...node, x: centerX + offset, y: centerY });
+  });
+  otherNodes.forEach((node, index) => {
+    const angle = -Math.PI / 2 + (index / Math.max(1, otherNodes.length)) * Math.PI * 2;
+    const radius = node.type === "metric" ? 170 : 210;
+    positioned.push({ ...node, x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius });
+  });
+  return positioned;
+}
+
+function questionsForDataMapNode(dataMap: DatasetDataMap | null, node: DatasetDataMapNode): string[] {
+  const questions = dataMap?.data_map?.possible_questions ?? {};
+  return questions[node.label] ?? questions[node.type === "metric" ? "指标" : ""] ?? [];
+}
+
+function nodeRadius(node: DatasetDataMapNode): number {
+  const base = node.type === "entity" ? 38 : node.type === "metric" ? 31 : 27;
+  return base * Number(node.size || 1);
+}
+
+function dataMapNodeTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    entity: "业务实体",
+    metric: "度量指标",
+    dimension: "分析维度",
+    time: "时间维度",
+    identifier: "标识字段"
+  };
+  return labels[type] ?? type;
+}
+
 
 function ChartFigure({
   chartPath,
@@ -3194,6 +3792,7 @@ export function EmptyState({ title, text, compact = false }: { title: string; te
     </div>
   );
 }
+
 
 
 

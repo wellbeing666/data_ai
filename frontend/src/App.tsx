@@ -96,7 +96,7 @@ export default function App() {
           title={appHeaderCollapsed ? "展开顶部导航栏" : "收起顶部导航栏"}
           onClick={() => setAppHeaderCollapsed((value) => !value)}
         >
-          {appHeaderCollapsed ? "展开" : "收起"}
+          <span aria-hidden="true">{appHeaderCollapsed ? "⌄" : "⌃"}</span>
         </button>
         {!appHeaderCollapsed ? (
           <>
@@ -556,4 +556,5 @@ function statusLabel(status: string) {
   };
   return labels[status] || status;
 }
+
 

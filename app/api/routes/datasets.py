@@ -5,6 +5,7 @@ from app.schemas.dataset import (
     CleaningPlanResponse,
     CleaningReportResponse,
     DatasetProfileResponse,
+    DatasetDataMapResponse,
     DatasetUploadResponse,
     SampleDatasetRequest,
     SampleDatasetResponse,
@@ -13,6 +14,7 @@ from app.schemas.dataset import (
 from app.services.data_cleaning_service import apply_cleaning_plan, build_cleaning_plan, get_cleaning_report
 from app.services.dataset_profile import generate_dataset_profile
 from app.services.dataset_storage import save_uploaded_dataset
+from app.services.data_map_service import get_or_create_dataset_data_map
 from app.services.sample_dataset_service import create_sample_dataset, list_sample_dataset_types
 
 
@@ -42,6 +44,14 @@ def get_dataset_profile(dataset_id: str) -> DatasetProfileResponse:
     return DatasetProfileResponse(**result)
 
 
+
+
+@router.get("/{dataset_id}/data-map", response_model=DatasetDataMapResponse)
+def get_dataset_data_map(dataset_id: str) -> DatasetDataMapResponse:
+    result = get_or_create_dataset_data_map(dataset_id)
+    return DatasetDataMapResponse(**result)
+
+
 @router.post("/{dataset_id}/cleaning-plan", response_model=CleaningPlanResponse)
 def create_dataset_cleaning_plan(dataset_id: str) -> CleaningPlanResponse:
     return CleaningPlanResponse(**build_cleaning_plan(dataset_id))
@@ -55,3 +65,4 @@ def apply_dataset_cleaning(dataset_id: str, request: CleaningApplyRequest) -> Cl
 @router.get("/{dataset_id}/cleaning-report", response_model=CleaningReportResponse)
 def read_dataset_cleaning_report(dataset_id: str) -> CleaningReportResponse:
     return CleaningReportResponse(**get_cleaning_report(dataset_id))
+

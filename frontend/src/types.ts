@@ -396,7 +396,7 @@ export interface DashboardLayoutItem {
 
 export interface DashboardWidget {
   id: string;
-  type: "kpi" | "chart" | "table" | string;
+  type: "kpi" | "chart" | "table" | "breakdown" | "image_chart" | string;
   title: string;
   value?: string | number | null;
   unit?: string;
@@ -428,12 +428,6 @@ export interface DashboardConfig {
   filters?: DashboardFilterConfig[];
   layout?: DashboardLayoutItem[];
   widgets?: DashboardWidget[];
-  sharing?: {
-    share_token?: string;
-    share_url?: string;
-    embed_code?: string;
-    [key: string]: unknown;
-  };
   recommended_questions?: FollowUpRecommendation[];
   [key: string]: unknown;
 }
@@ -444,6 +438,101 @@ export interface DashboardConfigResponse {
   dashboard_path?: string | null;
   message: string;
 }
+
+
+
+export interface DatasetDataMapNode {
+  id: string;
+  label: string;
+  type: "entity" | "metric" | "dimension" | "time" | "identifier" | string;
+  description?: string;
+  field?: string;
+  size?: number;
+  [key: string]: unknown;
+}
+
+export interface DatasetDataMapEdge {
+  source: string;
+  target: string;
+  relation?: string;
+}
+
+export interface DatasetDataMap {
+  schema_version?: number;
+  agent?: string;
+  generated_at?: string;
+  dataset_id?: string;
+  source_file?: string;
+  row_count?: number;
+  column_count?: number;
+  data_map?: {
+    entities?: string[];
+    metrics?: string[];
+    dimensions?: string[];
+    time_dimensions?: string[];
+    identifiers?: string[];
+    possible_questions?: Record<string, string[]>;
+    [key: string]: unknown;
+  };
+  graph?: {
+    nodes?: DatasetDataMapNode[];
+    edges?: DatasetDataMapEdge[];
+  };
+  columns?: Array<Record<string, unknown>>;
+  insights?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+export interface DatasetDataMapResponse {
+  dataset_id: string;
+  data_map: DatasetDataMap;
+  data_map_path?: string | null;
+  message: string;
+}
+
+export interface WorkflowAgentMessage {
+  message_id: string;
+  agent_id: string;
+  timestamp?: string | null;
+  stage?: string;
+  status?: string;
+  title?: string;
+  content?: string;
+  artifact_path?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WorkflowAgentProfile {
+  agent_id: string;
+  display_name: string;
+  avatar?: string;
+  role?: string;
+  description?: string;
+  stage_names?: string[];
+  tags?: string[];
+  status?: string;
+  message_count?: number;
+  last_active_at?: string | null;
+  notes?: string | null;
+  messages?: WorkflowAgentMessage[];
+}
+
+export interface WorkflowAgentConsoleResponse {
+  job_id: string;
+  agents: WorkflowAgentProfile[];
+  workspace_path?: string | null;
+  message: string;
+}
+
+export interface WorkflowAgentUpdateRequest {
+  display_name?: string;
+  description?: string;
+  role?: string;
+  avatar?: string;
+  tags?: string[];
+  notes?: string;
+}
+
 
 export interface ChartSuggestionResponse {
   job_id: string;
@@ -874,6 +963,7 @@ export interface PptPreview {
   pptx_path?: string | null;
   slides: PptPreviewSlide[];
 }
+
 
 
 

@@ -10,10 +10,12 @@ import {
   controlWorkflowJob,
   createWorkflowFollowUp,
   createWorkflowJobAsync,
+  deleteWorkflowAgentMessage,
   deleteWorkflowChart,
   deleteWorkflowJob,
   fetchAnalysisResult,
   fetchAutoRepairAnalysisJobStatus,
+  fetchDatasetDataMap,
   fetchDatasetProfile,
   fetchExecutionLog,
   fetchHealthStatus,
@@ -22,6 +24,7 @@ import {
   fetchPredictionJobStatus,
   fetchPredictionLog,
   fetchWorkflowChartSuggestions,
+  fetchWorkflowAgents,
   fetchWorkflowDashboard,
   fetchWorkflowJobs,
   fetchWorkflowJobStatus,
@@ -32,9 +35,9 @@ import {
   refineWorkflowChart,
   deleteKnowledgeDocument,
   searchKnowledge,
-  shareWorkflowDashboard,
   saveWorkflowDashboard,
   toStorageUrl,
+  updateWorkflowAgent,
   uploadKnowledgeDocument,
   uploadDataset
 } from "../api";
@@ -46,6 +49,7 @@ import type {
   CleaningReportResponse,
   AutoRepairAttemptResult,
   DashboardConfig,
+  DatasetDataMap,
   DatasetProfile,
   DatasetUploadResponse,
   ExecutionAttemptLog,
@@ -70,6 +74,8 @@ import type {
   SampleDatasetResponse,
   ValidationAttemptLog,
   VisualParseResult,
+  WorkflowAgentConsoleResponse,
+  WorkflowAgentUpdateRequest,
   WorkflowFollowUpResponse,
   WorkflowJobListItem,
   WorkflowJobResponse,
@@ -80,7 +86,9 @@ import {
   ChartPreviewModal,
   ChartsPage,
   CleaningPlanModal,
+  AgentsPage,
   DashboardPage,
+  DataMapPage,
   HistoryPanel,
   InsightsPage,
   KnowledgePage,
@@ -197,6 +205,12 @@ export function WorkbenchPage() {
   const [dashboardMessage, setDashboardMessage] = useState("");
   const [dashboardSaving, setDashboardSaving] = useState(false);
   const [dashboardRefreshing, setDashboardRefreshing] = useState(false);
+  const [dataMap, setDataMap] = useState<DatasetDataMap | null>(null);
+  const [dataMapMessage, setDataMapMessage] = useState("");
+  const [dataMapLoading, setDataMapLoading] = useState(false);
+  const [agentConsole, setAgentConsole] = useState<WorkflowAgentConsoleResponse | null>(null);
+  const [agentConsoleMessage, setAgentConsoleMessage] = useState("");
+  const [agentConsoleLoading, setAgentConsoleLoading] = useState(false);
   const [followUpRecommendations, setFollowUpRecommendations] = useState<FollowUpRecommendation[]>([]);
 
   useEffect(() => {
@@ -299,6 +313,17 @@ export function WorkbenchPage() {
         setReportGeneratedFor(job.job_id);
       });
   }, [analysisResult, predictionResult, job, reportGeneratedFor]);
+
+  useEffect(() => {
+    const intervalSeconds = Number(dashboardConfig?.refresh?.interval_seconds || 0);
+    if (activePage !== "dashboard" || !job?.job_id || !dashboardConfig?.refresh?.enabled || intervalSeconds <= 0) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void handleRefreshDashboard({ silent: true });
+    }, Math.max(30, intervalSeconds) * 1000);
+    return () => window.clearInterval(timer);
+  }, [activePage, job?.job_id, dashboardConfig?.refresh?.enabled, dashboardConfig?.refresh?.interval_seconds]);
 
   const isFallbackMode = !health?.deepseek_configured || health.llm_mode !== "deepseek";
   const isPredictionWorkflow = job?.workflow_type === "what_if_prediction" || job?.task_type === "what_if_prediction";
@@ -419,11 +444,50 @@ export function WorkbenchPage() {
     }
   }
 
+  async function refreshDataMap(datasetId = uploadInfo?.dataset_id || "") {
+    if (!datasetId) {
+      setDataMap(null);
+      setDataMapMessage("请先上传或选择一个数据集。");
+      return;
+    }
+    setDataMapLoading(true);
+    try {
+      const response = await fetchDatasetDataMap(datasetId);
+      setDataMap(response.data_map);
+      setDataMapMessage(response.message || "数据地图已生成。");
+    } catch (error) {
+      setDataMapMessage(error instanceof Error ? error.message : "数据地图生成失败。");
+    } finally {
+      setDataMapLoading(false);
+    }
+  }
+
+  async function refreshAgentConsole(jobId = job?.job_id || "") {
+    if (!jobId) {
+      setAgentConsole(null);
+      setAgentConsoleMessage("请先启动或打开一个分析任务。");
+      return;
+    }
+    setAgentConsoleLoading(true);
+    try {
+      const response = await fetchWorkflowAgents(jobId);
+      setAgentConsole(response);
+      setAgentConsoleMessage(response.message || "Agent 画像已同步。");
+    } catch (error) {
+      setAgentConsoleMessage(error instanceof Error ? error.message : "Agent 画像读取失败。");
+    } finally {
+      setAgentConsoleLoading(false);
+    }
+  }
+
 
   function handleSelectAnalysisFile(file: File | null) {
     setSelectedFile(file);
     setUploadInfo(null);
     setProfile(null);
+    setDataMap(null);
+    setDataMapMessage("");
+    setAgentConsole(null);
     setPreflight(null);
     setMessage("");
   }
@@ -439,8 +503,11 @@ export function WorkbenchPage() {
     setUploadInfo(uploaded);
     if (uploaded.asset_type === "image") {
       setProfile(null);
+      setDataMap(null);
     } else {
-      setProfile(await fetchDatasetProfile(uploaded.dataset_id));
+      const datasetProfile = await fetchDatasetProfile(uploaded.dataset_id);
+      setProfile(datasetProfile);
+      void refreshDataMap(uploaded.dataset_id);
     }
     return uploaded;
   }
@@ -481,6 +548,7 @@ export function WorkbenchPage() {
       setUserGoal(sample.recommended_goal);
       setSamplePreviewGoal(sample.recommended_goal);
       setProfile(datasetProfile);
+      void refreshDataMap(sample.dataset_id);
       setSamplePreview({
         sample,
         profile: datasetProfile,
@@ -508,6 +576,7 @@ export function WorkbenchPage() {
     setSelectedFile(null);
     setUploadInfo(sample);
     setProfile(datasetProfile);
+    void refreshDataMap(sample.dataset_id);
     setUserGoal(finalGoal);
     setSamplePreview(null);
     await prepareCleaningAndStart(sample, finalGoal, datasetProfile);
@@ -522,6 +591,7 @@ export function WorkbenchPage() {
     setSelectedFile(null);
     setUploadInfo(samplePreview.sample);
     setProfile(samplePreview.profile);
+    void refreshDataMap(samplePreview.sample.dataset_id);
     setUserGoal(finalGoal);
     setSamplePreview(null);
     setStatus("idle");
@@ -621,6 +691,9 @@ export function WorkbenchPage() {
     setAnalysisRoadmap(null);
     setQualityReview(null);
     setVisualParseResult(null);
+    setDataMap(null);
+    setDataMapMessage("");
+    setDataMapLoading(false);
     setPreflight(null);
     setExplanation(emptyExplanation);
     setReport(null);
@@ -650,6 +723,9 @@ export function WorkbenchPage() {
     setDashboardMessage("");
     setDashboardSaving(false);
     setDashboardRefreshing(false);
+    setAgentConsole(null);
+    setAgentConsoleMessage("");
+    setAgentConsoleLoading(false);
     setFollowUpRecommendations([]);
     setPptPreview(null);
     setPptGenerating(false);
@@ -763,6 +839,9 @@ export function WorkbenchPage() {
     setAnalysisRoadmap(null);
     setQualityReview(null);
     setVisualParseResult(null);
+    setDataMap(null);
+    setDataMapMessage("");
+    setDataMapLoading(false);
     setPreflight(null);
     setExplanation(emptyExplanation);
     setReport(null);
@@ -789,6 +868,9 @@ export function WorkbenchPage() {
     setDashboardMessage("");
     setDashboardSaving(false);
     setDashboardRefreshing(false);
+    setAgentConsole(null);
+    setAgentConsoleMessage("");
+    setAgentConsoleLoading(false);
     setFollowUpRecommendations([]);
     setPptPreview(null);
     setPptGenerating(false);
@@ -890,6 +972,7 @@ export function WorkbenchPage() {
       setUploadInfo(uploaded);
       const datasetProfile = await fetchDatasetProfile(uploaded.dataset_id);
       setProfile(datasetProfile);
+      void refreshDataMap(uploaded.dataset_id);
       setPredictionStatus("running");
       setPredictionMessage("情景预测任务已启动，状态将实时刷新。");
       const createdJob = await createWorkflowJobAsync(uploaded.dataset_id, predictionGoal, 3);
@@ -921,6 +1004,13 @@ export function WorkbenchPage() {
       refreshPredictionResult(nextJob.final_prediction_result_path),
       refreshPredictionExplanation(nextJob.prediction_explanation_path)
     ]);
+
+    if (nextJob.dataset_id && (!dataMap || dataMap.dataset_id !== nextJob.dataset_id)) {
+      void refreshDataMap(nextJob.dataset_id);
+    }
+    if (activePage === "agents" || terminalStatuses.has(nextJob.status)) {
+      void refreshAgentConsole(nextJob.job_id);
+    }
 
     if (nextJob.report_path || nextJob.pptx_path) {
       setReport({
@@ -1119,7 +1209,9 @@ export function WorkbenchPage() {
       try {
         const reportData = await applyCleaningPlan(uploadInfo.dataset_id, cleaningStrategies);
         setCleaningReport(reportData);
-        setProfile(await fetchDatasetProfile(uploadInfo.dataset_id));
+        const cleanedProfile = await fetchDatasetProfile(uploadInfo.dataset_id);
+        setProfile(cleanedProfile);
+        void refreshDataMap(uploadInfo.dataset_id);
         setMessage("清洗后数据已生成，可预览并下载，确认后继续分析。");
       } catch (error) {
         setMessage(error instanceof Error ? error.message : "数据修复失败，请调整策略后重试。");
@@ -1181,6 +1273,13 @@ export function WorkbenchPage() {
       refreshPredictionResult(nextJob.final_prediction_result_path),
       refreshPredictionExplanation(nextJob.prediction_explanation_path)
     ]);
+
+    if (nextJob.dataset_id && (!dataMap || dataMap.dataset_id !== nextJob.dataset_id)) {
+      void refreshDataMap(nextJob.dataset_id);
+    }
+    if (activePage === "agents" || terminalStatuses.has(nextJob.status)) {
+      void refreshAgentConsole(nextJob.job_id);
+    }
 
     if (nextJob.report_path || nextJob.pptx_path) {
       setReport({
@@ -1489,37 +1588,73 @@ export function WorkbenchPage() {
     }
   }
 
-  async function handleRefreshDashboard() {
+  async function handleRefreshDashboard(options: { silent?: boolean } = {}) {
     if (!job?.job_id) {
-      setDashboardMessage("请先完成或打开一个分析任务后再刷新 Dashboard。");
+      if (!options.silent) {
+        setDashboardMessage("请先完成或打开一个分析任务后再刷新 Dashboard。");
+      }
       return;
     }
-    setDashboardRefreshing(true);
+    if (!options.silent) {
+      setDashboardRefreshing(true);
+    }
     try {
       const response = await refreshWorkflowDashboard(job.job_id);
       setDashboardConfig(response.dashboard);
-      setDashboardMessage(response.message || "Dashboard 已刷新。");
+      if (!options.silent) {
+        setDashboardMessage(response.message || "Dashboard 已刷新。");
+      }
       setChartRefreshToken(Date.now());
       const latest = await fetchWorkflowJobStatus(job.job_id);
       await applyJobUpdate(latest);
     } catch (error) {
-      setDashboardMessage(error instanceof Error ? error.message : "Dashboard 刷新失败。");
+      if (!options.silent) {
+        setDashboardMessage(error instanceof Error ? error.message : "Dashboard 刷新失败。");
+      }
     } finally {
-      setDashboardRefreshing(false);
+      if (!options.silent) {
+        setDashboardRefreshing(false);
+      }
     }
   }
 
-  async function handleShareDashboard() {
+  function handleUseDataMapQuestion(question: string) {
+    setUserGoal(question);
+    setActivePage("setup");
+    setMessage("已将数据地图中的推荐问题填入分析目标，可直接启动 Agent 分析。");
+  }
+
+  async function handleUpdateAgentProfile(agentId: string, updates: WorkflowAgentUpdateRequest) {
     if (!job?.job_id) {
-      setDashboardMessage("请先完成或打开一个分析任务后再生成分享信息。");
+      setAgentConsoleMessage("请先启动或打开一个分析任务。");
       return;
     }
+    setAgentConsoleLoading(true);
     try {
-      const response = await shareWorkflowDashboard(job.job_id);
-      setDashboardConfig(response.dashboard);
-      setDashboardMessage(response.message || "Dashboard 分享信息已更新。");
+      const response = await updateWorkflowAgent(job.job_id, agentId, updates);
+      setAgentConsole(response);
+      setAgentConsoleMessage("Agent 展示信息已保存。");
     } catch (error) {
-      setDashboardMessage(error instanceof Error ? error.message : "Dashboard 分享信息生成失败。");
+      setAgentConsoleMessage(error instanceof Error ? error.message : "Agent 信息保存失败。");
+    } finally {
+      setAgentConsoleLoading(false);
+    }
+  }
+
+  async function handleDeleteAgentMessage(agentId: string, messageId: string) {
+    if (!job?.job_id) {
+      setAgentConsoleMessage("请先启动或打开一个分析任务。");
+      return;
+    }
+    setAgentConsoleLoading(true);
+    try {
+      const response = await deleteWorkflowAgentMessage(job.job_id, agentId, messageId);
+      setAgentConsole(response);
+      setAgentConsoleMessage("该 Agent 输出已从当前视图删除。");
+    } catch (error) {
+      setAgentConsoleMessage(error instanceof Error ? error.message : "Agent 输出删除失败。");
+    } finally {
+      setAgentConsoleLoading(false);
     }
   }
 
@@ -1665,7 +1800,9 @@ export function WorkbenchPage() {
             {[
               ["setup", "任务配置"],
               ["knowledge", "知识库"],
+              ["dataMap", "数据地图"],
               ["roadmap", "分析路线图"],
+              ["agents", "Agent 画像"],
               ["process", "Agent 过程"],
               ["charts", "图表结果"],
               ["dashboard", "Dashboard"],
@@ -1702,8 +1839,31 @@ export function WorkbenchPage() {
             />
           ) : null}
 
+          {activePage === "dataMap" ? (
+            <DataMapPage
+              dataMap={dataMap}
+              profile={profile}
+              loading={dataMapLoading}
+              message={dataMapMessage}
+              onRefresh={() => refreshDataMap()}
+              onUseQuestion={handleUseDataMapQuestion}
+            />
+          ) : null}
+
           {activePage === "roadmap" ? (
             <RoadmapPage roadmap={analysisRoadmap} job={job} />
+          ) : null}
+
+          {activePage === "agents" ? (
+            <AgentsPage
+              agentConsole={agentConsole}
+              job={job}
+              loading={agentConsoleLoading}
+              message={agentConsoleMessage}
+              onRefresh={() => refreshAgentConsole()}
+              onUpdateAgent={handleUpdateAgentProfile}
+              onDeleteMessage={handleDeleteAgentMessage}
+            />
           ) : null}
 
           {activePage === "process" ? (
@@ -1758,8 +1918,7 @@ export function WorkbenchPage() {
               refreshing={dashboardRefreshing}
               onDashboardChange={handleDashboardChange}
               onSave={handleSaveDashboard}
-              onRefresh={handleRefreshDashboard}
-              onShare={handleShareDashboard}
+              onRefresh={() => handleRefreshDashboard()}
             />
           ) : null}
 
@@ -1827,6 +1986,7 @@ export function WorkbenchPage() {
     </main>
   );
 }
+
 
 
 

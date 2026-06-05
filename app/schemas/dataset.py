@@ -66,6 +66,15 @@ class DatasetProfileResponse(BaseModel):
     sample_rows: list[dict[str, Any]]
 
 
+
+
+class DatasetDataMapResponse(BaseModel):
+    dataset_id: str
+    data_map: dict[str, Any] = Field(default_factory=dict)
+    data_map_path: str | None = None
+    message: str = ""
+
+
 class CleaningStrategyOption(BaseModel):
     strategy_id: str
     label: str
@@ -137,3 +146,4 @@ class CleaningReportResponse(BaseModel):
     applied_strategies: list[CleaningAppliedStrategy] = Field(default_factory=list)
     preview: CleaningPreview = Field(default_factory=CleaningPreview)
     message: str = ""
+
