@@ -91,7 +91,7 @@ frontend/blob-report/
 # =========================
 # Generated analysis artifacts
 # =========================
-charts/
+
 reports/
 outputs/
 *.png
