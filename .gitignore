@@ -44,7 +44,6 @@ temp/
 # Local generated storage
 storage/uploads/
 storage/jobs/
-storage/knowledge/
 storage/workbench.sqlite3
 
 # Keep storage folder structure if you add placeholders
