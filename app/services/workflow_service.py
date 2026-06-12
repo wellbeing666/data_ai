@@ -32,6 +32,7 @@ from app.services.llm_client import get_llm_client
 from app.services.prediction_workflow import run_prediction_job
 from app.services.rag_service import format_rag_context, get_rag_service
 from app.services.report_service import generate_pptx_report
+from app.services.workflow_db_service import list_workflow_job_records, mark_workflow_job_deleted, upsert_workflow_job_record
 
 
 JOB_ROOT = Path("storage/jobs")
@@ -751,7 +752,9 @@ def run_workflow_job(
             job_id=job_id,
             owner_user_id=owner_user_id,
         )
-        return _normalize_workflow_status(result, workflow_type=INSIGHT_WORKFLOW_TYPE, task_type=task_type)
+        final_status = _normalize_workflow_status(result, workflow_type=INSIGHT_WORKFLOW_TYPE, task_type=task_type)
+        _persist_workflow_status(final_status)
+        return final_status
 
     if task_type == PREDICTION_TASK_TYPE:
         result = _call_job_runner(
@@ -763,7 +766,9 @@ def run_workflow_job(
             job_id=job_id,
             owner_user_id=owner_user_id,
         )
-        return _normalize_workflow_status(result, workflow_type=PREDICTION_TASK_TYPE, task_type=task_type)
+        final_status = _normalize_workflow_status(result, workflow_type=PREDICTION_TASK_TYPE, task_type=task_type)
+        _persist_workflow_status(final_status)
+        return final_status
 
     result = _call_job_runner(
         run_auto_repair_analysis_job,
@@ -774,7 +779,9 @@ def run_workflow_job(
         job_id=job_id,
         owner_user_id=owner_user_id,
     )
-    return _normalize_workflow_status(result, workflow_type=ANALYSIS_WORKFLOW_TYPE, task_type=task_type)
+    final_status = _normalize_workflow_status(result, workflow_type=ANALYSIS_WORKFLOW_TYPE, task_type=task_type)
+    _persist_workflow_status(final_status)
+    return final_status
 
 
 def _call_job_runner(runner: Any, **kwargs: Any) -> dict[str, Any]:
@@ -794,49 +801,13 @@ def list_workflow_jobs(
     owner_user_id: str | None = None,
     include_all: bool = False,
 ) -> dict[str, Any]:
-    safe_limit = max(1, min(int(limit), 100))
-    normalized_query = _normalize_search_query(query)
-    if not JOB_ROOT.exists():
-        return {"jobs": []}
-
-    job_dirs = [path for path in JOB_ROOT.iterdir() if path.is_dir()]
-    job_dirs.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0.0, reverse=True)
-    jobs: list[dict[str, Any]] = []
-    for job_dir in job_dirs:
-        status_data = _history_status_data(job_dir)
-        if not status_data:
-            continue
-        job_owner = str(status_data.get("owner_user_id") or "") or None
-        if owner_user_id and not include_all and job_owner != owner_user_id:
-            continue
-        workflow_type = _workflow_type_for_job_dir(job_dir)
-        task_type = _controller_task_type(job_dir) or str(status_data.get("task_type") or "")
-        normalized = _normalize_workflow_status(status_data, workflow_type=workflow_type, task_type=task_type)
-        dataset_id = str(status_data.get("dataset_id") or normalized.get("dataset_id") or "")
-        dataset_filename, file_type = _dataset_file_info(dataset_id)
-        job_item = {
-            "job_id": str(normalized.get("job_id") or job_dir.name),
-            "dataset_id": dataset_id or None,
-            "dataset_filename": dataset_filename,
-            "file_type": file_type,
-            "user_goal": str(status_data.get("user_goal") or normalized.get("user_goal") or ""),
-            "status": str(normalized.get("status") or "pending"),
-            "current_stage": normalized.get("current_stage"),
-            "workflow_type": normalized.get("workflow_type"),
-            "task_type": normalized.get("task_type"),
-            "asset_type": normalized.get("asset_type"),
-            "owner_user_id": normalized.get("owner_user_id") or job_owner,
-            "chart_count": len(normalized.get("chart_paths") or []),
-            "created_at": _iso_from_timestamp(job_dir.stat().st_ctime),
-            "updated_at": _iso_from_timestamp(job_dir.stat().st_mtime),
-        }
-        if normalized_query and not _workflow_job_matches_query(job_item, normalized_query):
-            continue
-        jobs.append(job_item)
-        if len(jobs) >= safe_limit:
-            break
+    jobs = list_workflow_job_records(
+        limit=limit,
+        query=query,
+        owner_user_id=owner_user_id,
+        include_all=include_all,
+    )
     return {"jobs": jobs}
-
 
 def delete_workflow_job(
     job_id: str,
@@ -863,6 +834,7 @@ def delete_workflow_job(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"删除分析对话失败：{exc}",
         ) from exc
+    mark_workflow_job_deleted(job_id)
     return {"deleted": True, "job_id": job_id}
 
 
@@ -873,35 +845,35 @@ def get_workflow_job_status(job_id: str) -> dict[str, Any]:
     analysis_status = _read_json_if_exists(job_dir / "task_status.json")
 
     if _is_authoritative_workflow_state(workflow_status, prediction_status, analysis_status):
-        return _normalize_workflow_status(
+        return _sync_and_return_workflow_status(_normalize_workflow_status(
             workflow_status or {},
             workflow_type=(workflow_status or {}).get("workflow_type") or _workflow_type_for_job_dir(job_dir),
             task_type=(workflow_status or {}).get("task_type") or _controller_task_type(job_dir),
-        )
+        ))
 
     if prediction_status is not None:
-        return _normalize_workflow_status(
+        return _sync_and_return_workflow_status(_normalize_workflow_status(
             prediction_status,
             workflow_type=PREDICTION_TASK_TYPE,
             task_type=_controller_task_type(job_dir) or PREDICTION_TASK_TYPE,
-        )
+        ))
 
     if analysis_status is not None:
         branch_task_type = _controller_task_type(job_dir) or str(analysis_status.get("task_type") or "general_data_analysis")
         branch_workflow_type = INSIGHT_WORKFLOW_TYPE if branch_task_type == INSIGHT_TASK_TYPE or str(analysis_status.get("workflow_type") or "") == INSIGHT_WORKFLOW_TYPE else ANALYSIS_WORKFLOW_TYPE
-        return _normalize_workflow_status(
+        return _sync_and_return_workflow_status(_normalize_workflow_status(
             analysis_status,
             workflow_type=branch_workflow_type,
             task_type=branch_task_type,
-        )
+        ))
 
     if workflow_status is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到当前分析任务。")
-    return _normalize_workflow_status(
+    return _sync_and_return_workflow_status(_normalize_workflow_status(
         workflow_status,
         workflow_type=workflow_status.get("workflow_type"),
         task_type=workflow_status.get("task_type"),
-    )
+    ))
 
 def get_workflow_job_log(job_id: str) -> dict[str, Any]:
     status_data = get_workflow_job_status(job_id)
@@ -2233,7 +2205,20 @@ def _write_workflow_status(
             "events": events,
         },
     )
-    return _normalize_workflow_status(status_data, workflow_type=workflow_type, task_type=task_type)
+    normalized_status = _normalize_workflow_status(status_data, workflow_type=workflow_type, task_type=task_type)
+    _persist_workflow_status(normalized_status)
+    return normalized_status
+
+
+def _persist_workflow_status(status_data: dict[str, Any]) -> None:
+    dataset_id = str(status_data.get("dataset_id") or "")
+    dataset_filename, file_type = _dataset_file_info(dataset_id) if dataset_id else (None, None)
+    upsert_workflow_job_record(status_data, dataset_filename=dataset_filename, file_type=file_type)
+
+
+def _sync_and_return_workflow_status(status_data: dict[str, Any]) -> dict[str, Any]:
+    _persist_workflow_status(status_data)
+    return status_data
 
 
 def _normalize_workflow_status(
@@ -2859,6 +2844,7 @@ def _event_list(value: Any) -> list[dict[str, Any]]:
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
 
 
 

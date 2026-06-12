@@ -2,16 +2,15 @@ import hashlib
 import hmac
 import os
 import secrets
-import sqlite3
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from fastapi import Depends, Header, HTTPException, status
 
+from app.core.database import init_database_schema, mysql_connection
 
-DB_PATH = Path(os.getenv("WORKBENCH_DB_PATH", "storage/workbench.sqlite3"))
+
 TOKEN_TTL_DAYS = int(os.getenv("AUTH_TOKEN_TTL_DAYS", "7"))
 PASSWORD_ITERATIONS = 180_000
 DEFAULT_ADMIN_ACCOUNT = os.getenv("ADMIN_INITIAL_ACCOUNT", "admin")
@@ -37,89 +36,61 @@ class AuthError(RuntimeError):
 
 
 def init_auth_storage() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with _connect() as conn:
-        conn.executescript(
-            """
-            PRAGMA foreign_keys = ON;
-
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                login_account TEXT NOT NULL UNIQUE,
-                username TEXT NOT NULL,
-                role TEXT NOT NULL CHECK (role IN ('user', 'admin')),
-                password_hash TEXT NOT NULL,
-                status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'frozen', 'rejected')),
-                register_reason TEXT DEFAULT '',
-                audit_reason TEXT DEFAULT '',
-                approved_by TEXT DEFAULT NULL,
-                approved_at TEXT DEFAULT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                last_login_at TEXT DEFAULT NULL,
-                FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS auth_sessions (
-                token_hash TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                revoked_at TEXT DEFAULT NULL,
-                user_agent TEXT DEFAULT '',
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
-            CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
-            CREATE INDEX IF NOT EXISTS idx_sessions_user ON auth_sessions(user_id);
-            CREATE INDEX IF NOT EXISTS idx_sessions_expires ON auth_sessions(expires_at);
-            """
-        )
+    init_database_schema()
+    with mysql_connection() as conn:
         _bootstrap_admin(conn)
         conn.commit()
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+def _now_db() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return _serialize_datetime(_now_db())
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return _now_db()
 
 
-def _bootstrap_admin(conn: sqlite3.Connection) -> None:
-    row = conn.execute("SELECT id FROM users WHERE role = 'admin' LIMIT 1").fetchone()
-    if row:
-        return
-    timestamp = _now()
-    conn.execute(
-        """
-        INSERT INTO users (
-            id, login_account, username, role, password_hash, status,
-            register_reason, audit_reason, approved_by, approved_at,
-            created_at, updated_at, last_login_at
-        ) VALUES (?, ?, ?, 'admin', ?, 'active', ?, ?, NULL, ?, ?, ?, NULL)
-        """,
-        (
-            uuid4().hex,
-            _normalize_account(DEFAULT_ADMIN_ACCOUNT),
-            DEFAULT_ADMIN_USERNAME,
-            hash_password(DEFAULT_ADMIN_PASSWORD),
-            "系统初始化默认管理员。",
-            "系统自动创建默认管理员，请上线后立即修改密码。",
-            timestamp,
-            timestamp,
-            timestamp,
-        ),
-    )
+def _serialize_datetime(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    return str(value)
+
+
+def _bootstrap_admin(conn) -> None:
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT id FROM users WHERE role = 'admin' LIMIT 1")
+        row = cursor.fetchone()
+        if row:
+            return
+        timestamp = _now_db()
+        cursor.execute(
+            """
+            INSERT INTO users (
+                id, login_account, username, role, password_hash, status,
+                register_reason, audit_reason, approved_by, approved_at,
+                created_at, updated_at, last_login_at
+            ) VALUES (%s, %s, %s, 'admin', %s, 'active', %s, %s, NULL, %s, %s, %s, NULL)
+            """,
+            (
+                uuid4().hex,
+                _normalize_account(DEFAULT_ADMIN_ACCOUNT),
+                DEFAULT_ADMIN_USERNAME,
+                hash_password(DEFAULT_ADMIN_PASSWORD),
+                "系统初始化默认管理员。",
+                "系统自动创建默认管理员，请上线后立即修改密码。",
+                timestamp,
+                timestamp,
+                timestamp,
+            ),
+        )
 
 
 def hash_password(password: str) -> str:
@@ -146,23 +117,25 @@ def register_user(login_account: str, password: str, username: str, register_rea
     account = _normalize_account(login_account)
     display_name = _normalize_username(username)
     password_hash = hash_password(password)
-    timestamp = _now()
+    timestamp = _now_db()
     init_auth_storage()
-    with _connect() as conn:
-        existing = conn.execute("SELECT id FROM users WHERE login_account = ?", (account,)).fetchone()
-        if existing:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="登录账号已存在，请更换账号或直接登录。")
-        user_id = uuid4().hex
-        conn.execute(
-            """
-            INSERT INTO users (
-                id, login_account, username, role, password_hash, status,
-                register_reason, audit_reason, approved_by, approved_at,
-                created_at, updated_at, last_login_at
-            ) VALUES (?, ?, ?, 'user', ?, 'pending', ?, '', NULL, NULL, ?, ?, NULL)
-            """,
-            (user_id, account, display_name, password_hash, str(register_reason or "")[:500], timestamp, timestamp),
-        )
+    with mysql_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT id FROM users WHERE login_account = %s", (account,))
+            existing = cursor.fetchone()
+            if existing:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="登录账号已存在，请更换账号或直接登录。")
+            user_id = uuid4().hex
+            cursor.execute(
+                """
+                INSERT INTO users (
+                    id, login_account, username, role, password_hash, status,
+                    register_reason, audit_reason, approved_by, approved_at,
+                    created_at, updated_at, last_login_at
+                ) VALUES (%s, %s, %s, 'user', %s, 'pending', %s, '', NULL, NULL, %s, %s, NULL)
+                """,
+                (user_id, account, display_name, password_hash, str(register_reason or "")[:500], timestamp, timestamp),
+            )
         conn.commit()
         return _public_user(_get_user_by_id(conn, user_id))
 
@@ -170,59 +143,65 @@ def register_user(login_account: str, password: str, username: str, register_rea
 def login_user(login_account: str, password: str, user_agent: str = "") -> dict[str, Any]:
     account = _normalize_account(login_account)
     init_auth_storage()
-    with _connect() as conn:
-        row = conn.execute("SELECT * FROM users WHERE login_account = ?", (account,)).fetchone()
-        if row is None or not verify_password(password, str(row["password_hash"])):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="账号或密码不正确。")
-        if row["status"] == "pending":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号仍在等待管理员审核。")
-        if row["status"] == "frozen":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被冻结，请联系管理员。")
-        if row["status"] == "rejected":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号注册申请未通过审核。")
-        token = secrets.token_urlsafe(36)
-        token_hash = _hash_token(token)
-        created_at = _utc_now()
-        expires_at = created_at + timedelta(days=max(1, TOKEN_TTL_DAYS))
-        conn.execute(
-            "INSERT INTO auth_sessions (token_hash, user_id, created_at, expires_at, revoked_at, user_agent) VALUES (?, ?, ?, ?, NULL, ?)",
-            (token_hash, row["id"], created_at.isoformat(), expires_at.isoformat(), str(user_agent or "")[:300]),
-        )
-        conn.execute("UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?", (_now(), _now(), row["id"]))
+    with mysql_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM users WHERE login_account = %s", (account,))
+            row = cursor.fetchone()
+            if row is None or not verify_password(password, str(row["password_hash"])):
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="账号或密码不正确。")
+            if row["status"] == "pending":
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号仍在等待管理员审核。")
+            if row["status"] == "frozen":
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被冻结，请联系管理员。")
+            if row["status"] == "rejected":
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号注册申请未通过审核。")
+            token = secrets.token_urlsafe(36)
+            token_hash = _hash_token(token)
+            created_at = _utc_now()
+            expires_at = created_at + timedelta(days=max(1, TOKEN_TTL_DAYS))
+            cursor.execute(
+                "INSERT INTO auth_sessions (token_hash, user_id, created_at, expires_at, revoked_at, user_agent) VALUES (%s, %s, %s, %s, NULL, %s)",
+                (token_hash, row["id"], created_at, expires_at, str(user_agent or "")[:300]),
+            )
+            timestamp = _now_db()
+            cursor.execute("UPDATE users SET last_login_at = %s, updated_at = %s WHERE id = %s", (timestamp, timestamp, row["id"]))
         conn.commit()
         fresh = _get_user_by_id(conn, str(row["id"]))
-        return {"token": token, "token_type": "Bearer", "expires_at": expires_at.isoformat(), "user": _public_user(fresh)}
+        return {"token": token, "token_type": "Bearer", "expires_at": _serialize_datetime(expires_at) or "", "user": _public_user(fresh)}
 
 
 def logout_token(token: str) -> None:
     if not token:
         return
     init_auth_storage()
-    with _connect() as conn:
-        conn.execute("UPDATE auth_sessions SET revoked_at = ? WHERE token_hash = ?", (_now(), _hash_token(token)))
+    with mysql_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE auth_sessions SET revoked_at = %s WHERE token_hash = %s", (_now_db(), _hash_token(token)))
         conn.commit()
 
 
 def get_user_from_token(token: str) -> dict[str, Any]:
     init_auth_storage()
     token_hash = _hash_token(token)
-    with _connect() as conn:
-        row = conn.execute(
-            """
-            SELECT users.*
-            FROM auth_sessions
-            JOIN users ON users.id = auth_sessions.user_id
-            WHERE auth_sessions.token_hash = ?
-              AND auth_sessions.revoked_at IS NULL
-              AND auth_sessions.expires_at > ?
-            """,
-            (token_hash, _now()),
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录已过期，请重新登录。")
-        if row["status"] != "active":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号当前不可用，请联系管理员。")
-        return _public_user(row)
+    with mysql_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT users.*
+                FROM auth_sessions
+                JOIN users ON users.id = auth_sessions.user_id
+                WHERE auth_sessions.token_hash = %s
+                  AND auth_sessions.revoked_at IS NULL
+                  AND auth_sessions.expires_at > %s
+                """,
+                (token_hash, _now_db()),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录已过期，请重新登录。")
+            if row["status"] != "active":
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号当前不可用，请联系管理员。")
+            return _public_user(row)
 
 
 def get_current_user(authorization: str | None = Header(default=None)) -> dict[str, Any]:
@@ -251,20 +230,23 @@ def require_admin(current_user: dict[str, Any] = Depends(get_current_user)) -> d
 def update_profile(user_id: str, username: str) -> dict[str, Any]:
     display_name = _normalize_username(username)
     init_auth_storage()
-    with _connect() as conn:
-        conn.execute("UPDATE users SET username = ?, updated_at = ? WHERE id = ?", (display_name, _now(), user_id))
+    with mysql_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE users SET username = %s, updated_at = %s WHERE id = %s", (display_name, _now_db(), user_id))
         conn.commit()
         return _public_user(_get_user_by_id(conn, user_id))
 
 
 def change_password(user_id: str, old_password: str, new_password: str) -> None:
     init_auth_storage()
-    with _connect() as conn:
+    with mysql_connection() as conn:
         row = _get_user_by_id(conn, user_id)
         if row is None or not verify_password(old_password, str(row["password_hash"])):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="原密码不正确。")
-        conn.execute("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?", (hash_password(new_password), _now(), user_id))
-        conn.execute("UPDATE auth_sessions SET revoked_at = ? WHERE user_id = ?", (_now(), user_id))
+        with conn.cursor() as cursor:
+            timestamp = _now_db()
+            cursor.execute("UPDATE users SET password_hash = %s, updated_at = %s WHERE id = %s", (hash_password(new_password), timestamp, user_id))
+            cursor.execute("UPDATE auth_sessions SET revoked_at = %s WHERE user_id = %s", (timestamp, user_id))
         conn.commit()
 
 
@@ -274,19 +256,21 @@ def list_users(status_filter: str | None = None, query: str | None = None, limit
     conditions: list[str] = []
     params: list[Any] = []
     if status_filter:
-        conditions.append("status = ?")
+        conditions.append("status = %s")
         params.append(status_filter)
     if query and query.strip():
-        conditions.append("(login_account LIKE ? OR username LIKE ?)")
+        conditions.append("(login_account LIKE %s OR username LIKE %s)")
         like = f"%{query.strip()}%"
         params.extend([like, like])
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    with _connect() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM users {where_clause} ORDER BY created_at DESC LIMIT ?",
-            (*params, safe_limit),
-        ).fetchall()
-        return [_public_user(row) for row in rows]
+    with mysql_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT * FROM users {where_clause} ORDER BY created_at DESC LIMIT %s",
+                (*params, safe_limit),
+            )
+            rows = cursor.fetchall()
+            return [_public_user(row) for row in rows]
 
 
 def review_user(user_id: str, action: str, reason: str, admin_user: dict[str, Any]) -> dict[str, Any]:
@@ -294,42 +278,44 @@ def review_user(user_id: str, action: str, reason: str, admin_user: dict[str, An
     if normalized_action not in {"approve", "reject"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="审核动作必须是 approve 或 reject。")
     new_status = "active" if normalized_action == "approve" else "rejected"
-    timestamp = _now()
+    timestamp = _now_db()
     init_auth_storage()
-    with _connect() as conn:
+    with mysql_connection() as conn:
         row = _get_user_by_id(conn, user_id)
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在。")
         if row["role"] == "admin" and normalized_action == "reject":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="管理员账号不能被驳回。")
-        conn.execute(
-            """
-            UPDATE users
-            SET status = ?, audit_reason = ?, approved_by = ?, approved_at = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (new_status, str(reason or "")[:500], admin_user["id"], timestamp, timestamp, user_id),
-        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE users
+                SET status = %s, audit_reason = %s, approved_by = %s, approved_at = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                (new_status, str(reason or "")[:500], admin_user["id"], timestamp, timestamp, user_id),
+            )
         conn.commit()
         return _public_user(_get_user_by_id(conn, user_id))
 
 
 def set_user_frozen(user_id: str, frozen: bool, reason: str, admin_user: dict[str, Any]) -> dict[str, Any]:
-    timestamp = _now()
+    timestamp = _now_db()
     init_auth_storage()
-    with _connect() as conn:
+    with mysql_connection() as conn:
         row = _get_user_by_id(conn, user_id)
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在。")
         if row["role"] == "admin" and frozen:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="管理员账号不能被冻结。")
         new_status = "frozen" if frozen else "active"
-        conn.execute(
-            "UPDATE users SET status = ?, audit_reason = ?, approved_by = ?, updated_at = ? WHERE id = ?",
-            (new_status, str(reason or "")[:500], admin_user["id"], timestamp, user_id),
-        )
-        if frozen:
-            conn.execute("UPDATE auth_sessions SET revoked_at = ? WHERE user_id = ?", (timestamp, user_id))
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users SET status = %s, audit_reason = %s, approved_by = %s, updated_at = %s WHERE id = %s",
+                (new_status, str(reason or "")[:500], admin_user["id"], timestamp, user_id),
+            )
+            if frozen:
+                cursor.execute("UPDATE auth_sessions SET revoked_at = %s WHERE user_id = %s", (timestamp, user_id))
         conn.commit()
         return _public_user(_get_user_by_id(conn, user_id))
 
@@ -339,25 +325,33 @@ def change_user_role(user_id: str, role: str, admin_user: dict[str, Any]) -> dic
     if normalized_role not in {"user", "admin"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="角色必须是 user 或 admin。")
     init_auth_storage()
-    with _connect() as conn:
+    with mysql_connection() as conn:
         row = _get_user_by_id(conn, user_id)
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在。")
         if row["id"] == admin_user.get("id") and normalized_role != "admin":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能取消自己的管理员角色。")
-        conn.execute("UPDATE users SET role = ?, updated_at = ? WHERE id = ?", (normalized_role, _now(), user_id))
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE users SET role = %s, updated_at = %s WHERE id = %s", (normalized_role, _now_db(), user_id))
         conn.commit()
         return _public_user(_get_user_by_id(conn, user_id))
 
 
-def _get_user_by_id(conn: sqlite3.Connection, user_id: str) -> sqlite3.Row | None:
-    return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+def _get_user_by_id(conn, user_id: str) -> dict[str, Any] | None:
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+        return cursor.fetchone()
 
 
-def _public_user(row: sqlite3.Row | None) -> dict[str, Any]:
+def _public_user(row: dict[str, Any] | None) -> dict[str, Any]:
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在。")
-    return {key: row[key] for key in USER_PUBLIC_FIELDS if key in row.keys()}
+    result: dict[str, Any] = {}
+    for key in USER_PUBLIC_FIELDS:
+        if key in row:
+            value = row[key]
+            result[key] = _serialize_datetime(value) if isinstance(value, datetime) else value
+    return result
 
 
 def _normalize_account(account: str) -> str:

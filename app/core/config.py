@@ -70,6 +70,13 @@ if BaseSettings is not None:
         doubao_api_key: str = Field(default="")
         doubao_base_url: str = Field(default="https://ark.cn-beijing.volces.com/api/v3")
         doubao_vision_model: str = Field(default="")
+        mysql_host: str = Field(default="127.0.0.1")
+        mysql_port: int = Field(default=3306)
+        mysql_user: str = Field(default="root")
+        mysql_password: str = Field(default="")
+        mysql_database: str = Field(default="ai_data_workbench")
+        mysql_charset: str = Field(default="utf8mb4")
+        mysql_connect_timeout: int = Field(default=10)
 
         model_config = SettingsConfigDict(
             env_file=".env",
@@ -112,8 +119,16 @@ else:
             )
         )
         doubao_vision_model: str = Field(default_factory=lambda: _get_env("DOUBAO_VISION_MODEL"))
+        mysql_host: str = Field(default_factory=lambda: _get_env("MYSQL_HOST", "127.0.0.1"))
+        mysql_port: int = Field(default_factory=lambda: int(_get_env("MYSQL_PORT", "3306")))
+        mysql_user: str = Field(default_factory=lambda: _get_env("MYSQL_USER", "root"))
+        mysql_password: str = Field(default_factory=lambda: _get_env("MYSQL_PASSWORD", ""))
+        mysql_database: str = Field(default_factory=lambda: _get_env("MYSQL_DATABASE", "ai_data_workbench"))
+        mysql_charset: str = Field(default_factory=lambda: _get_env("MYSQL_CHARSET", "utf8mb4"))
+        mysql_connect_timeout: int = Field(default_factory=lambda: int(_get_env("MYSQL_CONNECT_TIMEOUT", "10")))
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+

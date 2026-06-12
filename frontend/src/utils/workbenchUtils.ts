@@ -15,7 +15,7 @@ import type {
 } from "../types";
 
 export type AnyRecord = Record<string, unknown>;
-export type PageKey = "setup" | "knowledge" | "analysisIr" | "dataMap" | "agents" | "prediction" | "roadmap" | "process" | "charts" | "dashboard" | "insights" | "logs";
+export type PageKey = "home" | "setup" | "knowledge" | "analysisIr" | "dataMap" | "agents" | "prediction" | "roadmap" | "process" | "charts" | "dashboard" | "insights" | "logs";
 
 export interface StepView {
   key: string;
@@ -1513,6 +1513,7 @@ function lastItem<T>(items: T[] | undefined): T | undefined {
   }
   return items[items.length - 1];
 }
+
 
 
 

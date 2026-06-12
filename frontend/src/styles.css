@@ -4478,3 +4478,42 @@ tr:last-child td {
 .app-header-toggle .app-header-toggle-icon {
   transform: none !important;
 }
+
+.secondary-page-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -8px 0 20px;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 14px;
+}
+
+.secondary-page-tabs button {
+  min-height: 32px;
+  cursor: pointer;
+  border: 1px solid #d7dee8;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 12px;
+}
+
+.secondary-page-tabs button.active {
+  border-color: #0f766e;
+  background: #ecfdf5;
+  color: #0f766e;
+}
+
+.workspace-shell-console .layout-grid {
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+}
+
+.workspace-shell-console .page-tabs {
+  align-items: stretch;
+}
+
+.workspace-shell-console .page-tabs button {
+  border-radius: 6px;
+}

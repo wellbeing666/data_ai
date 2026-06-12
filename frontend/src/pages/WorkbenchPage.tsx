@@ -137,7 +137,7 @@ interface SamplePreviewState {
 const SMART_INSIGHT_GOAL = "智能洞察挖掘：系统自动扫描数据，挖掘潜在规律和高价值异常，无需用户预设目标。";
 
 export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }) {
-  const [activePage, setActivePage] = useState<PageKey>("setup");
+  const [activePage, setActivePage] = useState<PageKey>("home");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isAnalysisFileDragActive, setIsAnalysisFileDragActive] = useState(false);
   const [userGoal, setUserGoal] = useState("把这批 Excel 成绩按班级统计并生成图表");
@@ -544,7 +544,7 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
     clearCurrentWorkflowView();
     setSelectedFile(null);
     setStatus("uploading");
-    setActivePage("setup");
+    setActivePage("home");
     setSamplePreview(null);
     setSamplePreviewLoading(true);
     setMessage("正在生成演示数据，稍后可先预览再决定是否分析。");
@@ -790,7 +790,7 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
         setPredictionMessage("");
         setUploadInfo(null);
         setProfile(null);
-        setActivePage("setup");
+        setActivePage("home");
       }
       setSelectedHistoryJobIds([]);
       setWorkflowHistory((current) => current.filter((item) => !visibleIds.includes(item.job_id)));
@@ -825,7 +825,7 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
         setPredictionMessage("");
         setUploadInfo(null);
         setProfile(null);
-        setActivePage("setup");
+        setActivePage("home");
       }
       setHistoryMessage("分析对话已删除。");
       await refreshWorkflowHistory();
@@ -1712,8 +1712,36 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
     }
   }
 
+
+  const pageLabels: Record<PageKey, string> = {
+    home: "首页",
+    setup: "任务配置",
+    knowledge: "知识库",
+    analysisIr: "分析专用中间表示",
+    dataMap: "数据地图",
+    agents: "Agent 画像",
+    prediction: "情景预测",
+    roadmap: "分析路线图",
+    process: "Agent 过程",
+    charts: "图表结果",
+    dashboard: "Dashboard",
+    insights: "结论报告",
+    logs: "执行日志"
+  };
+
+  const topNavGroups: Array<{ key: string; label: string; target: PageKey; pages: PageKey[] }> = [
+    { key: "home", label: "首页", target: "home", pages: ["home"] },
+    { key: "task", label: "任务中心", target: "analysisIr", pages: ["analysisIr", "roadmap", "logs"] },
+    { key: "agent", label: "Agent 控制台", target: "agents", pages: ["agents", "process"] },
+    { key: "knowledge", label: "知识库", target: "knowledge", pages: ["knowledge"] },
+    { key: "deliver", label: "结果中心", target: "charts", pages: ["charts", "dashboard", "insights", "dataMap"] }
+  ];
+
+  const currentTopNavKey = topNavGroups.find((group) => group.pages.includes(activePage))?.key ?? "home";
+  const secondaryTabs = topNavGroups.find((group) => group.key === currentTopNavKey)?.pages.filter((page) => page !== "home") ?? [];
+
   return (
-    <main className="workspace-shell">
+    <main className="workspace-shell workspace-shell-console">
       <section className="layout-grid">
         <aside className="left-panel">
           <section className="panel">
@@ -1850,30 +1878,37 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
         </aside>
 
         <section className="content-panel">
-          <nav className="page-tabs" aria-label="工作台页面">
-            {[
-              ["setup", "任务配置"],
-              ["knowledge", "知识库"],
-              ["analysisIr", "分析专用中间表示"],
-              ["dataMap", "数据地图"],
-              ["roadmap", "分析路线图"],
-              ["agents", "Agent 画像"],
-              ["process", "Agent 过程"],
-              ["charts", "图表结果"],
-              ["dashboard", "Dashboard"],
-              ["insights", "结论报告"],
-              ["logs", "执行日志"]
-            ].map(([key, label]) => (
+          <nav className="page-tabs" aria-label="工作台主导航">
+            {topNavGroups.map((group) => (
               <button
-                className={activePage === key ? "active" : ""}
-                key={key}
+                className={currentTopNavKey === group.key ? "active" : ""}
+                key={group.key}
                 type="button"
-                onClick={() => setActivePage(key as PageKey)}
+                onClick={() => setActivePage(group.target)}
               >
-                {label}
+                {group.label}
               </button>
             ))}
           </nav>
+
+          {secondaryTabs.length ? (
+            <nav className="secondary-page-tabs" aria-label="当前导航下的功能页">
+              {secondaryTabs.map((page) => (
+                <button
+                  className={activePage === page ? "active" : ""}
+                  key={page}
+                  type="button"
+                  onClick={() => setActivePage(page)}
+                >
+                  {pageLabels[page]}
+                </button>
+              ))}
+            </nav>
+          ) : null}
+
+          {activePage === "home" ? (
+            <SetupPage profile={profile} health={health} isFallbackMode={isFallbackMode} />
+          ) : null}
 
           {activePage === "setup" ? (
             <SetupPage profile={profile} health={health} isFallbackMode={isFallbackMode} />
@@ -2049,6 +2084,8 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
     </main>
   );
 }
+
+
 
 
 
