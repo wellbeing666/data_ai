@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sys
 
@@ -87,6 +88,48 @@ def test_controller_accepts_prediction_task_type_from_llm():
     assert plan["task_type"] == "what_if_prediction"
 
 
+def test_controller_fallback_uses_raw_goal_from_analysis_ir_payload():
+    llm = FakeLLMClient(error=RuntimeError("llm unavailable"))
+    raw_goal = "分析销量从 2026 年 1 月到 6 月的变化趋势，识别下降阶段，并按地区、渠道和商品类别拆解可能原因。"
+    compiled_goal = "Analysis IR + Delta JSON:\n" + json.dumps(
+        {
+            "analysis_ir": {
+                "task_type": "sales_decline_analysis",
+                "normalized_goal": raw_goal,
+                "guardrails": ["相关性不等于因果，预测不等于承诺。"],
+            },
+            "delta": {"stage": "controller", "raw_user_goal": raw_goal},
+        },
+        ensure_ascii=False,
+    )
+    plan = ControllerAgent(llm_client=llm).create_plan(
+        user_goal=compiled_goal,
+        dataset_profile={"columns": ["日期", "地区", "渠道", "商品类别", "销量", "销售额"]},
+    )
+    assert plan["task_type"] == "sales_decline_analysis"
+
+
+def test_controller_corrects_sales_decline_misclassified_as_prediction():
+    llm = FakeLLMClient(
+        payload={
+            "task_type": "what_if_prediction",
+            "task_name": "What-if prediction",
+            "reasoning_summary": "Incorrectly treated as prediction.",
+            "steps": [],
+            "required_columns": [],
+            "analysis_methods": [],
+            "charts": [],
+            "expected_artifacts": [],
+            "risks": [],
+        }
+    )
+    plan = ControllerAgent(llm_client=llm).create_plan(
+        user_goal="分析销量从 2026 年 1 月到 6 月的变化趋势，识别下降阶段，并按地区、渠道和商品类别拆解可能原因。",
+        dataset_profile={"columns": ["日期", "地区", "渠道", "商品类别", "销量", "销售额"]},
+    )
+    assert plan["task_type"] == "sales_decline_analysis"
+
+
 def test_controller_rule_fallback_detects_prediction_goal():
     llm = FakeLLMClient(error=RuntimeError("llm unavailable"))
     plan = ControllerAgent(llm_client=llm).create_plan(
@@ -100,5 +143,8 @@ if __name__ == "__main__":
     test_controller_uses_llm_json_plan()
     test_controller_falls_back_to_rule_plan()
     test_controller_accepts_prediction_task_type_from_llm()
+    test_controller_fallback_uses_raw_goal_from_analysis_ir_payload()
+    test_controller_corrects_sales_decline_misclassified_as_prediction()
     test_controller_rule_fallback_detects_prediction_goal()
     print("ControllerAgent tests passed.")
+
