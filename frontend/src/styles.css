@@ -4517,3 +4517,337 @@ tr:last-child td {
 .workspace-shell-console .page-tabs button {
   border-radius: 6px;
 }
+
+/* Agent process visual novel layout */
+.process-page-vn {
+  gap: 18px;
+}
+
+.process-heading-enhanced > span {
+  border: 1px solid #99f6e4;
+  border-radius: 999px;
+  background: #ecfeff;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 6px 10px;
+}
+
+.agent-story-stage {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 18% 18%, rgba(45, 212, 191, 0.28), transparent 30%),
+    radial-gradient(circle at 82% 12%, rgba(96, 165, 250, 0.24), transparent 28%),
+    linear-gradient(135deg, #0f172a 0%, #164e63 48%, #0f766e 100%);
+  box-shadow: 0 22px 60px rgba(15, 23, 42, 0.16);
+  color: #f8fafc;
+  padding: 22px;
+}
+
+.agent-story-stage::before,
+.agent-story-stage::after {
+  position: absolute;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  content: "";
+}
+
+.agent-story-stage::before {
+  top: 24px;
+  left: 28px;
+  width: 110px;
+  height: 110px;
+}
+
+.agent-story-stage::after {
+  right: -44px;
+  bottom: -52px;
+  width: 190px;
+  height: 190px;
+}
+
+.agent-story-spotlight {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(170px, 240px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: end;
+  min-height: 270px;
+}
+
+.agent-story-character {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 240px;
+}
+
+.agent-story-halo {
+  position: absolute;
+  width: 188px;
+  height: 188px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 0 0 22px rgba(255, 255, 255, 0.05);
+  animation: agent-halo-pulse 2.8s ease-in-out infinite;
+}
+
+.agent-portrait {
+  position: relative;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.44);
+  border-radius: 28px;
+  background: #ffffff;
+  box-shadow: 0 22px 42px rgba(15, 23, 42, 0.22);
+}
+
+.agent-portrait img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.agent-portrait-small {
+  width: 46px;
+  height: 56px;
+  border-radius: 16px;
+}
+
+.agent-portrait-medium {
+  width: 74px;
+  height: 92px;
+}
+
+.agent-portrait-large {
+  width: min(210px, 100%);
+  height: 250px;
+  border-radius: 38px;
+  animation: agent-character-float 4.6s ease-in-out infinite;
+}
+
+.agent-story-dialogue {
+  position: relative;
+  border: 1px solid rgba(204, 251, 241, 0.46);
+  border-radius: 24px;
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.24);
+  padding: 22px;
+}
+
+.agent-story-dialogue::before {
+  position: absolute;
+  bottom: 52px;
+  left: -18px;
+  width: 32px;
+  height: 32px;
+  background: rgba(15, 23, 42, 0.72);
+  border-left: 1px solid rgba(204, 251, 241, 0.46);
+  border-bottom: 1px solid rgba(204, 251, 241, 0.46);
+  transform: rotate(45deg);
+  content: "";
+}
+
+.agent-scene-label {
+  display: inline-flex;
+  border-radius: 999px;
+  background: rgba(20, 184, 166, 0.22);
+  color: #ccfbf1;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 6px 10px;
+}
+
+.agent-story-dialogue h3 {
+  margin: 12px 0 8px;
+  color: #ffffff;
+  font-size: clamp(24px, 4vw, 38px);
+  letter-spacing: -0.04em;
+}
+
+.agent-story-dialogue p {
+  margin: 0;
+  color: #e0f2fe;
+  font-size: 16px;
+  line-height: 1.75;
+}
+
+.agent-story-dialogue dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0 0;
+}
+
+.agent-story-dialogue dt {
+  color: #99f6e4;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.agent-story-dialogue dd {
+  margin: 4px 0 0;
+  color: #f8fafc;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.agent-story-dialogue small {
+  display: block;
+  margin-top: 14px;
+  color: #bae6fd;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.agent-cast-strip {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scroll-snap-type: x proximity;
+}
+
+.agent-cast-member {
+  display: grid;
+  min-width: 145px;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  scroll-snap-align: start;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #f8fafc;
+  padding: 10px;
+}
+
+.agent-cast-member.current {
+  border-color: rgba(153, 246, 228, 0.88);
+  background: rgba(236, 254, 255, 0.2);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.22);
+}
+
+.agent-cast-member strong,
+.agent-cast-member span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-cast-member strong {
+  color: #ffffff;
+  font-size: 13px;
+}
+
+.agent-cast-member span {
+  color: #bae6fd;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.agent-avatar-portrait {
+  width: 54px;
+  height: 60px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.process-page-vn .agent-dialog-list {
+  gap: 16px;
+}
+
+.process-page-vn .agent-dialog-card {
+  position: relative;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 14px;
+  opacity: 0;
+  transform: translateY(12px);
+  animation: agent-card-enter 0.48s ease forwards;
+}
+
+.process-page-vn .agent-dialog-card .agent-message-body {
+  border-radius: 18px;
+  border-color: #dbeafe;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+}
+
+.process-page-vn .agent-dialog-card.active .agent-message-body {
+  border-color: #38bdf8;
+  box-shadow: 0 18px 44px rgba(14, 165, 233, 0.16);
+}
+
+.process-page-vn .agent-dialog-card.done .agent-message-body {
+  border-color: #99f6e4;
+}
+
+.process-page-vn .agent-dialog-card.failed .agent-message-body {
+  border-color: #fecdd3;
+}
+
+@keyframes agent-card-enter {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes agent-character-float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes agent-halo-pulse {
+  0%, 100% {
+    transform: scale(0.96);
+    opacity: 0.72;
+  }
+  50% {
+    transform: scale(1.04);
+    opacity: 1;
+  }
+}
+
+@media (max-width: 760px) {
+  .agent-story-spotlight,
+  .agent-story-dialogue dl {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-story-spotlight {
+    min-height: auto;
+  }
+
+  .agent-story-dialogue::before {
+    display: none;
+  }
+
+  .process-page-vn .agent-dialog-card {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-story-halo,
+  .agent-portrait-large,
+  .process-page-vn .agent-dialog-card {
+    animation: none;
+  }
+}
+

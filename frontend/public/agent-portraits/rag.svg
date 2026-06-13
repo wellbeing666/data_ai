@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 300" role="img" aria-labelledby="title desc">
+  <title id="title">rag portrait</title>
+  <desc id="desc">Stylized virtual assistant portrait.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ecfeff"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="16" stdDeviation="14" flood-color="#0f172a" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+  <rect width="240" height="300" rx="54" fill="url(#bg)"/>
+  <circle cx="196" cy="52" r="36" fill="#ffffff" opacity="0.18"/>
+  <circle cx="48" cy="246" r="42" fill="#ffffff" opacity="0.12"/>
+  <g filter="url(#shadow)">
+    <path d="M62 234c5-43 33-70 58-70s53 27 58 70c2 14-8 26-23 26H85c-15 0-25-12-23-26Z" fill="url(#body)"/>
+    <rect x="73" y="70" width="94" height="104" rx="38" fill="#ecfeff"/>
+    <path d="M80 83c11-29 69-34 84 0 5 11 8 32 5 44-9-17-29-22-49-22s-40 5-49 22c-3-12 0-33 9-44Z" fill="#2563eb" opacity="0.92"/>
+    <circle cx="94" cy="123" r="7" fill="#0f172a" opacity="0.78"/>
+    <circle cx="146" cy="123" r="7" fill="#0f172a" opacity="0.78"/>
+    <path d="M100 148c12 12 28 12 40 0" fill="none" stroke="#0f172a" stroke-width="7" stroke-linecap="round" opacity="0.58"/>
+    <rect x="94" y="174" width="52" height="24" rx="12" fill="#ffffff" opacity="0.56"/>
+    <text x="120" y="192" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="18" font-weight="800" fill="#2563eb">R</text>
+  </g>
+  <path d="M44 48h42M44 64h26M156 242h40M170 258h26" stroke="#ffffff" stroke-width="10" stroke-linecap="round" opacity="0.2"/>
+</svg>

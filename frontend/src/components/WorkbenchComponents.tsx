@@ -1039,6 +1039,64 @@ export function PredictionPage({
   );
 }
 
+
+const AGENT_PORTRAIT_KEYS = new Set([
+  "visual",
+  "rag",
+  "controller",
+  "understanding",
+  "analysis",
+  "hypothesis",
+  "prediction_plan",
+  "code",
+  "safety",
+  "sandbox",
+  "validation",
+  "debate_matrix",
+  "explanation",
+  "quality_review",
+  "cross_artifact_consistency",
+  "generic"
+]);
+
+function agentPortraitPath(agentKey: string): string {
+  const normalizedKey = AGENT_PORTRAIT_KEYS.has(agentKey) ? agentKey : "generic";
+  return `/agent-portraits/${normalizedKey}.svg`;
+}
+
+function AgentPortrait({ card, size = "medium" }: { card: AgentCardView; size?: "small" | "medium" | "large" }) {
+  return (
+    <span className={`agent-portrait agent-portrait-${size} agent-portrait-status-${card.status}`}>
+      <img src={agentPortraitPath(card.key)} alt={`${card.agentName} 形象`} />
+    </span>
+  );
+}
+
+function processProgressPercent(cards: AgentCardView[]): number {
+  if (!cards.length) {
+    return 0;
+  }
+  return Math.round((cards.filter((card) => card.status === "done").length / cards.length) * 100);
+}
+
+function selectSpotlightAgent(cards: AgentCardView[]): AgentCardView | null {
+  return (
+    cards.find((card) => card.status === "active") ??
+    cards.find((card) => card.status === "failed") ??
+    [...cards].reverse().find((card) => card.status === "done") ??
+    cards[0] ??
+    null
+  );
+}
+
+function agentOrderLabel(index: number, total: number): string {
+  if (index < 0 || total <= 0) {
+    return "等待接入";
+  }
+  return `第 ${index + 1} / ${total} 位 Agent`;
+}
+
+
 export function ProcessPage({
   job,
   log,
@@ -1097,14 +1155,18 @@ export function ProcessPage({
     log,
     events
   });
+  const spotlightAgent = selectSpotlightAgent(cards);
+  const spotlightIndex = spotlightAgent ? cards.findIndex((card) => card.key === spotlightAgent.key) : -1;
+  const latestEvent = events.length ? events[events.length - 1] : null;
 
   return (
-    <section className="page-section">
-      <div className="section-heading process-heading">
+    <section className="page-section process-page process-page-vn">
+      <div className="section-heading process-heading process-heading-enhanced">
         <div>
-          <h2>Agent 对话过程</h2>
+          <h2>Agent 协作现场</h2>
           {job ? <span>{workflowLabel(job.workflow_type || job.task_type)} · Job {job.job_id}</span> : <span>等待任务启动</span>}
         </div>
+        {cards.length ? <span>{processProgressPercent(cards)}% 完成</span> : null}
       </div>
       {job && onControlJob ? (
         <JobControlDock
@@ -1113,11 +1175,17 @@ export function ProcessPage({
           onControlJob={onControlJob}
         />
       ) : null}
-      <div className="agent-chat-list">
+      <AgentStoryStage
+        cards={cards}
+        spotlightAgent={spotlightAgent}
+        spotlightIndex={spotlightIndex}
+        latestEvent={latestEvent}
+      />
+      <div className="agent-chat-list agent-dialog-list" aria-label="Agent 详细输出">
         {cards.length ? (
           cards.map((card) => <AgentMessageCard card={card} key={card.key} />)
         ) : (
-          <EmptyState title="等待 Agent 接入" text="任务启动后，实际参与工作的 Agent 会按执行顺序逐个出现在这里。" compact />
+          <EmptyState title="等待 Agent 接入" text="任务启动后，参与工作的 Agent 会按执行顺序逐个出现在这里。" compact />
         )}
       </div>
       <QualityReviewPanel review={qualityReview} />
@@ -1125,6 +1193,63 @@ export function ProcessPage({
     </section>
   );
 }
+
+function AgentStoryStage({
+  cards,
+  spotlightAgent,
+  spotlightIndex,
+  latestEvent
+}: {
+  cards: AgentCardView[];
+  spotlightAgent: AgentCardView | null;
+  spotlightIndex: number;
+  latestEvent: ExecutionLogEvent | null;
+}) {
+  if (!spotlightAgent) {
+    return <EmptyState title="等待任务启动" text="上传数据并提交目标后，Agent 协作现场会展示当前出场的智能体、动作和产物进度。" compact />;
+  }
+
+  return (
+    <div className="agent-story-stage" aria-label="Agent 协作现场概览">
+      <div className={`agent-story-spotlight ${spotlightAgent.status}`} role="status" aria-live="polite">
+        <div className="agent-story-character">
+          <span className="agent-story-halo" />
+          <AgentPortrait card={spotlightAgent} size="large" />
+        </div>
+        <div className="agent-story-dialogue">
+          <span className="agent-scene-label">当前出场 · {agentOrderLabel(spotlightIndex, cards.length)}</span>
+          <h3>{spotlightAgent.agentName}</h3>
+          <p>{spotlightAgent.output || spotlightAgent.action}</p>
+          <dl>
+            <div>
+              <dt>输入</dt>
+              <dd>{spotlightAgent.inputSource}</dd>
+            </div>
+            <div>
+              <dt>动作</dt>
+              <dd>{spotlightAgent.action}</dd>
+            </div>
+          </dl>
+          {latestEvent ? <small>{stageLabel(latestEvent.stage)} · {eventStatusLabel(latestEvent.status)} · {formatTime(latestEvent.timestamp)}</small> : null}
+        </div>
+      </div>
+      <div className="agent-cast-strip" aria-label="Agent 出场顺序">
+        {cards.map((card, index) => (
+          <div
+            className={`agent-cast-member ${card.status} ${spotlightAgent.key === card.key ? "current" : ""}`}
+            key={`cast-${card.key}`}
+            aria-current={spotlightAgent.key === card.key ? "step" : undefined}
+          >
+            <AgentPortrait card={card} size="small" />
+            <strong>{card.agentName}</strong>
+            <span>{agentOrderLabel(index, cards.length)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 
 type JobControlAction = {
   action: string;
@@ -1242,10 +1367,12 @@ function JobControlDock({
 }
 
 
+
 export function AgentMessageCard({ card }: { card: AgentCardView }) {
+  const active = card.status === "active";
   return (
-    <article className={`agent-message-card ${card.status}`}>
-      <div className="agent-avatar">{agentInitial(card.agentName)}</div>
+    <article className={`agent-message-card agent-dialog-card ${card.status}`} aria-current={active ? "step" : undefined} aria-live={active ? "polite" : undefined}>
+      <div className="agent-avatar agent-avatar-portrait"><AgentPortrait card={card} size="small" /></div>
       <div className="agent-message-body">
         <div className="agent-message-head">
           <div>
@@ -1294,6 +1421,7 @@ export function AgentMessageCard({ card }: { card: AgentCardView }) {
     </article>
   );
 }
+
 
 export function AttemptProgressSection({
   attempts,
@@ -3184,6 +3312,7 @@ export function EmptyState({ title, text, compact = false }: { title: string; te
     </div>
   );
 }
+
 
 
 
