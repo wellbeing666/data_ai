@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+from threading import Lock
 from typing import Iterator
 
 import pymysql
@@ -15,6 +16,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_SQL_PATH = PROJECT_ROOT / "database" / "mysql_schema.sql"
 REQUIRED_TABLES = {"users", "auth_sessions", "analysis_conversations"}
 
+_schema_initialized = False
+_schema_init_lock = Lock()
+
+
+def _positive_timeout(value: object, default: int = 10) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, parsed)
+
 
 def _connection_kwargs(*, with_database: bool = True) -> dict:
     settings = get_settings()
@@ -26,7 +38,9 @@ def _connection_kwargs(*, with_database: bool = True) -> dict:
         "charset": settings.mysql_charset,
         "cursorclass": DictCursor,
         "autocommit": False,
-        "connect_timeout": int(settings.mysql_connect_timeout),
+        "connect_timeout": _positive_timeout(settings.mysql_connect_timeout),
+        "read_timeout": _positive_timeout(getattr(settings, "mysql_read_timeout", settings.mysql_connect_timeout)),
+        "write_timeout": _positive_timeout(getattr(settings, "mysql_write_timeout", settings.mysql_connect_timeout)),
     }
     if with_database:
         kwargs["database"] = settings.mysql_database
@@ -37,35 +51,68 @@ def _connection_kwargs(*, with_database: bool = True) -> dict:
 def mysql_connection(*, with_database: bool = True) -> Iterator[Connection]:
     conn = pymysql.connect(**_connection_kwargs(with_database=with_database))
     try:
+        _configure_session(conn)
         yield conn
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 
 
 def init_database_schema() -> None:
-    settings = get_settings()
-    database_name = _safe_database_name(settings.mysql_database)
+    global _schema_initialized
+    if _schema_initialized:
+        return
 
-    with mysql_connection(with_database=False) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                f"CREATE DATABASE IF NOT EXISTS `{database_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-            )
-        conn.commit()
-
-    with mysql_connection(with_database=True) as conn:
-        existing_tables = _get_existing_tables(conn)
-        if REQUIRED_TABLES.issubset(existing_tables):
+    with _schema_init_lock:
+        if _schema_initialized:
             return
 
-        schema_sql = _load_schema_sql()
-        with conn.cursor() as cursor:
-            for statement in _split_sql(schema_sql):
-                normalized = statement.lstrip().lower()
-                if normalized.startswith("create database") or normalized.startswith("use "):
-                    continue
-                cursor.execute(statement)
-        conn.commit()
+        settings = get_settings()
+        database_name = _safe_database_name(settings.mysql_database)
+
+        with mysql_connection(with_database=False) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"CREATE DATABASE IF NOT EXISTS `{database_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                )
+            conn.commit()
+
+        with mysql_connection(with_database=True) as conn:
+            existing_tables = _get_existing_tables(conn)
+            if not REQUIRED_TABLES.issubset(existing_tables):
+                schema_sql = _load_schema_sql()
+                with conn.cursor() as cursor:
+                    for statement in _split_sql(schema_sql):
+                        normalized = statement.lstrip().lower()
+                        if normalized.startswith("create database") or normalized.startswith("use "):
+                            continue
+                        cursor.execute(statement)
+                conn.commit()
+
+        _schema_initialized = True
+
+
+def _configure_session(conn: Connection) -> None:
+    settings = get_settings()
+    timeout_seconds = _positive_timeout(
+        getattr(settings, "mysql_lock_wait_timeout", settings.mysql_connect_timeout),
+        default=_positive_timeout(settings.mysql_connect_timeout),
+    )
+    statements = (
+        "SET SESSION innodb_lock_wait_timeout = %s",
+        "SET SESSION lock_wait_timeout = %s",
+    )
+    with conn.cursor() as cursor:
+        for statement in statements:
+            try:
+                cursor.execute(statement, (timeout_seconds,))
+            except Exception:
+                pass
 
 
 def _safe_database_name(database_name: str) -> str:

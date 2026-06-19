@@ -30,6 +30,14 @@ def _get_env(key: str, default: str = "") -> str:
     return os.getenv(key) or _read_dotenv_value(key) or default
 
 
+def _get_int_env(key: str, default: int) -> int:
+    value = _get_env(key, str(default))
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class DeepSeekSettingsMixin:
     @property
     def is_deepseek_configured(self) -> bool:
@@ -77,6 +85,14 @@ if BaseSettings is not None:
         mysql_database: str = Field(default="ai_data_workbench")
         mysql_charset: str = Field(default="utf8mb4")
         mysql_connect_timeout: int = Field(default=10)
+        mysql_read_timeout: int = Field(default=10)
+        mysql_write_timeout: int = Field(default=10)
+        mysql_lock_wait_timeout: int = Field(default=10)
+        startup_auth_init_timeout: int = Field(default=12)
+        admin_initial_account: str = Field(default="admin")
+        admin_initial_password: str = Field(default="admin123456")
+        admin_initial_username: str = Field(default="系统管理员")
+        auth_token_ttl_days: int = Field(default=7)
 
         model_config = SettingsConfigDict(
             env_file=".env",
@@ -105,12 +121,12 @@ else:
                 "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
             )
         )
-        rag_top_k: int = Field(default_factory=lambda: int(_get_env("RAG_TOP_K", "5")))
+        rag_top_k: int = Field(default_factory=lambda: _get_int_env("RAG_TOP_K", 5))
         rag_chunk_size: int = Field(
-            default_factory=lambda: int(_get_env("RAG_CHUNK_SIZE", "800"))
+            default_factory=lambda: _get_int_env("RAG_CHUNK_SIZE", 800)
         )
         rag_chunk_overlap: int = Field(
-            default_factory=lambda: int(_get_env("RAG_CHUNK_OVERLAP", "120"))
+            default_factory=lambda: _get_int_env("RAG_CHUNK_OVERLAP", 120)
         )
         doubao_api_key: str = Field(default_factory=lambda: _get_env("DOUBAO_API_KEY"))
         doubao_base_url: str = Field(
@@ -120,15 +136,22 @@ else:
         )
         doubao_vision_model: str = Field(default_factory=lambda: _get_env("DOUBAO_VISION_MODEL"))
         mysql_host: str = Field(default_factory=lambda: _get_env("MYSQL_HOST", "127.0.0.1"))
-        mysql_port: int = Field(default_factory=lambda: int(_get_env("MYSQL_PORT", "3306")))
+        mysql_port: int = Field(default_factory=lambda: _get_int_env("MYSQL_PORT", 3306))
         mysql_user: str = Field(default_factory=lambda: _get_env("MYSQL_USER", "root"))
         mysql_password: str = Field(default_factory=lambda: _get_env("MYSQL_PASSWORD", ""))
         mysql_database: str = Field(default_factory=lambda: _get_env("MYSQL_DATABASE", "ai_data_workbench"))
         mysql_charset: str = Field(default_factory=lambda: _get_env("MYSQL_CHARSET", "utf8mb4"))
-        mysql_connect_timeout: int = Field(default_factory=lambda: int(_get_env("MYSQL_CONNECT_TIMEOUT", "10")))
+        mysql_connect_timeout: int = Field(default_factory=lambda: _get_int_env("MYSQL_CONNECT_TIMEOUT", 10))
+        mysql_read_timeout: int = Field(default_factory=lambda: _get_int_env("MYSQL_READ_TIMEOUT", 10))
+        mysql_write_timeout: int = Field(default_factory=lambda: _get_int_env("MYSQL_WRITE_TIMEOUT", 10))
+        mysql_lock_wait_timeout: int = Field(default_factory=lambda: _get_int_env("MYSQL_LOCK_WAIT_TIMEOUT", 10))
+        startup_auth_init_timeout: int = Field(default_factory=lambda: _get_int_env("STARTUP_AUTH_INIT_TIMEOUT", 12))
+        admin_initial_account: str = Field(default_factory=lambda: _get_env("ADMIN_INITIAL_ACCOUNT", "admin"))
+        admin_initial_password: str = Field(default_factory=lambda: _get_env("ADMIN_INITIAL_PASSWORD", "admin123456"))
+        admin_initial_username: str = Field(default_factory=lambda: _get_env("ADMIN_INITIAL_USERNAME", "系统管理员"))
+        auth_token_ttl_days: int = Field(default_factory=lambda: _get_int_env("AUTH_TOKEN_TTL_DAYS", 7))
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

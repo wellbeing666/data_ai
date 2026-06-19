@@ -1717,6 +1717,7 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
     home: "首页",
     setup: "任务配置",
     knowledge: "知识库",
+    history: "分析对话列表",
     analysisIr: "分析专用中间表示",
     dataMap: "数据地图",
     agents: "Agent 画像",
@@ -1734,6 +1735,7 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
     { key: "task", label: "任务中心", target: "analysisIr", pages: ["analysisIr", "roadmap", "logs"] },
     { key: "agent", label: "Agent 控制台", target: "agents", pages: ["agents", "process"] },
     { key: "knowledge", label: "知识库", target: "knowledge", pages: ["knowledge"] },
+    { key: "history", label: "分析对话列表", target: "history", pages: ["history"] },
     { key: "deliver", label: "结果中心", target: "charts", pages: ["charts", "dashboard", "insights", "dataMap"] }
   ];
 
@@ -1857,24 +1859,6 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
             </section>
           ) : null}
 
-          <HistoryPanel
-            items={workflowHistory}
-            activeJobId={job?.job_id ?? predictionJob?.job_id ?? null}
-            loading={loadingHistory}
-            message={historyMessage}
-            searchQuery={historySearchQuery}
-            deletingJobId={deletingHistoryJobId}
-            selectedJobIds={selectedHistoryJobIds}
-            onRefresh={() => refreshWorkflowHistory()}
-            onSearchQueryChange={setHistorySearchQuery}
-            onSearch={() => refreshWorkflowHistory()}
-            onClearSearch={handleClearHistorySearch}
-            onToggleSelection={handleToggleHistorySelection}
-            onToggleSelectAll={handleToggleSelectAllHistory}
-            onDeleteSelected={handleDeleteSelectedHistoryJobs}
-            onOpen={handleOpenHistoryJob}
-            onDelete={handleDeleteHistoryJob}
-          />
         </aside>
 
         <section className="content-panel">
@@ -1927,6 +1911,36 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
               onSearch={handleKnowledgeSearch}
               onDelete={handleKnowledgeDelete}
             />
+          ) : null}
+
+          {activePage === "history" ? (
+            <section className="page-section history-page">
+              <div className="section-heading">
+                <div>
+                  <h2>分析对话列表</h2>
+                  <span>集中查看、检索、打开或清理历史分析任务。</span>
+                </div>
+                <span>{workflowHistory.length} 条记录</span>
+              </div>
+              <HistoryPanel
+                items={workflowHistory}
+                activeJobId={job?.job_id ?? predictionJob?.job_id ?? null}
+                loading={loadingHistory}
+                message={historyMessage}
+                searchQuery={historySearchQuery}
+                deletingJobId={deletingHistoryJobId}
+                selectedJobIds={selectedHistoryJobIds}
+                onRefresh={() => refreshWorkflowHistory()}
+                onSearchQueryChange={setHistorySearchQuery}
+                onSearch={() => refreshWorkflowHistory()}
+                onClearSearch={handleClearHistorySearch}
+                onToggleSelection={handleToggleHistorySelection}
+                onToggleSelectAll={handleToggleSelectAllHistory}
+                onDeleteSelected={handleDeleteSelectedHistoryJobs}
+                onOpen={handleOpenHistoryJob}
+                onDelete={handleDeleteHistoryJob}
+              />
+            </section>
           ) : null}
 
           {activePage === "analysisIr" ? (
@@ -2084,6 +2098,7 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
     </main>
   );
 }
+
 
 
 

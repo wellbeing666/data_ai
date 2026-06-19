@@ -1,6 +1,5 @@
 import hashlib
 import hmac
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -8,14 +7,11 @@ from uuid import uuid4
 
 from fastapi import Depends, Header, HTTPException, status
 
+from app.core.config import get_settings
 from app.core.database import init_database_schema, mysql_connection
 
 
-TOKEN_TTL_DAYS = int(os.getenv("AUTH_TOKEN_TTL_DAYS", "7"))
 PASSWORD_ITERATIONS = 180_000
-DEFAULT_ADMIN_ACCOUNT = os.getenv("ADMIN_INITIAL_ACCOUNT", "admin")
-DEFAULT_ADMIN_PASSWORD = os.getenv("ADMIN_INITIAL_PASSWORD", "admin123456")
-DEFAULT_ADMIN_USERNAME = os.getenv("ADMIN_INITIAL_USERNAME", "系统管理员")
 
 USER_PUBLIC_FIELDS = (
     "id",
@@ -33,6 +29,28 @@ USER_PUBLIC_FIELDS = (
 
 class AuthError(RuntimeError):
     pass
+
+
+def _auth_token_ttl_days() -> int:
+    try:
+        return max(1, int(get_settings().auth_token_ttl_days))
+    except Exception:
+        return 7
+
+
+def _admin_initial_account() -> str:
+    value = str(get_settings().admin_initial_account or "").strip()
+    return value or "admin"
+
+
+def _admin_initial_password() -> str:
+    value = str(get_settings().admin_initial_password or "").strip()
+    return value or "admin123456"
+
+
+def _admin_initial_username() -> str:
+    value = str(get_settings().admin_initial_username or "").strip()
+    return value or "系统管理员"
 
 
 def init_auth_storage() -> None:
@@ -81,9 +99,9 @@ def _bootstrap_admin(conn) -> None:
             """,
             (
                 uuid4().hex,
-                _normalize_account(DEFAULT_ADMIN_ACCOUNT),
-                DEFAULT_ADMIN_USERNAME,
-                hash_password(DEFAULT_ADMIN_PASSWORD),
+                _normalize_account(_admin_initial_account()),
+                _admin_initial_username(),
+                hash_password(_admin_initial_password()),
                 "系统初始化默认管理员。",
                 "系统自动创建默认管理员，请上线后立即修改密码。",
                 timestamp,
@@ -158,7 +176,7 @@ def login_user(login_account: str, password: str, user_agent: str = "") -> dict[
             token = secrets.token_urlsafe(36)
             token_hash = _hash_token(token)
             created_at = _utc_now()
-            expires_at = created_at + timedelta(days=max(1, TOKEN_TTL_DAYS))
+            expires_at = created_at + timedelta(days=_auth_token_ttl_days())
             cursor.execute(
                 "INSERT INTO auth_sessions (token_hash, user_id, created_at, expires_at, revoked_at, user_agent) VALUES (%s, %s, %s, %s, NULL, %s)",
                 (token_hash, row["id"], created_at, expires_at, str(user_agent or "")[:300]),
@@ -386,3 +404,4 @@ def _extract_bearer_token(authorization: str | None) -> str:
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+

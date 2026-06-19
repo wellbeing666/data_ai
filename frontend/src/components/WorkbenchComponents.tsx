@@ -27,6 +27,7 @@ import type {
   PptPreview,
   PreflightAssessment,
   QualityReview,
+  CrossArtifactConsistencyReport,
   ReportGenerateResponse,
   SampleDatasetResponse,
   ValidationAttemptLog,
@@ -573,19 +574,16 @@ export function QualityReviewPanel({ review }: { review: QualityReview | null })
       )}
       <ChipList title="安全表述建议" items={review.safe_language_suggestions ?? []} />
       <ChipList title="缺失证据" items={review.missing_evidence ?? []} tone="warning" />
-      <ConsistencyReportPanel review={review} />
     </section>
   );
 }
 
-export function ConsistencyReportPanel({ review }: { review: QualityReview | null }) {
-  const report = review?.cross_artifact_consistency;
+export function ConsistencyReportPanel({ report }: { report: CrossArtifactConsistencyReport | null }) {
   if (!report) {
     return null;
   }
   const checks = Array.isArray(report.checks) ? report.checks : [];
   const visibleChecks = checks.filter((check) => String(check.status || "pass") !== "pass").slice(0, 5);
-  const rewrites = (review?.suggested_rewrites ?? []).slice(0, 4).map((rewrite) => `${rewrite.artifact}.${rewrite.field}：${rewrite.suggested_text}`);
   return (
     <div className="consistency-panel">
       <header>
@@ -606,7 +604,6 @@ export function ConsistencyReportPanel({ review }: { review: QualityReview | nul
       ) : (
         <p className="agent-muted">未发现日期范围、指标口径、样本条件、单位或基准口径冲突。</p>
       )}
-      <ChipList title="建议改写" items={rewrites} tone="warning" />
     </div>
   );
 }
@@ -1563,7 +1560,7 @@ export function ArtifactSummary({ card }: { card: AgentCardView }) {
     return <QualityReviewArtifactSummary value={card.raw as QualityReview} />;
   }
   if (card.artifactKind === "consistency_report") {
-    return <GenericArtifactSummary value={card.raw} title="跨产物一致性报告" />;
+    return <ConsistencyReportPanel report={card.raw as CrossArtifactConsistencyReport | null} />;
   }
   return <GenericArtifactSummary value={card.raw} />;
 }
@@ -1792,7 +1789,6 @@ export function QualityReviewArtifactSummary({ value }: { value: QualityReview }
       <SummaryParagraph label="修正版摘要" text={value.revised_summary || "质检 Agent 未生成修正版摘要。"} />
       <ChipList title="安全表述建议" items={value.safe_language_suggestions ?? []} />
       <ChipList title="缺失证据" items={value.missing_evidence ?? []} tone="warning" />
-      <ConsistencyReportPanel review={value} />
     </div>
   );
 }
@@ -3312,6 +3308,7 @@ export function EmptyState({ title, text, compact = false }: { title: string; te
     </div>
   );
 }
+
 
 
 
