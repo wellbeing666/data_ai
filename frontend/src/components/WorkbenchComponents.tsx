@@ -79,8 +79,8 @@ import {
 import type { AgentCardView, AnyRecord, AttemptProgressView, StepView } from "../utils/workbenchUtils";
 
 export function SetupPage({
-  profile,
-  health,
+  profile: _profile,
+  health: _health,
   isFallbackMode
 }: {
   profile: DatasetProfile | null;
@@ -93,32 +93,6 @@ export function SetupPage({
         <h2>开始一次分析</h2>
         <span>{isFallbackMode ? "规则分析模式" : "智能分析模式"}</span>
       </div>
-      <div className="setup-grid">
-        <article className="info-card">
-          <strong>1. 上传数据</strong>
-          <p>支持 CSV、XLSX、XLS 和图片截图。图片会先抽取为结构化数据，再进入 Agent 工作流。</p>
-        </article>
-        <article className="info-card">
-          <strong>2. 输入目标</strong>
-          <p>例如“按班级统计成绩并生成图表”或“找出影响销量下降的可能原因”。</p>
-        </article>
-        <article className="info-card">
-          <strong>3. 查看过程</strong>
-          <p>启动后会立即进入 Agent 过程页，状态、图表和报告会实时刷新。</p>
-        </article>
-      </div>
-      <dl className="info-list wide">
-        <div>
-          <dt>DeepSeek 状态</dt>
-          <dd>{health?.message ?? "正在读取配置"}</dd>
-        </div>
-        {profile ? (
-          <div>
-            <dt>字段</dt>
-            <dd>{profile.columns.join("、")}</dd>
-          </div>
-        ) : null}
-      </dl>
     </section>
   );
 }
@@ -396,14 +370,14 @@ export function RoadmapRenderedDiagram({ steps }: { steps: AnalysisRoadmap["step
         <div className="roadmap-rendered-step-wrap" key={`${step.step_id}-${index}`}>
           <article className="roadmap-rendered-step">
             <span className="roadmap-rendered-index">{index + 1}</span>
-            <div>
+            <div className="roadmap-rendered-step-body">
               <small>{step.agent}</small>
               <strong>{step.title}</strong>
               <p>{step.description}</p>
               <em>{stageLabel(step.stage)} · {step.outputs.join("、") || "结构化产物"}</em>
             </div>
           </article>
-          {index < steps.length - 1 ? <span className="roadmap-rendered-arrow">↓</span> : null}
+          {index < steps.length - 1 ? <span className="roadmap-rendered-arrow">→</span> : null}
         </div>
       ))}
     </div>
@@ -439,12 +413,12 @@ export function MermaidDiagram({ code, steps }: { code: string; steps?: Analysis
     return <pre className="mermaid-diagram mermaid-code-fallback">{code}</pre>;
   }
 
-  const nodeWidth = 270;
-  const nodeHeight = 82;
-  const gap = 42;
+  const nodeWidth = 140;
+  const nodeHeight = 140;
+  const gap = 32;
   const padding = 28;
-  const width = nodeWidth + padding * 2;
-  const height = padding * 2 + graph.nodes.length * nodeHeight + Math.max(0, graph.nodes.length - 1) * gap;
+  const width = padding * 2 + graph.nodes.length * nodeWidth + Math.max(0, graph.nodes.length - 1) * gap;
+  const height = nodeHeight + padding * 2;
 
   return (
     <div className="mermaid-diagram roadmap-svg-frame" aria-label="流程图渲染结果">
@@ -455,18 +429,18 @@ export function MermaidDiagram({ code, steps }: { code: string; steps?: Analysis
           </marker>
         </defs>
         {graph.nodes.map((node, index) => {
-          const x = padding;
-          const y = padding + index * (nodeHeight + gap);
+          const x = padding + index * (nodeWidth + gap);
+          const y = padding;
           const isFirst = index === 0;
           const isLast = index === graph.nodes.length - 1;
           return (
             <g key={node.id}>
               {index > 0 ? (
                 <line
-                  x1={width / 2}
-                  y1={y - gap + 8}
-                  x2={width / 2}
-                  y2={y - 10}
+                  x1={x - gap + 8}
+                  y1={y + nodeHeight / 2}
+                  x2={x - 10}
+                  y2={y + nodeHeight / 2}
                   className="roadmap-svg-edge"
                   markerEnd="url(#roadmap-arrow)"
                 />
@@ -479,10 +453,10 @@ export function MermaidDiagram({ code, steps }: { code: string; steps?: Analysis
                 rx={isFirst || isLast ? 38 : 18}
                 className={isFirst || isLast ? "roadmap-svg-node endpoint" : "roadmap-svg-node"}
               />
-              <circle cx={x + 34} cy={y + 41} r="18" className="roadmap-svg-index" />
-              <text x={x + 34} y={y + 46} textAnchor="middle" className="roadmap-svg-index-text">{index + 1}</text>
-              <text x={x + 64} y={y + 32} className="roadmap-svg-title">{node.title}</text>
-              <text x={x + 64} y={y + 55} className="roadmap-svg-agent">{node.agent || node.stage || "Agent"}</text>
+              <circle cx={x + nodeWidth / 2} cy={y + 28} r="16" className="roadmap-svg-index" />
+              <text x={x + nodeWidth / 2} y={y + 33} textAnchor="middle" className="roadmap-svg-index-text">{index + 1}</text>
+              <text x={x + nodeWidth / 2} y={y + 62} textAnchor="middle" className="roadmap-svg-title">{node.title}</text>
+              <text x={x + nodeWidth / 2} y={y + 82} textAnchor="middle" className="roadmap-svg-agent">{node.agent || node.stage || "Agent"}</text>
             </g>
           );
         })}
@@ -545,36 +519,86 @@ function parseMermaidFlowchart(code: string, fallbackSteps: AnalysisRoadmap["ste
 
 
 export function QualityReviewPanel({ review }: { review: QualityReview | null }) {
+  const [detailOpen, setDetailOpen] = useState(false);
   if (!review) {
     return null;
   }
+  const issueCount = review.issues?.length ?? 0;
+  const suggestionCount = review.safe_language_suggestions?.length ?? 0;
+  const evidenceCount = review.missing_evidence?.length ?? 0;
+  const summaryIsLong = (review.revised_summary?.length ?? 0) > 200;
   return (
-    <section className="quality-review-card">
-      <div className="section-heading compact-heading">
-        <h2>质检 Agent 自检</h2>
-        <span className={review.passed ? "success-badge" : "warning-badge"}>
-          {review.passed ? "自检通过" : `存在${review.risk_level || "风险"}`}
-        </span>
-      </div>
-      {review.revised_summary ? <p className="summary-text">{review.revised_summary}</p> : null}
-      {review.issues.length ? (
-        <div className="issue-list">
-          <span>风险清单</span>
-          {review.issues.map((issue, index) => (
-            <article key={`${issue.issue_type}-${index}`}>
-              <strong>{severityLabel(issue.severity)} · {issue.issue_type}</strong>
-              <p>{issue.finding}</p>
-              {issue.evidence ? <small>{issue.evidence}</small> : null}
-              {issue.suggestion ? <p>{issue.suggestion}</p> : null}
-            </article>
-          ))}
+    <>
+      <section className="quality-review-card">
+        <div className="section-heading compact-heading">
+          <h2>质检 Agent 自检</h2>
+          <span className={review.passed ? "success-badge" : "warning-badge"}>
+            {review.passed ? "自检通过" : `存在${review.risk_level || "风险"}`}
+          </span>
         </div>
-      ) : (
-        <p className="agent-muted">未发现需要阻断的结论风险。</p>
-      )}
-      <ChipList title="安全表述建议" items={review.safe_language_suggestions ?? []} />
-      <ChipList title="缺失证据" items={review.missing_evidence ?? []} tone="warning" />
-    </section>
+        {review.revised_summary ? (
+          <div className="quality-review-summary-text">
+            <p className={`summary-text ${summaryIsLong ? "collapsed" : ""}`}>
+              {review.revised_summary}
+            </p>
+          </div>
+        ) : null}
+        <div className="quality-review-summary">
+          {issueCount > 0 ? (
+            <span className="summary-stat warning-stat">{issueCount} 项风险</span>
+          ) : (
+            <span className="summary-stat success-stat">无风险项</span>
+          )}
+          {suggestionCount > 0 ? <span className="summary-stat">{suggestionCount} 条表述建议</span> : null}
+          {evidenceCount > 0 ? <span className="summary-stat warning-stat">{evidenceCount} 条缺失证据</span> : null}
+        </div>
+        <button type="button" className="secondary-button" onClick={() => setDetailOpen(true)}>
+          查看质检详情
+        </button>
+      </section>
+      {detailOpen ? (
+        <QualityReviewDetailModal review={review} onClose={() => setDetailOpen(false)} />
+      ) : null}
+    </>
+  );
+}
+
+export function QualityReviewDetailModal({ review, onClose }: { review: QualityReview; onClose: () => void }) {
+  return (
+    <div className="knowledge-modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="knowledge-results-modal" role="dialog" aria-modal="true" aria-label="质检详情" onMouseDown={(e) => e.stopPropagation()}>
+        <header>
+          <div>
+            <h2>质检详情</h2>
+            <p>{review.passed ? "自检通过" : `存在${review.risk_level || "风险"}`} · {review.issues?.length ?? 0} 项问题</p>
+          </div>
+          <button className="secondary-button" type="button" onClick={onClose}>关闭</button>
+        </header>
+        <div className="knowledge-results-list">
+          {review.revised_summary ? (
+            <article>
+              <div><strong>修正版摘要</strong></div>
+              <p>{review.revised_summary}</p>
+            </article>
+          ) : null}
+          {review.issues.length ? (
+            <div className="issue-list">
+              <span>风险清单</span>
+              {review.issues.map((issue, index) => (
+                <article key={`${issue.issue_type}-${index}`}>
+                  <strong>{severityLabel(issue.severity)} · {issue.issue_type}</strong>
+                  <p>{issue.finding}</p>
+                  {issue.evidence ? <small>{issue.evidence}</small> : null}
+                  {issue.suggestion ? <p>{issue.suggestion}</p> : null}
+                </article>
+              ))}
+            </div>
+          ) : null}
+          <ChipList title="安全表述建议" items={review.safe_language_suggestions ?? []} />
+          <ChipList title="缺失证据" items={review.missing_evidence ?? []} tone="warning" />
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -754,46 +778,62 @@ export function KnowledgePage({
   onSearch: () => void;
   onDelete: (docId: string) => void;
 }) {
+  const [searchResultsOpen, setSearchResultsOpen] = useState(false);
+  const previousSearchResult = useRef(searchResult);
+
+  useEffect(() => {
+    if (searchResult && searchResult !== previousSearchResult.current) {
+      setSearchResultsOpen(true);
+    }
+    previousSearchResult.current = searchResult;
+  }, [searchResult]);
+
   return (
-    <section className="page-section">
-      <div className="section-heading">
-        <h2>全局业务知识库</h2>
+    <section className="page-section knowledge-page">
+      <div className="section-heading dashboard-heading">
+        <div>
+          <h2>全局业务知识库</h2>
+          <span>上传业务资料、验证召回效果并管理索引文档。</span>
+        </div>
         <span>{documents.length} 个文档</span>
       </div>
 
-      <div className="knowledge-grid">
-        <article className="info-card">
-          <strong>上传知识文档</strong>
-          <label className="upload-zone compact-upload">
-            <input
-              type="file"
-              accept=".txt,.md"
-              onChange={(event) => onFileChange(event.target.files?.[0] ?? null)}
-            />
-            <span>{selectedFile ? selectedFile.name : "选择 .txt / .md 文件"}</span>
-          </label>
-          <button className="primary-button" type="button" onClick={onUpload}>
-            写入知识库
-          </button>
-          {message ? <p className="message success">{message}</p> : null}
-        </article>
+      <div className="knowledge-workspace">
+        <div className="knowledge-tools">
+          <article className="info-card">
+            <strong>上传知识文档</strong>
+            <p>支持 TXT、Markdown 文档，写入后将自动切分并建立索引。</p>
+            <label className="upload-zone compact-upload">
+              <input
+                type="file"
+                accept=".txt,.md"
+                onChange={(event) => onFileChange(event.target.files?.[0] ?? null)}
+              />
+              <span>{selectedFile ? selectedFile.name : "选择 .txt / .md 文件"}</span>
+            </label>
+            <button className="primary-button" type="button" onClick={onUpload}>写入知识库</button>
+            {message ? <p className="message success">{message}</p> : null}
+          </article>
 
-        <article className="info-card">
-          <strong>测试检索</strong>
-          <textarea
-            rows={4}
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-          />
-          <button className="secondary-button" type="button" onClick={onSearch}>
-            检索知识库
-          </button>
-        </article>
-      </div>
+          <article className="info-card">
+            <strong>测试检索</strong>
+            <p>输入一个业务问题，检查知识库返回的相关片段。</p>
+            <textarea rows={4} value={query} onChange={(event) => onQueryChange(event.target.value)} />
+            <button className="secondary-button" type="button" onClick={onSearch}>检索知识库</button>
+            {searchResult ? (
+              <div className="knowledge-search-summary">
+                <p>{searchResult.message}</p>
+                <button className="text-button" type="button" onClick={() => setSearchResultsOpen(true)}>查看检索结果</button>
+              </div>
+            ) : null}
+          </article>
+        </div>
 
-      <div className="knowledge-grid">
-        <section className="info-card">
-          <strong>文档列表</strong>
+        <section className="info-card knowledge-document-panel">
+          <div className="section-heading compact-heading">
+            <h2>文档列表</h2>
+            <span>{documents.length} 个文档</span>
+          </div>
           {documents.length ? (
             <div className="document-list">
               {documents.map((document) => (
@@ -812,32 +852,29 @@ export function KnowledgePage({
               ))}
             </div>
           ) : (
-            <p>暂无知识文档。</p>
-          )}
-        </section>
-
-        <section className="info-card">
-          <strong>检索结果</strong>
-          {searchResult ? (
-            <>
-              <p>{searchResult.message}</p>
-              <div className="document-list">
-                {searchResult.results.map((item, index) => (
-                  <article className="document-item result" key={`${item.doc_id}-${item.chunk_index}-${index}`}>
-                    <div>
-                      <strong>{item.filename || `片段 ${index + 1}`}</strong>
-                      <p>{item.chunk}</p>
-                      <span>score {item.score ?? "-"}</span>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </>
-          ) : (
-            <p>输入问题后可以查看 top-k 知识片段。</p>
+            <EmptyState title="暂无知识文档" text="上传 TXT 或 Markdown 文档后，索引状态会显示在这里。" compact />
           )}
         </section>
       </div>
+
+      {searchResultsOpen && searchResult ? (
+        <div className="knowledge-modal-backdrop" role="presentation" onMouseDown={() => setSearchResultsOpen(false)}>
+          <section className="knowledge-results-modal" role="dialog" aria-modal="true" aria-label="知识库检索结果" onMouseDown={(event) => event.stopPropagation()}>
+            <header>
+              <div><h2>检索结果</h2><p>{searchResult.message}</p></div>
+              <button className="secondary-button" type="button" onClick={() => setSearchResultsOpen(false)}>关闭</button>
+            </header>
+            <div className="knowledge-results-list">
+              {searchResult.results.length ? searchResult.results.map((item, index) => (
+                <article key={`${item.doc_id}-${item.chunk_index}-${index}`}>
+                  <div><strong>{item.filename || `片段 ${index + 1}`}</strong><span>score {item.score ?? "-"}</span></div>
+                  <p>{item.chunk}</p>
+                </article>
+              )) : <EmptyState title="未检索到相关片段" text="请调整问题描述后重新检索。" compact />}
+            </div>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -1155,6 +1192,36 @@ export function ProcessPage({
   const spotlightAgent = selectSpotlightAgent(cards);
   const spotlightIndex = spotlightAgent ? cards.findIndex((card) => card.key === spotlightAgent.key) : -1;
   const latestEvent = events.length ? events[events.length - 1] : null;
+  const [cardFilter, setCardFilter] = useState<"all" | "active" | "done" | "failed" | "artifact">("all");
+  const timelineRef = useRef<HTMLDivElement | null>(null);
+  const messageStreamRef = useRef<HTMLDivElement | null>(null);
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [messageStreamHeight, setMessageStreamHeight] = useState(460);
+  const filteredCards = cards.filter((card) => cardFilter === "all"
+    || (cardFilter === "artifact" ? Boolean(card.artifactPath) : card.status === cardFilter));
+  const completedCount = cards.filter((card) => card.status === "done").length;
+  const runningCount = cards.filter((card) => card.status === "active").length;
+  const failedCount = cards.filter((card) => card.status === "failed").length;
+
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+    const updateHeight = () => setMessageStreamHeight(Math.max(360, timeline.getBoundingClientRect().height));
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(timeline);
+    return () => observer.disconnect();
+  }, [cards.length]);
+
+  const focusAgentMessage = (cardKey: string) => {
+    setCardFilter("all");
+    window.requestAnimationFrame(() => {
+      const stream = messageStreamRef.current;
+      const target = messageRefs.current[cardKey];
+      if (!stream || !target) return;
+      stream.scrollTo({ top: Math.max(0, target.offsetTop - stream.offsetTop - stream.clientHeight * 0.2), behavior: "smooth" });
+    });
+  };
 
   return (
     <section className="page-section process-page process-page-vn">
@@ -1172,21 +1239,46 @@ export function ProcessPage({
           onControlJob={onControlJob}
         />
       ) : null}
+      <div className="process-summary-grid">
+        <article><span>当前阶段</span><strong>{job?.current_stage ? stageLabel(job.current_stage) : "等待"}</strong></article>
+        <article><span>已完成</span><strong>{completedCount}</strong></article>
+        <article><span>运行中</span><strong>{runningCount}</strong></article>
+        <article><span>失败</span><strong>{failedCount}</strong></article>
+      </div>
       <AgentStoryStage
         cards={cards}
         spotlightAgent={spotlightAgent}
         spotlightIndex={spotlightIndex}
         latestEvent={latestEvent}
       />
-      <div className="agent-chat-list agent-dialog-list" aria-label="Agent 详细输出">
-        {cards.length ? (
-          cards.map((card) => <AgentMessageCard card={card} key={card.key} />)
-        ) : (
-          <EmptyState title="等待 Agent 接入" text="任务启动后，参与工作的 Agent 会按执行顺序逐个出现在这里。" compact />
-        )}
+      <div className="process-timeline-layout">
+        <div className="process-agent-timeline" ref={timelineRef}>
+          <div className="section-heading compact-heading"><h2>Agent 时间线</h2><span>{cards.length} 位</span></div>
+          {cards.map((card, index) => (
+            <button key={card.key} type="button" className={card.status} onClick={() => focusAgentMessage(card.key)}>
+              <AgentPortrait card={card} size="small" />
+              <span><strong>{card.agentName}</strong><small>{index + 1}. {card.title}</small></span>
+              <i aria-label={stepStatusLabel(card.status)} />
+            </button>
+          ))}
+        </div>
+        <section className="process-message-panel" style={{ height: messageStreamHeight }}>
+          <div className="process-message-filters" aria-label="消息筛选">
+            {([[
+              "all", "全部"
+            ], ["active", "运行中"], ["done", "已完成"], ["failed", "失败"], ["artifact", "有产物"]] as const).map(([key, label]) => <button key={key} type="button" className={cardFilter === key ? "active" : ""} onClick={() => setCardFilter(key)}>{label}</button>)}
+          </div>
+          <div className="agent-chat-list agent-dialog-list" ref={messageStreamRef} aria-label="Agent 详细输出">
+            {filteredCards.length ? filteredCards.map((card) => (
+              <div key={card.key} ref={(node) => { messageRefs.current[card.key] = node; }}><AgentMessageCard card={card} /></div>
+            )) : <EmptyState title="没有匹配消息" text="调整消息筛选后查看其他 Agent 输出。" compact />}
+          </div>
+        </section>
       </div>
-      <QualityReviewPanel review={qualityReview} />
-      <AttemptProgressSection attempts={attemptViews} isPredictionWorkflow={isPredictionWorkflow} />
+      <div className="process-diagnostic-grid">
+        <QualityReviewPanel review={qualityReview} />
+        <AttemptProgressSection attempts={attemptViews} isPredictionWorkflow={isPredictionWorkflow} />
+      </div>
     </section>
   );
 }
@@ -1427,21 +1519,79 @@ export function AttemptProgressSection({
   attempts: AttemptProgressView[];
   isPredictionWorkflow: boolean;
 }) {
+  const [detailOpen, setDetailOpen] = useState(false);
   if (!attempts.length) {
     return null;
   }
+  const lastAttempt = attempts[attempts.length - 1];
+  const successCount = attempts.filter((a) => a.validation?.passed).length;
   return (
-    <section className="attempt-section">
-      <div className="section-heading">
-        <h2>{isPredictionWorkflow ? "预测脚本生成与验证" : "代码生成与验证"}</h2>
-        <span>{attempts.length} 次尝试</span>
-      </div>
-      <div className="attempt-list">
-        {attempts.map((attempt) => (
-          <AttemptProgressCard attempt={attempt} key={attempt.attempt} />
-        ))}
-      </div>
-    </section>
+    <>
+      <section className="attempt-section">
+        <div className="section-heading">
+          <h2>{isPredictionWorkflow ? "预测脚本生成与验证" : "代码生成与验证"}</h2>
+          <span>{attempts.length} 次尝试</span>
+        </div>
+        <div className="attempt-summary">
+          <div className="attempt-summary-row">
+            <span>最近尝试</span>
+            <strong>第 {lastAttempt.attempt} 次 · {attemptStatusText(lastAttempt)}</strong>
+          </div>
+          <div className="attempt-summary-row">
+            <span>验证通过</span>
+            <strong>{successCount} / {attempts.length}</strong>
+          </div>
+        </div>
+        <div className="attempt-timeline">
+          {attempts.map((attempt) => (
+            <div key={attempt.attempt} className={`attempt-timeline-item ${attemptStatusClass(attempt)}`}>
+              <span className="attempt-timeline-dot" />
+              <span className="attempt-timeline-label">第 {attempt.attempt} 次</span>
+              <span className="attempt-timeline-status">{attemptStatusText(attempt)}</span>
+            </div>
+          ))}
+        </div>
+        <button type="button" className="secondary-button" onClick={() => setDetailOpen(true)}>
+          查看阶段与验证详情
+        </button>
+      </section>
+      {detailOpen ? (
+        <AttemptProgressDetailModal
+          attempts={attempts}
+          isPredictionWorkflow={isPredictionWorkflow}
+          onClose={() => setDetailOpen(false)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+export function AttemptProgressDetailModal({
+  attempts,
+  isPredictionWorkflow,
+  onClose
+}: {
+  attempts: AttemptProgressView[];
+  isPredictionWorkflow: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <div className="knowledge-modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="knowledge-results-modal" role="dialog" aria-modal="true" aria-label="阶段与验证详情" onMouseDown={(e) => e.stopPropagation()}>
+        <header>
+          <div>
+            <h2>{isPredictionWorkflow ? "预测脚本生成与验证详情" : "代码生成与验证详情"}</h2>
+            <p>共 {attempts.length} 次尝试</p>
+          </div>
+          <button className="secondary-button" type="button" onClick={onClose}>关闭</button>
+        </header>
+        <div className="knowledge-results-list">
+          {attempts.map((attempt) => (
+            <AttemptProgressCard attempt={attempt} key={attempt.attempt} />
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -2483,10 +2633,24 @@ export function InsightsPage({
   onSubmitFollowUp?: () => void;
 }) {
   const pptxPath = report?.pptx_path || job?.pptx_path || pptPreview?.pptx_path || null;
+  const [activeTab, setActiveTab] = useState<"summary" | "evidence" | "actions" | "ppt" | "technical" | "followup">("summary");
+  const [detailDrawer, setDetailDrawer] = useState<{ title: string; sections: { title: string; items: string[] }[] } | null>(null);
+  const tabs = [
+    ["summary", "结论摘要"],
+    ["evidence", "证据链"],
+    ["actions", "建议动作"],
+    ["ppt", "PPT 大纲"],
+    ["technical", "技术附录"],
+    ["followup", "后续追问"]
+  ] as const;
   return (
-    <section className="page-section">
-      <div className="section-heading">
-        <h2>结论与报告</h2>
+    <section className="page-section insight-report-page">
+      <div className="insight-delivery-hero">
+        <div>
+          <p className="eyebrow">Analysis Delivery</p>
+          <h2>结论报告</h2>
+          <span>{job ? `${workflowLabel(job.workflow_type || job.task_type)} · Job ${job.job_id}` : "等待任务启动"}</span>
+        </div>
         <div className="report-downloads">
           {report?.report_path || job?.report_path ? (
             <a className="download-button" href={toStorageUrl(report?.report_path || job?.report_path || "")} download>
@@ -2508,25 +2672,103 @@ export function InsightsPage({
       {pptMessage ? <p className="ppt-generate-message">{pptMessage}</p> : null}
       {explanation.summary ? (
         <>
-          <p className="summary-text">{explanation.summary}</p>
-          <EvidenceResultList title="关键发现" items={explanation.key_findings} evidenceChain={evidenceChain} />
-          <DebateReflectionPanel debate={debateReflection ?? null} />
-          <EvidenceResultList title="建议动作" items={explanation.recommendations} evidenceChain={evidenceChain} />
-          <EvidenceResultList title="限制说明" items={explanation.limitations} evidenceChain={evidenceChain} />
-          <PptOutline outline={explanation.ppt_outline} />
-          <PptPreviewPanel preview={pptPreview || null} />
-          <FollowUpPanel
-            followUps={followUps ?? []}
-            recommendations={followUpRecommendations ?? []}
-            question={followUpQuestion ?? ""}
-            loading={Boolean(followUpLoading)}
-            onQuestionChange={onFollowUpQuestionChange}
-            onSubmit={onSubmitFollowUp}
-          />
+          <div className="insight-metric-grid">
+            <article><span>报告状态</span><strong>{job?.status === "success" ? "已完成" : statusLabel(statusFromJob(job?.status || ""))}</strong></article>
+            <article><span>关键发现</span><strong>{explanation.key_findings.length}</strong></article>
+            <article><span>建议动作</span><strong>{explanation.recommendations.length}</strong></article>
+            <article><span>限制说明</span><strong>{explanation.limitations.length}</strong></article>
+          </div>
+          <div className="insight-report-tabs" role="tablist" aria-label="结论报告内容">
+            {tabs.map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={activeTab === key} className={activeTab === key ? "active" : ""} onClick={() => setActiveTab(key)}>{label}</button>)}
+          </div>
+
+          {activeTab === "summary" ? (
+            <div className="insight-summary-layout">
+              <section className="insight-surface">
+                <h3>核心结论</h3>
+                <p className="summary-text">{explanation.summary}</p>
+                <EvidenceResultList title="关键发现" items={explanation.key_findings.slice(0, 4)} evidenceChain={evidenceChain} />
+                {explanation.key_findings.length > 4 ? <button className="text-button" type="button" onClick={() => setDetailDrawer({ title: "完整关键发现", sections: [{ title: "关键发现", items: explanation.key_findings }] })}>查看全部关键发现</button> : null}
+              </section>
+              <aside className="insight-surface insight-summary-aside">
+                <h3>下一步建议</h3>
+                <ResultList title="建议动作" items={explanation.recommendations.slice(0, 3)} />
+                <ResultList title="限制摘要" items={explanation.limitations.slice(0, 2)} />
+                {explanation.recommendations.length > 3 ? <button className="text-button" type="button" onClick={() => setDetailDrawer({ title: "完整建议动作", sections: [{ title: "建议动作", items: explanation.recommendations }] })}>查看全部建议</button> : null}
+                {explanation.limitations.length > 2 ? <button className="text-button" type="button" onClick={() => setDetailDrawer({ title: "完整限制说明", sections: [{ title: "限制摘要", items: explanation.limitations }] })}>查看全部限制</button> : null}
+                <button className="secondary-button" type="button" style={{ marginTop: 8, width: "100%" }} onClick={() => setDetailDrawer({ title: "下一步建议详情", sections: [{ title: "建议动作", items: explanation.recommendations }, { title: "限制摘要", items: explanation.limitations }] })}>
+                  查看详情
+                </button>
+              </aside>
+            </div>
+          ) : null}
+
+          {activeTab === "evidence" ? (
+            <div className="insight-evidence-layout">
+              <section className="insight-surface">
+                <h3>证据与数据依据</h3>
+                <p>{evidenceChain?.summary || "本轮尚未生成结构化证据链摘要。"}</p>
+                <dl className="insight-evidence-metrics">
+                  <div><dt>风险等级</dt><dd>{evidenceChain?.risk_level || "未评估"}</dd></div>
+                  <div><dt>高风险发现</dt><dd>{evidenceChain?.high_risk_count ?? 0}</dd></div>
+                  <div><dt>来源文件</dt><dd>{evidenceChain?.source_files?.length ?? 0}</dd></div>
+                </dl>
+                <EvidenceResultList title="证据预览" items={(evidenceChain?.findings ?? []).slice(0, 3).map((item) => item.text)} evidenceChain={evidenceChain} />
+                {(evidenceChain?.findings?.length ?? 0) > 3 ? <button className="text-button" type="button" onClick={() => setDetailDrawer({ title: "完整证据发现", sections: [{ title: "证据发现", items: (evidenceChain?.findings ?? []).map((item) => item.text) }] })}>查看完整证据</button> : null}
+              </section>
+              <section className="insight-surface">
+                <h3>解释逻辑与风险边界</h3>
+                <ResultList title="限制说明" items={explanation.limitations.slice(0, 4)} />
+                <details><summary>来源文件（{evidenceChain?.source_files?.length ?? 0}）</summary><ul>{(evidenceChain?.source_files ?? []).map((file) => <li key={file}>{file}</li>)}</ul></details>
+                {explanation.limitations.length > 4 ? <button className="text-button" type="button" onClick={() => setDetailDrawer({ title: "完整限制说明", sections: [{ title: "限制说明", items: explanation.limitations }] })}>查看完整风险边界</button> : null}
+              </section>
+            </div>
+          ) : null}
+
+          {activeTab === "actions" ? <section className="insight-surface"><EvidenceResultList title="建议动作" items={explanation.recommendations} evidenceChain={evidenceChain} /></section> : null}
+          {activeTab === "ppt" ? (
+            <section className="insight-surface">
+              <PptOutline outline={explanation.ppt_outline} preview={pptPreview || null} />
+            </section>
+          ) : null}
+          {activeTab === "technical" ? (
+            <section className="insight-surface technical-appendix">
+              <DebateReflectionPanel debate={debateReflection ?? null} />
+              <RawJsonDetails value={explanation} title="原始解释 JSON" />
+              <RawJsonDetails value={evidenceChain ?? {}} title="证据链 JSON" />
+              <dl className="compact-list"><div><dt>报告文件</dt><dd>{report?.report_path || job?.report_path || "尚未生成"}</dd></div><div><dt>PPT 文件</dt><dd>{pptxPath || "尚未生成"}</dd></div></dl>
+            </section>
+          ) : null}
+          {activeTab === "followup" ? <FollowUpPanel followUps={followUps ?? []} recommendations={followUpRecommendations ?? []} question={followUpQuestion ?? ""} loading={Boolean(followUpLoading)} onQuestionChange={onFollowUpQuestionChange} onSubmit={onSubmitFollowUp} /> : null}
         </>
       ) : (
         <EmptyState title="暂无结论" text="验证 Agent 通过后，解释 Agent 会生成结论、建议和 PPT 大纲。" />
       )}
+      {detailDrawer ? (
+        <div className="knowledge-modal-backdrop" role="presentation" onMouseDown={() => setDetailDrawer(null)}>
+          <section className="knowledge-results-modal" role="dialog" aria-modal="true" aria-label={detailDrawer.title} onMouseDown={(event) => event.stopPropagation()}>
+            <header>
+              <div>
+                <h2>{detailDrawer.title}</h2>
+              </div>
+              <button className="secondary-button" type="button" onClick={() => setDetailDrawer(null)}>关闭</button>
+            </header>
+            <div className="knowledge-results-list">
+              {detailDrawer.sections.map((section) => (
+                <div key={section.title}>
+                  <h3 style={{ margin: "0 0 10px", color: "#0f172a" }}>{section.title}</h3>
+                  {section.items.map((item, index) => (
+                    <article key={`${section.title}-${index}`} style={{ marginBottom: 10, padding: "10px 12px", border: "1px solid #e2e8f0", borderRadius: 8, background: "#f8fafc" }}>
+                      <strong style={{ color: "#64748b", fontSize: 12 }}>{index + 1}</strong>
+                      <p style={{ margin: "4px 0 0", color: "#1f2937" }}>{item}</p>
+                    </article>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -2586,37 +2828,54 @@ function EvidenceResultList({
   items: string[];
   evidenceChain?: EvidenceChain | null;
 }) {
-  const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
+  const [activeEvidence, setActiveEvidence] = useState<{ evidence: EvidenceFinding | null; label: string } | null>(null);
   const cleanItems = items.filter(Boolean);
   if (!cleanItems.length) {
     return null;
   }
   return (
-    <div className="result-list evidence-result-list">
-      <strong>{title}</strong>
-      <ul>
-        {cleanItems.map((item, index) => {
-          const key = `${title}-${index}`;
-          const evidence = findEvidenceForText(item, evidenceChain);
-          return (
-            <li key={key}>
-              <div className="finding-row">
-                <span>{item}</span>
-                <button
-                  className="secondary-button compact-button"
-                  type="button"
-                  title="查看证据"
-                  onClick={() => setOpenKeys((current) => ({ ...current, [key]: !current[key] }))}
-                >
-                  查看证据
-                </button>
+    <>
+      <div className="result-list evidence-result-list">
+        <strong>{title}</strong>
+        <ul>
+          {cleanItems.map((item, index) => {
+            const key = `${title}-${index}`;
+            const evidence = findEvidenceForText(item, evidenceChain);
+            return (
+              <li key={key}>
+                <div className="finding-row">
+                  <span>{item}</span>
+                  <button
+                    className="secondary-button compact-button"
+                    type="button"
+                    title="查看证据"
+                    onClick={() => setActiveEvidence({ evidence, label: item })}
+                  >
+                    查看证据
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+      {activeEvidence ? (
+        <div className="knowledge-modal-backdrop" role="presentation" onMouseDown={() => setActiveEvidence(null)}>
+          <section className="knowledge-results-modal" role="dialog" aria-modal="true" aria-label="证据详情" onMouseDown={(e) => e.stopPropagation()}>
+            <header>
+              <div>
+                <h2>证据详情</h2>
+                <p>{activeEvidence.label}</p>
               </div>
-              {openKeys[key] ? <EvidencePanel evidence={evidence} /> : null}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
+              <button className="secondary-button" type="button" onClick={() => setActiveEvidence(null)}>关闭</button>
+            </header>
+            <div className="knowledge-results-list">
+              <EvidencePanel evidence={activeEvidence.evidence} />
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -2897,6 +3156,68 @@ function EvidencePanel({ evidence }: { evidence: EvidenceFinding | null }) {
   );
 }
 
+function PptPreviewButton({ preview }: { preview: PptPreview | null }) {
+  const [open, setOpen] = useState(false);
+  const slides = preview?.slides ?? [];
+  if (!slides.length) {
+    return null;
+  }
+  return (
+    <>
+      <div className="ppt-preview-button-wrapper">
+        <button className="secondary-button" type="button" onClick={() => setOpen(true)}>
+          PPT 页面预览
+        </button>
+      </div>
+      {open ? <PptPreviewModal preview={preview!} onClose={() => setOpen(false)} /> : null}
+    </>
+  );
+}
+
+function PptPreviewModal({ preview, onClose }: { preview: PptPreview; onClose: () => void }) {
+  const [page, setPage] = useState(0);
+  const slides = preview?.slides ?? [];
+  useEffect(() => {
+    setPage(0);
+  }, [preview?.pptx_path, slides.length]);
+  const current = slides[Math.min(page, slides.length - 1)];
+  return (
+    <div className="ppt-modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="ppt-modal" role="dialog" aria-modal="true" aria-label="PPT 页面预览" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="ppt-modal-header">
+          <span className="ppt-modal-page-indicator">{current.page} / {slides.length}</span>
+          <button className="ppt-modal-close" type="button" onClick={onClose} aria-label="关闭">&times;</button>
+        </div>
+        <div className="ppt-modal-stage">
+          <div className="ppt-slide">
+            <div className="ppt-slide-content">
+              {current.subtitle || current.section_label ? <span className="ppt-slide-subtitle">{current.subtitle || current.section_label}</span> : null}
+              <h2 className="ppt-slide-title">{current.title}</h2>
+              <ul className="ppt-slide-bullets">
+                {current.bullets.map((bullet, index) => <li key={`${current.page}-${index}`}>{bullet}</li>)}
+              </ul>
+              {current.chart ? <div className="ppt-slide-chart"><img alt="PPT 图表预览" src={toStorageUrl(current.chart)} /></div> : null}
+            </div>
+          </div>
+        </div>
+        <div className="ppt-modal-footer">
+          <button className="ppt-nav-btn" type="button" disabled={page <= 0} onClick={() => setPage((value) => Math.max(0, value - 1))}>
+            &#9664; 上一页
+          </button>
+          <div className="ppt-modal-dots">
+            {slides.map((_, idx) => (
+              <span key={idx} className={`ppt-modal-dot ${idx === page ? "active" : ""}`} />
+            ))}
+          </div>
+          <button className="ppt-nav-btn" type="button" disabled={page >= slides.length - 1} onClick={() => setPage((value) => Math.min(slides.length - 1, value + 1))}>
+            下一页 &#9654;
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function PptPreviewPanel({ preview }: { preview: PptPreview | null }) {
   const [page, setPage] = useState(0);
   const slides = preview?.slides ?? [];
@@ -3104,68 +3425,110 @@ export function LogsPage({
 }) {
   const executionResults = log?.execution_results ?? [];
   const validationResults = log?.validation_results ?? [];
+  const [query, setQuery] = useState("");
+  const [level, setLevel] = useState("all");
+  const [stage, setStage] = useState("all");
+  const [onlyIssues, setOnlyIssues] = useState(false);
+  const timelineRef = useRef<HTMLDivElement | null>(null);
+  const streamRef = useRef<HTMLDivElement | null>(null);
+  const eventRefs = useRef<Record<string, HTMLElement | null>>({});
+  const [streamHeight, setStreamHeight] = useState(420);
+
+  const scrollToStage = (stageName: string) => {
+    const stream = streamRef.current;
+    const target = eventRefs.current[stageName];
+    if (!stream || !target) return;
+    const offset = target.offsetTop - 12;
+    stream.scrollTo({ top: Math.max(0, offset), behavior: "smooth" });
+  };
+
+  const eventLevel = (event: ExecutionLogEvent) => {
+    const value = `${event.status} ${event.message}`.toLowerCase();
+    if (/failed|error|异常|失败/.test(value)) return "error";
+    if (/warning|warn|警告/.test(value)) return "warning";
+    if (/success|completed|done|成功|完成/.test(value)) return "success";
+    return "info";
+  };
+  const stages = useMemo(() => Array.from(new Set(events.map((event) => event.stage).filter(Boolean))), [events]);
+  const filteredEvents = useMemo(() => events.filter((event) => {
+    const currentLevel = eventLevel(event);
+    const text = `${event.stage} ${event.status} ${event.message}`.toLowerCase();
+    return (!query.trim() || text.includes(query.trim().toLowerCase()))
+      && (level === "all" || currentLevel === level)
+      && (stage === "all" || event.stage === stage)
+      && (!onlyIssues || ["warning", "error"].includes(currentLevel));
+  }), [events, level, onlyIssues, query, stage]);
+  const issueCount = events.filter((event) => ["warning", "error"].includes(eventLevel(event))).length;
+  const elapsedMs = events.length > 1 ? Math.max(0, new Date(events[events.length - 1].timestamp).getTime() - new Date(events[0].timestamp).getTime()) : 0;
+  const stageSummaries = stages.map((stageName) => {
+    const stageEvents = events.filter((event) => event.stage === stageName);
+    return { stage: stageName, events: stageEvents, latest: stageEvents[stageEvents.length - 1] };
+  });
+
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+    const updateHeight = () => setStreamHeight(Math.max(320, timeline.getBoundingClientRect().height));
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(timeline);
+    return () => observer.disconnect();
+  }, [stageSummaries.length]);
 
   return (
-    <section className="page-section">
-      <div className="section-heading">
-        <h2>执行日志</h2>
-        <span>{job ? statusLabel(statusFromJob(job.status)) : "等待任务启动"}</span>
+    <section className="page-section execution-logs-page">
+      <div className="section-heading dashboard-heading">
+        <div><h2>执行日志</h2><span>{job ? `${workflowLabel(job.workflow_type || job.task_type)} · Job ${job.job_id}` : "等待任务启动"}</span></div>
+        <span className={`log-status-badge status-${job?.status || "idle"}`}>{job ? statusLabel(statusFromJob(job.status)) : "未启动"}</span>
       </div>
 
       <div className="log-summary-grid">
-        <div>
-          <span>事件数量</span>
-          <strong>{events.length}</strong>
-        </div>
-        <div>
-          <span>沙箱执行次数</span>
-          <strong>{executionResults.length}</strong>
-        </div>
-        <div>
-          <span>验证次数</span>
-          <strong>{validationResults.length}</strong>
-        </div>
+        <div><span>当前阶段</span><strong>{job?.current_stage ? stageLabel(job.current_stage) : "等待"}</strong></div>
+        <div><span>事件总数</span><strong>{events.length}</strong></div>
+        <div><span>异常 / 警告</span><strong>{issueCount}</strong></div>
+        <div><span>运行耗时</span><strong>{elapsedMs ? `${Math.round(elapsedMs / 1000)}s` : "-"}</strong></div>
       </div>
 
-      <section className="result-section">
-        <div className="section-heading">
-          <h2>完整事件流</h2>
-          <span>{events.length} 条事件</span>
-        </div>
-        <EventLogList events={events} />
-      </section>
+      <div className="log-filter-toolbar">
+        <input type="search" value={query} placeholder="搜索关键词、阶段或状态" onChange={(event) => setQuery(event.target.value)} />
+        <select value={level} onChange={(event) => setLevel(event.target.value)}><option value="all">全部级别</option><option value="info">INFO</option><option value="success">SUCCESS</option><option value="warning">WARNING</option><option value="error">ERROR</option></select>
+        <select value={stage} onChange={(event) => setStage(event.target.value)}><option value="all">全部阶段</option>{stages.map((item) => <option key={item} value={item}>{stageLabel(item)}</option>)}</select>
+        <label><input type="checkbox" checked={onlyIssues} onChange={(event) => setOnlyIssues(event.target.checked)} />只看异常</label>
+      </div>
 
-      <section className="result-section">
-        <div className="section-heading">
-          <h2>沙箱执行日志</h2>
-          <span>{executionResults.length} 次执行</span>
+      <div className="log-timeline-layout">
+        <div className="log-stage-timeline" ref={timelineRef}>
+          <div className="section-heading compact-heading"><h2>执行时间线</h2><span>{stages.length} 个阶段</span></div>
+          {stageSummaries.length ? stageSummaries.map((item) => (
+            <button key={item.stage} type="button" className={job?.current_stage === item.stage ? "active" : ""}>
+              <strong>{stageLabel(item.stage)}</strong><span>{item.events.length} 条 · {eventStatusLabel(item.latest?.status || "")}</span><time>{item.latest?.timestamp ? formatTime(item.latest.timestamp) : ""}</time>
+            </button>
+          )) : <EmptyState title="暂无阶段" text="任务启动后会显示完整执行阶段。" compact />}
         </div>
-        {executionResults.length ? (
-          <div className="log-stack">
-            {executionResults.map((execution, index) => (
-              <ExecutionLogBlock execution={execution} key={`${execution.path}-${index}`} />
-            ))}
+        <section className="log-stream-panel" style={{ height: streamHeight }}>
+          <div className="section-heading compact-heading"><h2>实时日志流</h2><span>{filteredEvents.length} / {events.length} 条</span></div>
+          <div className="log-stream" ref={streamRef}>
+            {(() => { eventRefs.current = {}; return null; })()}
+            {filteredEvents.length ? filteredEvents.map((event, index) => (
+              <article
+                key={`${event.timestamp}-${index}`}
+                data-stage={event.stage}
+                ref={(node) => { if (node && !eventRefs.current[event.stage]) eventRefs.current[event.stage] = node; }}
+                className={`log-stream-event level-${eventLevel(event)} ${job?.current_stage === event.stage ? "current" : ""}`}
+              >
+                <header><time>{formatTime(event.timestamp)}</time><span>{eventLevel(event).toUpperCase()}</span><strong>{stageLabel(event.stage)}</strong><em>{eventStatusLabel(event.status)}</em>{event.attempt ? <small>第 {event.attempt} 次</small> : null}</header>
+                <p>{event.message}</p>
+                <details><summary>原始事件 JSON</summary><pre>{JSON.stringify(event, null, 2)}</pre></details>
+              </article>
+            )) : <EmptyState title="没有匹配日志" text="调整搜索词或筛选条件后重试。" compact />}
           </div>
-        ) : (
-          <EmptyState title="暂无沙箱执行日志" text="代码 Agent 生成脚本并进入沙箱后，这里会显示完整 stdout / stderr。" compact />
-        )}
-      </section>
+        </section>
+      </div>
 
-      <section className="result-section">
-        <div className="section-heading">
-          <h2>验证 Agent 日志</h2>
-          <span>{validationResults.length} 次验证</span>
-        </div>
-        {validationResults.length ? (
-          <div className="log-stack">
-            {validationResults.map((validation, index) => (
-              <ValidationLogBlock validation={validation} key={`${validation.path}-${index}`} />
-            ))}
-          </div>
-        ) : (
-          <EmptyState title="暂无验证日志" text="沙箱执行结束后，验证 Agent 的完整问题和修复建议会显示在这里。" compact />
-        )}
-      </section>
+      <div className="log-diagnostic-grid">
+        <section className="result-section"><div className="section-heading compact-heading"><h2>沙箱执行日志</h2><span>{executionResults.length} 次执行</span></div><div className="log-diagnostic-body">{executionResults.length ? executionResults.map((execution, index) => <ExecutionLogBlock execution={execution} key={`${execution.path}-${index}`} />) : <EmptyState title="暂无沙箱执行日志" text="代码 Agent 进入沙箱后会显示完整输出。" compact />}</div></section>
+        <section className="result-section"><div className="section-heading compact-heading"><h2>验证 Agent 日志</h2><span>{validationResults.length} 次验证</span></div><div className="log-diagnostic-body">{validationResults.length ? validationResults.map((validation, index) => <ValidationLogBlock validation={validation} key={`${validation.path}-${index}`} />) : <EmptyState title="暂无验证日志" text="沙箱执行结束后会显示验证问题与修复建议。" compact />}</div></section>
+      </div>
     </section>
   );
 }
@@ -3237,7 +3600,15 @@ export function ValidationLogBlock({ validation }: { validation: ValidationAttem
 }
 
 export function ResultList({ title, items }: { title: string; items?: unknown[] | null }) {
-  const normalizedItems = Array.isArray(items) ? items.map((item) => formatListItem(item)).filter(Boolean) : [];
+  const normalizedItems = Array.isArray(items)
+    ? items.map((item) => formatListItem(item)).filter((text) => {
+        if (!text) return false;
+        const trimmed = text.trim();
+        if (trimmed.startsWith("+ Delta JSON:") || trimmed.startsWith("- Delta JSON:")) return false;
+        if (/^\{[\s\S]*"contract"[\s\S]*\}$/.test(trimmed) && trimmed.length > 100) return false;
+        return true;
+      })
+    : [];
   if (!normalizedItems.length) {
     return null;
   }
@@ -3253,20 +3624,30 @@ export function ResultList({ title, items }: { title: string; items?: unknown[] 
   );
 }
 
-export function PptOutline({ outline }: { outline: ExplanationResult["ppt_outline"] }) {
+export function PptOutline({ outline, preview }: { outline: ExplanationResult["ppt_outline"]; preview?: PptPreview | null }) {
   const normalizedOutline = normalizePptOutline(outline);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const slides = preview?.slides ?? [];
   if (!normalizedOutline.length) {
     return null;
   }
   return (
     <div className="finding-list">
-      <h3>PPT 大纲</h3>
+      <div className="section-heading compact-heading">
+        <h3>PPT 大纲</h3>
+        {slides.length > 0 ? (
+          <button className="secondary-button compact-button" type="button" onClick={() => setPreviewOpen(true)}>
+            PPT 页面预览
+          </button>
+        ) : null}
+      </div>
       {normalizedOutline.map((slide, index) => (
         <div className="finding-item" key={`${slide.title}-${index}`}>
           <strong>{slide.title}</strong>
           <p>{slide.bullets.join("；")}</p>
         </div>
       ))}
+      {previewOpen && preview ? <PptPreviewModal preview={preview} onClose={() => setPreviewOpen(false)} /> : null}
     </div>
   );
 }

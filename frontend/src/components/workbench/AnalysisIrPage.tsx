@@ -7,8 +7,8 @@ export function AnalysisIrPage({ analysisIr, job }: { analysisIr: AnalysisIR | n
       <section className="page-section analysis-ir-page">
         <div className="section-heading dashboard-heading">
           <div>
-            <h2>任务已编译</h2>
-            <span>Analysis IR 编译器会把自然语言目标先锁定为强类型语义中间表示。</span>
+            <h2>分析专用中间表示（Analysis IR）</h2>
+            <span>自然语言目标会先编译为强类型语义，再交给后续 Agent 消费。</span>
           </div>
         </div>
         <EmptyState title="暂无 Analysis IR" text="启动或打开一次分析任务后，这里会展示 analysis_ir.json。" />
@@ -21,8 +21,8 @@ export function AnalysisIrPage({ analysisIr, job }: { analysisIr: AnalysisIR | n
       <section className="page-section analysis-ir-page">
         <div className="section-heading dashboard-heading">
           <div>
-            <h2>任务已编译</h2>
-            <span>当前任务尚未生成 analysis_ir.json，完成 preflight 与 RAG 后会自动写入。</span>
+            <h2>分析专用中间表示（Analysis IR）</h2>
+            <span>当前任务尚未生成 analysis_ir.json，完成预检与知识检索后会自动写入。</span>
           </div>
         </div>
         <EmptyState title="等待编译产物" text="Analysis IR 会明确实体、粒度、指标、限制、候选方法和输出依赖关系。" />
@@ -46,24 +46,24 @@ export function AnalysisIrPage({ analysisIr, job }: { analysisIr: AnalysisIR | n
         <p>{analysisIr.semantic_digest || "IR 已生成，将作为后续 Agent 的语义事实源。"}</p>
       </div>
 
-      <div className="ir-summary-grid">
+      <div className="ir-summary-grid" aria-label="Analysis IR 概览指标">
         <IrMetricCard label="实体" value={analysisIr.entities?.length ?? 0} />
         <IrMetricCard label="粒度" value={analysisIr.grain?.length ?? 0} />
         <IrMetricCard label="指标" value={analysisIr.metrics?.length ?? 0} />
         <IrMetricCard label="图表意图" value={analysisIr.chart_intents?.length ?? 0} />
       </div>
 
-      <div className="ir-section-grid">
-        <IrSection title="实体 / Entities" items={(analysisIr.entities ?? []).map((item) => item.name || item.source_column)} />
-        <IrSection title="分析粒度 / Grain" items={analysisIr.grain ?? []} />
-        <IrSection title="指标 / Metrics" items={(analysisIr.metrics ?? []).map((item) => `${item.name || item.source_column}${item.aggregation ? ` · ${item.aggregation}` : ""}`)} />
-        <IrSection title="维度 / Dimensions" items={(analysisIr.dimensions ?? []).map((item) => item.name || item.source_column)} />
+      <div className="ir-section-grid" aria-label="Analysis IR 语义信息">
+        <IrSection title="实体 / Entities" items={(analysisIr.entities ?? []).map((item) => item.name || item.source_column)} emptyText="尚未识别业务实体。" />
+        <IrSection title="分析粒度 / Grain" items={analysisIr.grain ?? []} emptyText="尚未锁定分析粒度。" />
+        <IrSection title="指标 / Metrics" items={(analysisIr.metrics ?? []).map((item) => `${item.name || item.source_column}${item.aggregation ? ` · ${item.aggregation}` : ""}`)} emptyText="尚未定义分析指标。" />
+        <IrSection title="维度 / Dimensions" items={(analysisIr.dimensions ?? []).map((item) => item.name || item.source_column)} emptyText="尚未定义拆解维度。" />
         <IrSection title="过滤条件 / Filters" items={(analysisIr.filters ?? []).map((item) => `${item.field} ${item.operator} ${formatUnknown(item.value)}`)} emptyText="未锁定过滤条件，默认使用全量数据。" />
         <IrSection title="时间窗 / Time Window" items={[formatTimeWindow(analysisIr.time_window)].filter(Boolean)} emptyText="未识别明确时间字段。" />
-        <IrSection title="候选方法 / Candidate Methods" items={analysisIr.candidate_methods ?? []} />
-        <IrSection title="假设 / Hypotheses" items={analysisIr.hypotheses ?? []} />
-        <IrSection title="证据需求 / Evidence" items={analysisIr.evidence_requirements ?? []} />
-        <IrSection title="安全边界 / Guardrails" items={analysisIr.guardrails ?? []} />
+        <IrSection title="候选方法 / Candidate Methods" items={analysisIr.candidate_methods ?? []} emptyText="尚未选择候选分析方法。" />
+        <IrSection title="假设 / Hypotheses" items={analysisIr.hypotheses ?? []} emptyText="当前任务没有预设假设。" />
+        <IrSection title="证据需求 / Evidence" items={analysisIr.evidence_requirements ?? []} emptyText="尚未声明额外证据需求。" />
+        <IrSection title="安全边界 / Guardrails" items={analysisIr.guardrails ?? []} emptyText="尚未声明额外安全边界。" />
       </div>
 
       <section className="ir-card wide">

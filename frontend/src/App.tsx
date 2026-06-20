@@ -1,4 +1,4 @@
-import { Component, type ErrorInfo, type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import { Component, type ErrorInfo, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   changeAdminUserRole,
@@ -25,6 +25,8 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [globalMessage, setGlobalMessage] = useState("");
   const [appHeaderCollapsed, setAppHeaderCollapsed] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const token = getStoredAuthToken();
@@ -46,6 +48,26 @@ export default function App() {
       .finally(() => setBooting(false));
   }, []);
 
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!accountMenuRef.current?.contains(event.target as Node)) setAccountMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAccountMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", closeOnOutsideClick);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsideClick);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [accountMenuOpen]);
+
+  useEffect(() => {
+    setAccountMenuOpen(false);
+  }, [appHeaderCollapsed, view]);
+
   async function handleLoggedIn(token: string, nextUser: AuthUser) {
     setStoredAuthToken(token);
     setUser(nextUser);
@@ -54,6 +76,7 @@ export default function App() {
   }
 
   async function handleLogout() {
+    setAccountMenuOpen(false);
     try {
       await logout();
     } catch {
@@ -112,20 +135,36 @@ export default function App() {
               <button type="button" className={view === "workbench" ? "active" : ""} onClick={() => setView("workbench")}>
                 工作台
               </button>
-              <button type="button" className={view === "account" ? "active" : ""} onClick={() => setView("account")}>
-                账号设置
-              </button>
-              {user.role === "admin" ? (
-                <button type="button" className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}>
-                  用户管理
+              <div className="account-menu" ref={accountMenuRef}>
+                <button
+                  type="button"
+                  className={`account-menu-trigger ${view === "account" || view === "admin" || accountMenuOpen ? "active" : ""}`}
+                  aria-haspopup="menu"
+                  aria-expanded={accountMenuOpen}
+                  onClick={() => setAccountMenuOpen((value) => !value)}
+                >
+                  {user.role === "admin" ? "系统管理员" : "个人账户"}
                 </button>
-              ) : null}
-              <span className="user-badge">
-                {user.username} · {roleLabel(user.role)}
-              </span>
-              <button type="button" onClick={handleLogout}>
-                退出
-              </button>
+                {accountMenuOpen ? (
+                  <div className="account-dropdown" role="menu" aria-label="账户操作">
+                    <div className="account-dropdown-profile">
+                      <strong>{user.username}</strong>
+                      <span>{roleLabel(user.role)} · {user.login_account}</span>
+                    </div>
+                    <button type="button" role="menuitem" className={view === "account" ? "current" : ""} onClick={() => { setView("account"); setAccountMenuOpen(false); }}>
+                      <span>账号设置</span><small>资料与密码</small>
+                    </button>
+                    {user.role === "admin" ? (
+                      <button type="button" role="menuitem" className={view === "admin" ? "current" : ""} onClick={() => { setView("admin"); setAccountMenuOpen(false); }}>
+                        <span>用户管理</span><small>审核与权限</small>
+                      </button>
+                    ) : null}
+                    <button type="button" role="menuitem" className="account-dropdown-logout" onClick={handleLogout}>
+                      <span>退出登录</span><small>结束当前会话</small>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </nav>
           </>
         ) : null}
@@ -362,10 +401,14 @@ function AccountPage({
 
   return (
     <main className="settings-page">
-      <section className="settings-card">
-        <div className="section-heading">
-          <h2>账号设置</h2>
-          <span>{user.login_account}</span>
+      <section className="settings-card account-overview">
+        <div className="account-identity">
+          <span className="account-avatar" aria-hidden="true">{(user.username || user.login_account).slice(0, 1).toUpperCase()}</span>
+          <div>
+            <p className="eyebrow">账号设置</p>
+            <h2>{user.username}</h2>
+            <span>登录账号 {user.login_account} 固定不可修改</span>
+          </div>
         </div>
         <dl className="account-kv">
           <div>
@@ -383,8 +426,9 @@ function AccountPage({
         </dl>
       </section>
 
-      <section className="settings-card two-column">
-        <form className="auth-form" onSubmit={handleProfileSubmit}>
+      <section className="account-action-grid">
+        <form className="settings-card auth-form account-action-card" onSubmit={handleProfileSubmit}>
+          <p className="eyebrow">资料</p>
           <h3>修改用户名</h3>
           <label>
             用户名
@@ -395,7 +439,8 @@ function AccountPage({
           </button>
           {profileMessage ? <p className="auth-message">{profileMessage}</p> : null}
         </form>
-        <form className="auth-form" onSubmit={handlePasswordSubmit}>
+        <form className="settings-card auth-form account-action-card" onSubmit={handlePasswordSubmit}>
+          <p className="eyebrow">安全</p>
           <h3>修改密码</h3>
           <label>
             原密码

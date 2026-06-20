@@ -45,7 +45,7 @@ export function DataMapPage({
           <h2>数据地图</h2>
           <span>Data Map Agent 将字段、实体、指标和可提问方向组织成可点击知识图谱。</span>
         </div>
-        <button className="secondary-button" type="button" disabled={!profile || loading} onClick={onRefresh}>
+        <button className="secondary-button agent-refresh-btn" type="button" disabled={!profile || loading} onClick={onRefresh}>
           {loading ? "生成中" : "刷新数据地图"}
         </button>
       </div>

@@ -157,6 +157,7 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
   const [visualParseResult, setVisualParseResult] = useState<VisualParseResult | null>(null);
   const [preflight, setPreflight] = useState<PreflightAssessment | null>(null);
   const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightModalOpen, setPreflightModalOpen] = useState(false);
   const [explanation, setExplanation] = useState<ExplanationResult>(emptyExplanation);
   const [report, setReport] = useState<ReportGenerateResponse | null>(null);
   const [reportGeneratedFor, setReportGeneratedFor] = useState("");
@@ -532,6 +533,7 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
       const dataset = await ensureAnalysisDataset();
       const result = await createPreflightAssessment(dataset.dataset_id, effectiveGoal);
       setPreflight(result);
+      setPreflightModalOpen(true);
       setMessage(result.is_task_clear ? "意图识别完成，已生成更清晰的分析目标。" : "意图识别完成，请先选择关键口径后再分析。");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "意图识别失败，请稍后重试。");
@@ -1745,122 +1747,6 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
   return (
     <main className="workspace-shell workspace-shell-console">
       <section className="layout-grid">
-        <aside className="left-panel">
-          <section className="panel">
-            <div className="panel-header">
-              <h2>任务配置</h2>
-              <span>CSV / XLSX / XLS / 图片</span>
-            </div>
-            <label
-              className={`upload-zone ${isAnalysisFileDragActive ? "drag-active" : ""}`}
-              onDragEnter={handleAnalysisFileDragEnter}
-              onDragOver={handleAnalysisFileDragOver}
-              onDragLeave={handleAnalysisFileDragLeave}
-              onDrop={handleAnalysisFileDrop}
-            >
-              <input
-                type="file"
-                accept=".csv,.xlsx,.xls,.png,.jpg,.jpeg,.webp"
-                onChange={(event) => handleSelectAnalysisFile(event.target.files?.[0] ?? null)}
-              />
-              <strong>{selectedFile ? selectedFile.name : "选择数据文件或图片"}</strong>
-              <span>支持点击选择或拖拽上传表格、图片截图；图片会先由视觉解析 Agent 抽取结构化数据。</span>
-            </label>
-
-            <label className="form-label" htmlFor="goal-input">
-              分析目标
-            </label>
-            <textarea
-              id="goal-input"
-              rows={5}
-              value={userGoal}
-              onChange={(event) => setUserGoal(event.target.value)}
-            />
-            <div className="button-row">
-              <button
-                className="secondary-button"
-                type="button"
-                disabled={preflightLoading || status === "uploading" || status === "running"}
-                onClick={handleRunPreflight}
-              >
-                {preflightLoading ? "识别中" : "意图识别"}
-              </button>
-              <button
-                className="primary-button"
-                type="button"
-                disabled={status === "uploading" || status === "running" || samplePreviewLoading}
-                onClick={() => handleRunAnalysis()}
-              >
-                启动 Agent 分析
-              </button>
-            </div>
-            <button
-              className="insight-mode-button"
-              type="button"
-              disabled={status === "uploading" || status === "running" || samplePreviewLoading}
-              onClick={handleRunSmartInsights}
-            >
-              不提交分析目标，进入智能洞察
-            </button>
-            {message ? (
-              <p className={`message ${status === "failed" ? "error" : "success"}`}>{message}</p>
-            ) : null}
-            {preflight ? <PreflightPanel assessment={preflight} onApplyGoal={handleApplyOptimizedGoal} onApplyAndRun={handleApplyOptimizedGoalAndRun} /> : null}
-            <SampleDataPanel onGenerate={handleGenerateSampleAndRun} disabled={status === "uploading" || status === "running" || samplePreviewLoading} />
-          </section>
-
-          <section className="panel">
-            <h2>运行模式</h2>
-            {isFallbackMode ? (
-              <p className="mode-banner">当前使用规则分析模式</p>
-            ) : (
-              <p className="mode-banner mode-live">DeepSeek 智能分析已启用</p>
-            )}
-            <dl className="info-list">
-              <div>
-                <dt>智能模式</dt>
-                <dd>{isFallbackMode ? "规则分析模式" : "DeepSeek 智能分析"}</dd>
-              </div>
-              <div>
-                <dt>当前阶段</dt>
-                <dd>{stageLabel(job?.current_stage ?? status)}</dd>
-              </div>
-              {uploadInfo ? (
-                <div>
-                  <dt>数据集</dt>
-                  <dd>{uploadInfo.filename}</dd>
-                </div>
-              ) : null}
-              {uploadInfo?.asset_type ? (
-                <div>
-                  <dt>输入类型</dt>
-                  <dd>{uploadInfo.asset_type === "image" ? "图片解析" : "表格数据"}</dd>
-                </div>
-              ) : null}
-            </dl>
-            {uploadInfo?.preview_url ? (
-              <img className="image-preview" alt="上传图片预览" src={uploadInfo.preview_url} />
-            ) : null}
-          </section>
-
-          {profile ? (
-            <section className="panel">
-              <h2>数据概览</h2>
-              <div className="metric-row">
-                <div>
-                  <strong>{profile.row_count}</strong>
-                  <span>行</span>
-                </div>
-                <div>
-                  <strong>{profile.column_count}</strong>
-                  <span>列</span>
-                </div>
-              </div>
-            </section>
-          ) : null}
-
-        </aside>
-
         <section className="content-panel">
           <nav className="page-tabs" aria-label="工作台主导航">
             {topNavGroups.map((group) => (
@@ -1891,7 +1777,127 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
           ) : null}
 
           {activePage === "home" ? (
-            <SetupPage profile={profile} health={health} isFallbackMode={isFallbackMode} />
+            <div className="home-task-configuration">
+              <section className="panel">
+                <div className="panel-header">
+                  <h2>任务配置</h2>
+                  <span>CSV / XLSX / XLS / 图片</span>
+                </div>
+                <div className="task-config-inner">
+                  <div className="task-config-left">
+                    <label
+                      className={`upload-zone ${isAnalysisFileDragActive ? "drag-active" : ""}`}
+                      onDragEnter={handleAnalysisFileDragEnter}
+                      onDragOver={handleAnalysisFileDragOver}
+                      onDragLeave={handleAnalysisFileDragLeave}
+                      onDrop={handleAnalysisFileDrop}
+                    >
+                      <input
+                        type="file"
+                        accept=".csv,.xlsx,.xls,.png,.jpg,.jpeg,.webp"
+                        onChange={(event) => handleSelectAnalysisFile(event.target.files?.[0] ?? null)}
+                      />
+                      <strong>{selectedFile ? selectedFile.name : "选择数据文件或图片"}</strong>
+                      <span>支持点击选择或拖拽上传表格、图片截图；图片会先由视觉解析 Agent 抽取结构化数据。</span>
+                    </label>
+
+                    <label className="form-label" htmlFor="goal-input">
+                      分析目标
+                    </label>
+                    <textarea
+                      id="goal-input"
+                      rows={5}
+                      value={userGoal}
+                      onChange={(event) => setUserGoal(event.target.value)}
+                    />
+                    <div className="button-row">
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={preflightLoading || status === "uploading" || status === "running"}
+                        onClick={handleRunPreflight}
+                      >
+                        {preflightLoading ? "识别中" : "意图识别"}
+                      </button>
+                      <button
+                        className="primary-button"
+                        type="button"
+                        disabled={status === "uploading" || status === "running" || samplePreviewLoading}
+                        onClick={() => handleRunAnalysis()}
+                      >
+                        启动 Agent 分析
+                      </button>
+                    </div>
+                    <button
+                      className="insight-mode-button"
+                      type="button"
+                      disabled={status === "uploading" || status === "running" || samplePreviewLoading}
+                      onClick={handleRunSmartInsights}
+                    >
+                      不提交分析目标，进入智能洞察
+                    </button>
+                    {message ? (
+                      <p className={`message ${status === "failed" ? "error" : "success"}`}>{message}</p>
+                    ) : null}
+                  </div>
+                  <div className="task-config-right">
+                    <SampleDataPanel onGenerate={handleGenerateSampleAndRun} disabled={status === "uploading" || status === "running" || samplePreviewLoading} />
+                  </div>
+                </div>
+              </section>
+
+              <div>
+                <section className="panel">
+                  <h2>运行模式</h2>
+                  {isFallbackMode ? (
+                    <p className="mode-banner">当前使用规则分析模式</p>
+                  ) : (
+                    <p className="mode-banner mode-live">DeepSeek 智能分析已启用</p>
+                  )}
+                  <dl className="info-list">
+                    <div>
+                      <dt>智能模式</dt>
+                      <dd>{isFallbackMode ? "规则分析模式" : "DeepSeek 智能分析"}</dd>
+                    </div>
+                    <div>
+                      <dt>当前阶段</dt>
+                      <dd>{stageLabel(job?.current_stage ?? status)}</dd>
+                    </div>
+                    {uploadInfo ? (
+                      <div>
+                        <dt>数据集</dt>
+                        <dd>{uploadInfo.filename}</dd>
+                      </div>
+                    ) : null}
+                    {uploadInfo?.asset_type ? (
+                      <div>
+                        <dt>输入类型</dt>
+                        <dd>{uploadInfo.asset_type === "image" ? "图片解析" : "表格数据"}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                  {uploadInfo?.preview_url ? (
+                    <img className="image-preview" alt="上传图片预览" src={uploadInfo.preview_url} />
+                  ) : null}
+                </section>
+
+                {profile ? (
+                  <section className="panel" style={{ marginTop: "16px" }}>
+                    <h2>数据概览</h2>
+                    <div className="metric-row">
+                      <div>
+                        <strong>{profile.row_count}</strong>
+                        <span>行</span>
+                      </div>
+                      <div>
+                        <strong>{profile.column_count}</strong>
+                        <span>列</span>
+                      </div>
+                    </div>
+                  </section>
+                ) : null}
+              </div>
+            </div>
           ) : null}
 
           {activePage === "setup" ? (
@@ -2094,6 +2100,21 @@ export function WorkbenchPage({ currentUser }: { currentUser?: AuthUser | null }
           onCompileSelection={handleCompileChartSelectionQuestion}
           onSubmitSelectionFollowUp={handleSubmitChartSelectionFollowUp}
         />
+      ) : null}
+      {preflightModalOpen && preflight ? (
+        <div className="knowledge-modal-backdrop" role="presentation" onMouseDown={() => setPreflightModalOpen(false)}>
+          <section className="knowledge-results-modal" role="dialog" aria-modal="true" aria-label="意图识别" onMouseDown={(e) => e.stopPropagation()}>
+            <header>
+              <div>
+                <h2>意图识别</h2>
+              </div>
+              <button className="secondary-button" type="button" onClick={() => setPreflightModalOpen(false)}>关闭</button>
+            </header>
+            <div className="knowledge-results-list">
+              <PreflightPanel assessment={preflight} onApplyGoal={(goal) => { handleApplyOptimizedGoal(goal); setPreflightModalOpen(false); }} onApplyAndRun={(goal) => { handleApplyOptimizedGoalAndRun(goal); setPreflightModalOpen(false); }} />
+            </div>
+          </section>
+        </div>
       ) : null}
     </main>
   );
