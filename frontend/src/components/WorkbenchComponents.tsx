@@ -633,6 +633,7 @@ export function HistoryPanel({
   searchQuery,
   deletingJobId,
   selectedJobIds,
+  embedded = false,
   onRefresh,
   onSearchQueryChange,
   onSearch,
@@ -650,6 +651,7 @@ export function HistoryPanel({
   searchQuery: string;
   deletingJobId: string | null;
   selectedJobIds: string[];
+  embedded?: boolean;
   onRefresh: () => void;
   onSearchQueryChange: (query: string) => void;
   onSearch: () => void;
@@ -665,7 +667,7 @@ export function HistoryPanel({
   const allSelected = items.length > 0 && items.every((item) => selectedJobIds.includes(item.job_id));
 
   return (
-    <section className="panel history-panel">
+    <section className={`panel history-panel ${embedded ? "history-panel-embedded" : ""}`}>
       <div className="panel-header">
         <h2>分析对话列表</h2>
         <button className="text-button" type="button" disabled={loading} onClick={onRefresh}>
@@ -1331,7 +1333,7 @@ function AgentStoryStage({
               <dd>{spotlightAgent.action}</dd>
             </div>
           </dl>
-          {latestEvent ? <small>{stageLabel(latestEvent.stage)} · {eventStatusLabel(latestEvent.status)} · {formatTime(latestEvent.timestamp)}</small> : null}
+          {latestEvent ? <small>{formatEventStatusMeta(latestEvent)}</small> : null}
         </div>
       </div>
       <div className="agent-cast-strip" aria-label="Agent 出场顺序">
@@ -1353,6 +1355,13 @@ function AgentStoryStage({
       </div>
     </div>
   );
+}
+
+function formatEventStatusMeta(event: ExecutionLogEvent): string {
+  const stageText = stageLabel(event.stage);
+  const statusText = eventStatusLabel(event.status);
+  const textParts = stageText && stageText === statusText ? [stageText] : [stageText, statusText].filter(Boolean);
+  return [...textParts, formatTime(event.timestamp)].join(" · ");
 }
 
 
@@ -3714,6 +3723,8 @@ export function EmptyState({ title, text, compact = false }: { title: string; te
     </div>
   );
 }
+
+
 
 
 

@@ -969,7 +969,7 @@ function WorkbenchPageInner({
       <section className="quest-card quest-hero-card">
         <div className="quest-hero-copy">
           <p className="eyebrow">AI 原生数据分析工作台</p>
-          <h2>把数据交给多 Agent 协作系统</h2>
+          <h2>多Agent协作系统，帮您一键处理数据</h2>
           <p>上传表格或图片，确认分析目标，系统会自动完成意图识别、数据理解、代码执行、图表生成和报告输出。</p>
           <div className="quest-hero-actions">
             <button className="primary-button" type="button" onClick={() => fileInputRef.current?.click()} disabled={homeLoading}>
