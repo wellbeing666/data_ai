@@ -77,10 +77,128 @@ function jsonHeaders(): Headers {
   return headers;
 }
 
+
+function fieldLabelFromLocation(loc: unknown): string {
+  const map: Record<string, string> = {
+    login_account: "登录账号",
+    username: "用户名",
+    password: "密码",
+    old_password: "原密码",
+    new_password: "新密码",
+    register_reason: "申请说明",
+    query: "检索问题",
+    top_k: "返回数量",
+    dataset_id: "数据文件",
+    user_goal: "分析目标",
+    file: "文件"
+  };
+  const parts = Array.isArray(loc) ? loc : [loc];
+  const filtered = parts.filter(Boolean);
+  const key = String(filtered[filtered.length - 1] || "");
+  return map[key] || "输入内容";
+}
+
+function translateValidationIssue(item: { msg?: string; loc?: unknown; type?: string; ctx?: Record<string, unknown> }): string {
+  const field = fieldLabelFromLocation(item.loc);
+  const msg = String(item.msg || "");
+  const type = String(item.type || "");
+  const limit = item.ctx?.min_length ?? item.ctx?.max_length ?? item.ctx?.ge ?? item.ctx?.le;
+
+  if (type.includes("string_too_short") || /at least \d+ characters/i.test(msg)) {
+    return `${field}至少需要 ${limit || "规定数量的"} 个字符。`;
+  }
+  if (type.includes("string_too_long") || /at most \d+ characters/i.test(msg)) {
+    return `${field}不能超过 ${limit || "规定数量的"} 个字符。`;
+  }
+  if (type.includes("missing") || /field required/i.test(msg)) {
+    return `请填写${field}。`;
+  }
+  if (type.includes("greater_than_equal") || /greater than or equal/i.test(msg)) {
+    return `${field}不能小于 ${limit || "要求值"}。`;
+  }
+  if (type.includes("less_than_equal") || /less than or equal/i.test(msg)) {
+    return `${field}不能大于 ${limit || "要求值"}。`;
+  }
+  return friendlyErrorMessage(msg);
+}
+
+function translateKnownMessage(message: string): string {
+  const compact = message.trim().replace(/\s+/g, " ");
+  const exact: Record<string, string> = {
+    "String should have at least 3 characters": "输入内容至少需要 3 个字符。",
+    "String should have at least 6 characters": "密码至少需要 6 个字符。",
+    "Knowledge base is empty or no document is indexed.": "知识库中暂无可检索文档，请先上传业务知识文档。",
+    "RAG is disabled by configuration.": "知识库向量检索未启用，系统将使用文本检索。",
+    "Only .txt and .md knowledge documents are supported.": "仅支持上传 .txt 或 .md 格式的知识文档。",
+    "Knowledge document is empty after text cleanup.": "知识文档内容为空，请补充文本后重新上传。",
+    "Job not found.": "未找到对应的分析任务。",
+    "Job status not found.": "未找到对应的任务状态。",
+    "Workflow job not found.": "未找到对应的分析任务。",
+    "Chart not found.": "未找到对应图表。"
+  };
+  if (exact[compact]) {
+    return exact[compact];
+  }
+  const replacements: Array<[RegExp, string]> = [
+    [/String should have at least (\d+) characters?/gi, "输入内容至少需要 $1 个字符。"],
+    [/String should have at most (\d+) characters?/gi, "输入内容不能超过 $1 个字符。"],
+    [/Knowledge base is empty or no document is indexed\./gi, "知识库中暂无可检索文档，请先上传业务知识文档。"],
+    [/Embedding model is not available locally:[^；。]*/gi, "当前运行环境未启用向量索引"],
+    [/RAG search unavailable:[^；。]*/gi, "知识库检索暂时不可用"],
+    [/failed to fetch/gi, "网络连接暂时不可用"],
+    [/backend service/gi, "分析服务"]
+  ];
+  return replacements.reduce((current, [pattern, replacement]) => current.replace(pattern, replacement), message);
+}
+
+function friendlyErrorMessage(rawMessage: string, status?: number): string {
+  const message = translateKnownMessage(rawMessage.trim());
+  const lower = message.toLowerCase();
+  const technicalSignals = [
+    "backend",
+    "server",
+    "traceback",
+    "stack",
+    "sql",
+    "database",
+    "mysql",
+    "pymysql",
+    "timeout",
+    "failed to fetch",
+    "networkerror",
+    "后端",
+    "数据库",
+    "服务器",
+    "连接超时"
+  ];
+
+  if (status === 401) {
+    return "登录状态已过期，请重新登录后继续使用。";
+  }
+  if (status === 403) {
+    return "当前账号暂无执行此操作的权限。";
+  }
+  if (status === 404) {
+    return "没有找到对应的数据或分析任务，请刷新列表后重试。";
+  }
+  if (status && status >= 500) {
+    return "分析服务暂时繁忙，请稍后重新尝试。";
+  }
+  if (!message) {
+    return "操作未完成，请稍后重试。";
+  }
+  if (technicalSignals.some((keyword) => lower.includes(keyword))) {
+    return "分析链路暂时不可用，请稍后重新尝试。";
+  }
+  return message;
+}
+
 function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   return fetch(input, {
     ...init,
     headers: authHeaders(init.headers)
+  }).catch(() => {
+    throw new Error("网络连接暂时不可用，请检查网络后重试。");
   });
 }
 
@@ -88,17 +206,17 @@ async function parseResponse<T>(response: Response): Promise<T> {
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    let message = "操作未完成，请稍后重试或联系系统管理员。";
+    let message = "操作未完成，请稍后重试。";
     if (data && typeof data.detail === "string") {
       message = data.detail;
     } else if (data && Array.isArray(data.detail)) {
       message = data.detail
-        .map((item: { msg?: string; loc?: unknown }) => item.msg || JSON.stringify(item.loc || item))
-        .join("；");
+        .map((item: { msg?: string; loc?: unknown; type?: string; ctx?: Record<string, unknown> }) => translateValidationIssue(item))
+        .join("");
     } else if (data && typeof data.message === "string") {
       message = data.message;
     }
-    throw new Error(message);
+    throw new Error(friendlyErrorMessage(message, response.status));
   }
 
   return data as T;
@@ -669,15 +787,3 @@ export function toStorageUrl(path: string): string {
   }
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
-
-
-
-
-
-
-
-
-
-
-
-

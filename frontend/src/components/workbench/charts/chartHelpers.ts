@@ -20,7 +20,7 @@ export function buildChartRefineSuggestions(
   const chartType = inferChartType(chartPath);
   const field = friendlyFieldName(extractChartField(chartPath));
   const target = friendlyFieldName(inferTargetMetric(analysisResult, predictionResult));
-  const goal = (job?.user_goal || "本轮分析目标").slice(0, 24);
+  const goal = (job?.user_goal || "当前分析目标").slice(0, 24);
 
   if (isPredictionWorkflow) {
     return [
@@ -65,7 +65,7 @@ export function buildChartRefineSuggestions(
   }
   return [
     "改为更适合对比的柱状图，并显示数值标签。",
-    "增加排序、筛选和标题说明，使图表直接对应本轮分析目标。",
+    "增加排序、筛选和标题说明，使图表直接对应当前分析目标。",
     "只保留最关键的前 10 个对象，避免图表过密。",
     "补充数据口径说明和限制提示。"
   ];
@@ -154,3 +154,4 @@ function friendlyFieldName(value: string): string {
   };
   return labels[normalized] || text || "目标指标";
 }
+

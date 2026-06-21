@@ -1,5 +1,5 @@
 // frontend/src/App.tsx
-import { Component, type ErrorInfo, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Component, type ErrorInfo, type FormEventHandler, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   changeAdminUserRole,
@@ -15,7 +15,7 @@ import {
   setStoredAuthToken,
   updateMyProfile
 } from "./api";
-import { WorkbenchPage } from "./pages/WorkbenchPage";
+import { WorkbenchPage, mainTabs, type MainTab } from "./pages/WorkbenchPage";
 import type { AuthUser } from "./types";
 
 type AppView = "login" | "register" | "workbench" | "account" | "admin";
@@ -133,6 +133,7 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [globalMessage, setGlobalMessage] = useState("");
   const [appHeaderCollapsed, setAppHeaderCollapsed] = useState(false);
+  const [activeWorkbenchTab, setActiveWorkbenchTab] = useState<MainTab>("home");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -201,12 +202,12 @@ export default function App() {
       <>
         <GameStyles />
         <main className="auth-page">
-          <section className="auth-card compact">
+          <div className="auth-card compact">
             <RobotAvatar size={80} />
-            <p className="eyebrow">AI Native Data Analysis Workbench</p>
+            <p className="eyebrow">AI 原生数据分析工作台</p>
             <h1>正在进入工作台</h1>
             <p>正在校验系统状态，即将开启数据探索旅程...</p>
-          </section>
+          </div>
         </main>
       </>
     );
@@ -229,6 +230,61 @@ export default function App() {
     <div className="app-shell">
       <GameStyles />
       <header className={`app-header ${appHeaderCollapsed ? "collapsed" : ""}`}>
+        <div className="app-title-block">
+          <h1>&#160;&#160;&#160;AI 原生数据分析工作台</h1>
+        </div>
+        <nav className="workbench-header-nav-slot" aria-label="工作台功能导航">
+          <div className="dq-tab-rail dq-header-tab-rail">
+            {mainTabs.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                className={view === "workbench" && activeWorkbenchTab === tab.key ? "active" : ""}
+                onClick={() => {
+                  setActiveWorkbenchTab(tab.key);
+                  setView("workbench");
+                }}
+                title={tab.description}
+              >
+                <span>{tab.icon}</span>
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </nav>
+        <nav className="app-nav" aria-label="账号与系统导航">
+          <div className="account-menu" ref={accountMenuRef}>
+            <button
+              type="button"
+              className={`account-menu-trigger ${view === "account" || view === "admin" || accountMenuOpen ? "active" : ""}`}
+              aria-haspopup="menu"
+              aria-expanded={accountMenuOpen}
+              onClick={() => setAccountMenuOpen((value) => !value)}
+            >
+              <span className="top-nav-icon" aria-hidden="true">●</span>
+              <span>{user.role === "admin" ? "系统管理员" : "个人账户"}</span>
+            </button>
+            {accountMenuOpen ? (
+              <div className="account-dropdown" role="menu" aria-label="账户操作">
+                <div className="account-dropdown-profile">
+                  <strong>{user.username}</strong>
+                  <span>{roleLabel(user.role)} · {user.login_account}</span>
+                </div>
+                <button type="button" role="menuitem" className={view === "account" ? "current" : ""} onClick={() => { setView("account"); setAccountMenuOpen(false); }}>
+                  <span>账号设置</span><small>资料与密码</small>
+                </button>
+                {user.role === "admin" ? (
+                  <button type="button" role="menuitem" className={view === "admin" ? "current" : ""} onClick={() => { setView("admin"); setAccountMenuOpen(false); }}>
+                    <span>用户管理</span><small>审核与权限</small>
+                  </button>
+                ) : null}
+                <button type="button" role="menuitem" className="account-dropdown-logout" onClick={handleLogout}>
+                  <span>退出登录</span><small>结束当前会话</small>
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </nav>
         <button
           className="app-header-toggle"
           type="button"
@@ -243,61 +299,10 @@ export default function App() {
             </svg>
           </span>
         </button>
-        {!appHeaderCollapsed ? (
-          <>
-            <div className="app-title-block">
-              <p className="eyebrow">AI Native Data Analysis Workbench</p>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                <h1>DeepSeek 多 Agent 数据分析工作台</h1>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: '#E0F2FE', padding: '4px 12px', borderRadius: '20px', border: '1px solid #bae6fd' }}>
-                  <span style={{ fontSize: '12px', color: '#0369A1', fontWeight: 'bold' }}>Lv. 1 数据探索者</span>
-                  <div style={{ width: '80px', height: '6px', background: '#bae6fd', borderRadius: '3px', overflow: 'hidden' }}>
-                    <div style={{ width: '45%', height: '100%', background: '#0EA5E9', animation: 'pulseGlow 2s infinite' }}></div>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <nav className="app-nav" aria-label="账号与系统导航">
-              <button type="button" className={view === "workbench" ? "active" : ""} onClick={() => setView("workbench")}>
-                工作台
-              </button>
-              <div className="account-menu" ref={accountMenuRef}>
-                <button
-                  type="button"
-                  className={`account-menu-trigger ${view === "account" || view === "admin" || accountMenuOpen ? "active" : ""}`}
-                  aria-haspopup="menu"
-                  aria-expanded={accountMenuOpen}
-                  onClick={() => setAccountMenuOpen((value) => !value)}
-                >
-                  {user.role === "admin" ? "系统管理员" : "个人账户"}
-                </button>
-                {accountMenuOpen ? (
-                  <div className="account-dropdown" role="menu" aria-label="账户操作">
-                    <div className="account-dropdown-profile">
-                      <strong>{user.username}</strong>
-                      <span>{roleLabel(user.role)} · {user.login_account}</span>
-                    </div>
-                    <button type="button" role="menuitem" className={view === "account" ? "current" : ""} onClick={() => { setView("account"); setAccountMenuOpen(false); }}>
-                      <span>账号设置</span><small>资料与密码</small>
-                    </button>
-                    {user.role === "admin" ? (
-                      <button type="button" role="menuitem" className={view === "admin" ? "current" : ""} onClick={() => { setView("admin"); setAccountMenuOpen(false); }}>
-                        <span>用户管理</span><small>审核与权限</small>
-                      </button>
-                    ) : null}
-                    <button type="button" role="menuitem" className="account-dropdown-logout" onClick={handleLogout}>
-                      <span>退出登录</span><small>结束当前会话</small>
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            </nav>
-          </>
-        ) : null}
       </header>
 
       <AppErrorBoundary resetKey={`${view}-${user.id}`}>
-        {view === "workbench" ? <WorkbenchPage currentUser={user} /> : null}
+        {view === "workbench" ? <WorkbenchPage currentUser={user} activeTab={activeWorkbenchTab} onActiveTabChange={setActiveWorkbenchTab} /> : null}
         {view === "account" ? <AccountPage user={user} onUserChange={setUser} onLogout={handleLogout} /> : null}
         {view === "admin" && user.role === "admin" ? <AdminPage currentUser={user} /> : null}
       </AppErrorBoundary>
@@ -333,14 +338,13 @@ class AppErrorBoundary extends Component<
     if (this.state.error) {
       return (
         <main className="workspace-shell">
-          <section className="panel render-error-panel">
-            <h2>前端展示异常</h2>
-            <p>当前分析结果中存在暂时无法展示的字段，页面已阻止白屏。请刷新或切换页面后继续查看。</p>
-            <pre>{this.state.error.message}</pre>
+          <div className="panel render-error-panel">
+            <h2>页面展示暂时中断</h2>
+            <p>当前分析内容暂时无法完整呈现。请刷新页面或切换到其他页面后继续查看。</p>
             <button className="primary-button" type="button" onClick={() => this.setState({ error: null })}>
-              重新显示页面
+              重新打开页面
             </button>
-          </section>
+          </div>
         </main>
       );
     }
@@ -366,7 +370,7 @@ function LoginPage({
     setMessage(globalMessage);
   }, [globalMessage]);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  const handleSubmit: FormEventHandler<HTMLFormElement> = async (event) => {
     event.preventDefault();
     setLoading(true);
     setMessage("正在登录。");
@@ -378,13 +382,13 @@ function LoginPage({
     } finally {
       setLoading(false);
     }
-  }
+  };
 
   return (
     <main className="auth-page">
-      <section className="auth-card">
+      <div className="auth-card">
         <RobotAvatar />
-        <p className="eyebrow">Data Quest</p>
+        <p className="eyebrow">数据探索</p>
         <h1>登录数据分析工作台</h1>
         <form className="auth-form" onSubmit={handleSubmit}>
           <label>
@@ -403,7 +407,7 @@ function LoginPage({
         <button className="link-button" type="button" style={{ marginTop: '16px', background: 'transparent', border: 'none', cursor: 'pointer', color: '#0ea5e9', fontWeight: 'bold' }} onClick={onRegister}>
           没有角色权限？申请注册账号
         </button>
-      </section>
+      </div>
     </main>
   );
 }
@@ -424,7 +428,7 @@ function RegisterPage({
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState(globalMessage);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  const handleSubmit: FormEventHandler<HTMLFormElement> = async (event) => {
     event.preventDefault();
     setLoading(true);
     setMessage("正在提交注册申请。");
@@ -442,13 +446,13 @@ function RegisterPage({
     } finally {
       setLoading(false);
     }
-  }
+  };
 
   return (
     <main className="auth-page">
-      <section className="auth-card">
+      <div className="auth-card">
         <RobotAvatar size={80} />
-        <p className="eyebrow">Data Quest</p>
+        <p className="eyebrow">数据探索</p>
         <h1>注册账号</h1>
         <p>注册后需等待管理员审核通过，方可建立角色信息。登录账号不可修改，用户名可后续调整。</p>
         <form className="auth-form" onSubmit={handleSubmit}>
@@ -476,7 +480,7 @@ function RegisterPage({
         <button className="link-button" type="button" style={{ marginTop: '16px', background: 'transparent', border: 'none', cursor: 'pointer', color: '#0ea5e9', fontWeight: 'bold' }} onClick={onBack}>
           返回登录
         </button>
-      </section>
+      </div>
     </main>
   );
 }
@@ -497,7 +501,7 @@ function AccountPage({
   const [passwordMessage, setPasswordMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function handleProfileSubmit(event: FormEvent<HTMLFormElement>) {
+  const handleProfileSubmit: FormEventHandler<HTMLFormElement> = async (event) => {
     event.preventDefault();
     setLoading(true);
     try {
@@ -509,9 +513,9 @@ function AccountPage({
     } finally {
       setLoading(false);
     }
-  }
+  };
 
-  async function handlePasswordSubmit(event: FormEvent<HTMLFormElement>) {
+  const handlePasswordSubmit: FormEventHandler<HTMLFormElement> = async (event) => {
     event.preventDefault();
     setLoading(true);
     try {
@@ -524,11 +528,11 @@ function AccountPage({
     } finally {
       setLoading(false);
     }
-  }
+  };
 
   return (
     <main className="settings-page" style={{ padding: '40px', maxWidth: '1000px', margin: '0 auto' }}>
-      <section className="settings-card account-overview" style={{ marginBottom: '20px' }}>
+      <div className="settings-card account-overview" style={{ marginBottom: '20px' }}>
         <div className="account-identity" style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
           <span className="account-avatar" aria-hidden="true" style={{ width: '60px', height: '60px', background: '#0ea5e9', borderRadius: '50%', color: '#fff', display: 'grid', placeItems: 'center', fontSize: '24px', fontWeight: 'bold' }}>
             {(user.username || user.login_account).slice(0, 1).toUpperCase()}
@@ -553,9 +557,9 @@ function AccountPage({
             <dd style={{ margin: 0, fontWeight: 'bold' }}>{statusLabel(user.status)}</dd>
           </div>
         </dl>
-      </section>
+      </div>
 
-      <section className="account-action-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+      <div className="account-action-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
         <form className="settings-card auth-form account-action-card" onSubmit={handleProfileSubmit}>
           <p className="eyebrow">资料</p>
           <h3>修改用户名</h3>
@@ -584,7 +588,7 @@ function AccountPage({
           </button>
           {passwordMessage ? <p className="auth-message">{passwordMessage}</p> : null}
         </form>
-      </section>
+      </div>
     </main>
   );
 }
@@ -632,7 +636,7 @@ function AdminPage({ currentUser }: { currentUser: AuthUser }) {
 
   return (
     <main className="settings-page" style={{ padding: '40px', maxWidth: '1200px', margin: '0 auto' }}>
-      <section className="settings-card" style={{ marginBottom: '20px' }}>
+      <div className="settings-card" style={{ marginBottom: '20px' }}>
         <div className="section-heading" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h2>管理员用户管理</h2>
           <span style={{ background: '#E0F2FE', padding: '4px 12px', borderRadius: '20px', color: '#0369A1', fontWeight: 'bold' }}>
@@ -653,9 +657,9 @@ function AdminPage({ currentUser }: { currentUser: AuthUser }) {
           </button>
         </div>
         {message ? <p className="auth-message" style={{ marginTop: '15px' }}>{message}</p> : null}
-      </section>
+      </div>
 
-      <section className="settings-card">
+      <div className="settings-card">
         <div className="admin-user-table-wrap" style={{ overflowX: 'auto' }}>
           <table className="admin-user-table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
             <thead>
@@ -718,7 +722,7 @@ function AdminPage({ currentUser }: { currentUser: AuthUser }) {
             </tbody>
           </table>
         </div>
-      </section>
+      </div>
     </main>
   );
 }

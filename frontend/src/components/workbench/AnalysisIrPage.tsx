@@ -37,12 +37,12 @@ export function AnalysisIrPage({ analysisIr, job }: { analysisIr: AnalysisIR | n
           <h2>分析专用中间表示（Analysis IR）</h2>
           <span>后续 Controller、Analysis、Code、Dashboard、Follow-up、PPT 统一消费这份 IR + delta。</span>
         </div>
-        <small className="ir-version">schema {analysisIr.schema_version || "1.0"}</small>
+        <small className="ir-version">版本 {analysisIr.schema_version || "1.0"}</small>
       </div>
 
       <div className="ir-hero-card">
         <strong>{analysisIr.task_type || job.task_type || "general_data_analysis"}</strong>
-        <h3>{analysisIr.normalized_goal || job.user_goal || "本轮分析任务"}</h3>
+        <h3>{analysisIr.normalized_goal || job.user_goal || "当前分析任务"}</h3>
         <p>{analysisIr.semantic_digest || "IR 已生成，将作为后续 Agent 的语义事实源。"}</p>
       </div>
 

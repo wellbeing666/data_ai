@@ -98,7 +98,7 @@ export function AgentsPage({
       </div>
       {message ? <p className="message success">{message}</p> : null}
       {!job?.job_id ? (
-        <EmptyState title="暂无 Agent 实体" text="启动或打开一个分析任务后，这里会展示参与本轮流程的所有 Agent。" />
+        <EmptyState title="暂无 Agent 实体" text="启动或打开一个分析任务后，这里会展示参与当前流程的所有 Agent。" />
       ) : (
         <>
           <div className="agent-overview-grid">
@@ -205,3 +205,4 @@ export function AgentsPage({
     </section>
   );
 }
+

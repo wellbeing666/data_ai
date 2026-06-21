@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 
 import { toStorageUrl } from "../api";
@@ -13,13 +14,11 @@ import type {
   DebateReflection,
   CleaningPlanResponse,
   CleaningReportResponse,
-  DatasetProfile,
   ExecutionAttemptLog,
   ExecutionLogEvent,
   ExplanationResult,
   EvidenceChain,
   EvidenceFinding,
-  HealthStatus,
   KnowledgeDocument,
   KnowledgeSearchResponse,
   PredictionExplanationResult,
@@ -78,26 +77,6 @@ import {
 } from "../utils/workbenchUtils";
 import type { AgentCardView, AnyRecord, AttemptProgressView, StepView } from "../utils/workbenchUtils";
 
-export function SetupPage({
-  profile: _profile,
-  health: _health,
-  isFallbackMode
-}: {
-  profile: DatasetProfile | null;
-  health: HealthStatus | null;
-  isFallbackMode: boolean;
-}) {
-  return (
-    <section className="page-section">
-      <div className="section-heading">
-        <h2>开始一次分析</h2>
-        <span>{isFallbackMode ? "规则分析模式" : "智能分析模式"}</span>
-      </div>
-    </section>
-  );
-}
-
-
 export function SampleDataPanel({
   onGenerate,
   disabled
@@ -106,22 +85,31 @@ export function SampleDataPanel({
   disabled: boolean;
 }) {
   const samples = [
-    { key: "sales_decline", title: "销售下降案例", desc: "含日期、地区、渠道、商品类别、销量和销售额。" },
-    { key: "grade_scores", title: "成绩统计案例", desc: "含班级、姓名、学号、单科成绩和综合成绩。" },
-    { key: "survey_feedback", title: "问卷调查案例", desc: "含满意度、NPS、渠道和反馈文本。" },
-    { key: "health_activity", title: "运动健康案例", desc: "含步数、睡眠、心率、运动时长和消耗热量。" },
-    { key: "ecommerce_orders", title: "电商订单案例", desc: "含订单、品类、地区、客单价、复购和退款。" }
+    { key: "sales_decline", title: "销售下降案例", desc: "含日期、地区、渠道、商品类别、销量和销售额。", icon: "↘" },
+    { key: "grade_scores", title: "成绩统计案例", desc: "含班级、姓名、学号、单科成绩和综合成绩。", icon: "◎" },
+    { key: "survey_feedback", title: "问卷调查案例", desc: "含满意度、NPS、渠道和反馈文本。", icon: "✎" },
+    { key: "health_activity", title: "运动健康案例", desc: "含步数、睡眠、心率、运动时长和消耗热量。", icon: "◌" },
+    { key: "ecommerce_orders", title: "电商订单案例", desc: "含订单、品类、地区、客单价、复购和退款。", icon: "▦" }
   ];
 
   return (
     <div className="sample-data-panel">
-      <strong>您可以先通过示例数据尝试系统功能</strong>
-      <p>无需准备文件，选择一个示例即可预览数据、修改分析目标并快速体验完整流程。</p>
+      <div className="section-header compact-heading">
+        <h2>快速探索</h2>
+        <p>您可以先通过示例数据尝试系统功能</p>
+      </div>
+      <p>无需准备文件，选择一个示例即可预览数据、调整分析目标并快速体验完整流程。</p>
       <div className="sample-grid">
         {samples.map((sample) => (
           <button key={sample.key} type="button" disabled={disabled} onClick={() => onGenerate(sample.key)}>
-            <span>{sample.title}</span>
-            <small>{sample.desc}</small>
+            <span className="card-icon" aria-hidden="true">{sample.icon}</span>
+            <span className="card-content">
+              <span>{sample.title}</span>
+              <small>{sample.desc}</small>
+            </span>
+            <span className="card-action-overlay" aria-hidden="true">
+              <span>一键体验 →</span>
+            </span>
           </button>
         ))}
       </div>
@@ -564,7 +552,7 @@ export function QualityReviewPanel({ review }: { review: QualityReview | null })
 }
 
 export function QualityReviewDetailModal({ review, onClose }: { review: QualityReview; onClose: () => void }) {
-  return (
+  const modal = (
     <div className="knowledge-modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="knowledge-results-modal" role="dialog" aria-modal="true" aria-label="质检详情" onMouseDown={(e) => e.stopPropagation()}>
         <header>
@@ -600,6 +588,11 @@ export function QualityReviewDetailModal({ review, onClose }: { review: QualityR
       </section>
     </div>
   );
+
+  if (typeof document === "undefined") {
+    return modal;
+  }
+  return createPortal(modal, document.body);
 }
 
 export function ConsistencyReportPanel({ report }: { report: CrossArtifactConsistencyReport | null }) {
@@ -1127,7 +1120,7 @@ function agentOrderLabel(index: number, total: number): string {
   if (index < 0 || total <= 0) {
     return "等待接入";
   }
-  return `第 ${index + 1} / ${total} 位 Agent`;
+  return `第${index + 1}位`;
 }
 
 
@@ -1189,7 +1182,9 @@ export function ProcessPage({
     log,
     events
   });
-  const spotlightAgent = selectSpotlightAgent(cards);
+  const autoSpotlightAgent = selectSpotlightAgent(cards);
+  const [selectedSpotlightKey, setSelectedSpotlightKey] = useState("");
+  const spotlightAgent = cards.find((card) => card.key === selectedSpotlightKey) ?? autoSpotlightAgent;
   const spotlightIndex = spotlightAgent ? cards.findIndex((card) => card.key === spotlightAgent.key) : -1;
   const latestEvent = events.length ? events[events.length - 1] : null;
   const [cardFilter, setCardFilter] = useState<"all" | "active" | "done" | "failed" | "artifact">("all");
@@ -1197,11 +1192,22 @@ export function ProcessPage({
   const messageStreamRef = useRef<HTMLDivElement | null>(null);
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [messageStreamHeight, setMessageStreamHeight] = useState(460);
-  const filteredCards = cards.filter((card) => cardFilter === "all"
-    || (cardFilter === "artifact" ? Boolean(card.artifactPath) : card.status === cardFilter));
+  const isRunningCard = (card: AgentCardView) => ["active", "running", "retrying"].includes(String(card.status));
+  const filteredCards = cards.filter((card) => {
+    if (cardFilter === "all") return true;
+    if (cardFilter === "active") return isRunningCard(card);
+    if (cardFilter === "artifact") return Boolean(card.artifactPath);
+    return card.status === cardFilter;
+  });
   const completedCount = cards.filter((card) => card.status === "done").length;
-  const runningCount = cards.filter((card) => card.status === "active").length;
+  const runningCount = cards.filter(isRunningCard).length;
   const failedCount = cards.filter((card) => card.status === "failed").length;
+
+  useEffect(() => {
+    if (selectedSpotlightKey && !cards.some((card) => card.key === selectedSpotlightKey)) {
+      setSelectedSpotlightKey("");
+    }
+  }, [cards, selectedSpotlightKey]);
 
   useEffect(() => {
     const timeline = timelineRef.current;
@@ -1250,6 +1256,8 @@ export function ProcessPage({
         spotlightAgent={spotlightAgent}
         spotlightIndex={spotlightIndex}
         latestEvent={latestEvent}
+        autoSpotlightKey={autoSpotlightAgent?.key ?? ""}
+        onSelectAgent={setSelectedSpotlightKey}
       />
       <div className="process-timeline-layout">
         <div className="process-agent-timeline" ref={timelineRef}>
@@ -1287,12 +1295,16 @@ function AgentStoryStage({
   cards,
   spotlightAgent,
   spotlightIndex,
-  latestEvent
+  latestEvent,
+  autoSpotlightKey,
+  onSelectAgent
 }: {
   cards: AgentCardView[];
   spotlightAgent: AgentCardView | null;
   spotlightIndex: number;
   latestEvent: ExecutionLogEvent | null;
+  autoSpotlightKey: string;
+  onSelectAgent: (agentKey: string) => void;
 }) {
   if (!spotlightAgent) {
     return <EmptyState title="等待任务启动" text="上传数据并提交目标后，Agent 协作现场会展示当前出场的智能体、动作和产物进度。" compact />;
@@ -1306,7 +1318,7 @@ function AgentStoryStage({
           <AgentPortrait card={spotlightAgent} size="large" />
         </div>
         <div className="agent-story-dialogue">
-          <span className="agent-scene-label">当前出场 · {agentOrderLabel(spotlightIndex, cards.length)}</span>
+          <span className="agent-scene-label">{spotlightAgent.key === autoSpotlightKey ? "当前出场" : "已选角色"} · {agentOrderLabel(spotlightIndex, cards.length)}</span>
           <h3>{spotlightAgent.agentName}</h3>
           <p>{spotlightAgent.output || spotlightAgent.action}</p>
           <dl>
@@ -1324,15 +1336,19 @@ function AgentStoryStage({
       </div>
       <div className="agent-cast-strip" aria-label="Agent 出场顺序">
         {cards.map((card, index) => (
-          <div
-            className={`agent-cast-member ${card.status} ${spotlightAgent.key === card.key ? "current" : ""}`}
+          <button
+            type="button"
+            className={`agent-cast-member ${card.status} ${spotlightAgent.key === card.key ? "current" : ""} ${autoSpotlightKey === card.key ? "live" : ""}`}
             key={`cast-${card.key}`}
             aria-current={spotlightAgent.key === card.key ? "step" : undefined}
+            onClick={() => onSelectAgent(card.key)}
           >
             <AgentPortrait card={card} size="small" />
-            <strong>{card.agentName}</strong>
-            <span>{agentOrderLabel(index, cards.length)}</span>
-          </div>
+            <span className="agent-cast-copy">
+              <strong>{card.agentName}</strong>
+              <span>{agentOrderLabel(index, cards.length)}</span>
+            </span>
+          </button>
         ))}
       </div>
     </div>
@@ -1356,8 +1372,12 @@ function JobControlDock({
   loadingAction: string | null;
   onControlJob: (action: string) => void;
 }) {
+  const getDefaultPosition = () => {
+    const viewportWidth = typeof window === "undefined" ? 1280 : window.innerWidth;
+    return { top: 168, left: Math.max(24, viewportWidth - 220) };
+  };
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState({ top: 160, left: Math.max(24, window.innerWidth - 92) });
+  const [position, setPosition] = useState(getDefaultPosition);
   const [dragging, setDragging] = useState(false);
   const dragMovedRef = useRef(false);
   const statusValue = job.status || "pending";
@@ -1392,8 +1412,8 @@ function JobControlDock({
         dragMovedRef.current = true;
       }
       setPosition({
-        left: Math.min(Math.max(12, startLeft + deltaX), Math.max(12, window.innerWidth - 72)),
-        top: Math.min(Math.max(80, startTop + deltaY), Math.max(90, window.innerHeight - 72))
+        left: Math.min(Math.max(16, startLeft + deltaX), Math.max(16, window.innerWidth - 170)),
+        top: Math.min(Math.max(88, startTop + deltaY), Math.max(90, window.innerHeight - 72))
       });
     };
     const onUp = () => {
@@ -1575,7 +1595,7 @@ export function AttemptProgressDetailModal({
   isPredictionWorkflow: boolean;
   onClose: () => void;
 }) {
-  return (
+  const modal = (
     <div className="knowledge-modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="knowledge-results-modal" role="dialog" aria-modal="true" aria-label="阶段与验证详情" onMouseDown={(e) => e.stopPropagation()}>
         <header>
@@ -1593,6 +1613,11 @@ export function AttemptProgressDetailModal({
       </section>
     </div>
   );
+
+  if (typeof document === "undefined") {
+    return modal;
+  }
+  return createPortal(modal, document.body);
 }
 
 export function AttemptProgressCard({ attempt }: { attempt: AttemptProgressView }) {
@@ -2081,7 +2106,7 @@ export function DashboardPage({
         </div>
         <EmptyState
           title="暂无 Dashboard"
-          text="分析完成后，Dashboard 生成 Agent 会基于本轮结果自动生成 KPI 卡片、趋势图、对比图、结构拆解和明细表。"
+          text="分析完成后，Dashboard 生成 Agent 会基于当前结果自动生成 KPI 卡片、趋势图、对比图、结构拆解和明细表。"
         />
       </section>
     );
@@ -2190,7 +2215,7 @@ export function DashboardPage({
               </label>
             ))
           ) : (
-            <span className="agent-muted">本轮数据未生成可用筛选器。</span>
+            <span className="agent-muted">当前数据未生成可用筛选器。</span>
           )}
         </div>
         <span className="dashboard-filter-summary">
@@ -2707,7 +2732,7 @@ export function InsightsPage({
             <div className="insight-evidence-layout">
               <section className="insight-surface">
                 <h3>证据与数据依据</h3>
-                <p>{evidenceChain?.summary || "本轮尚未生成结构化证据链摘要。"}</p>
+                <p>{evidenceChain?.summary || "当前任务尚未生成结构化证据链摘要。"}</p>
                 <dl className="insight-evidence-metrics">
                   <div><dt>风险等级</dt><dd>{evidenceChain?.risk_level || "未评估"}</dd></div>
                   <div><dt>高风险发现</dt><dd>{evidenceChain?.high_risk_count ?? 0}</dd></div>
@@ -3689,6 +3714,12 @@ export function EmptyState({ title, text, compact = false }: { title: string; te
     </div>
   );
 }
+
+
+
+
+
+
 
 
 

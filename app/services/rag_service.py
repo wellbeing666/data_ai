@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,7 +38,7 @@ class RAGService:
         if suffix not in ALLOWED_EXTENSIONS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only .txt and .md knowledge documents are supported.",
+                detail="仅支持上传 .txt 或 .md 格式的知识文档。",
             )
 
         text = _decode_text(content)
@@ -49,7 +50,7 @@ class RAGService:
         if not chunks:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Knowledge document is empty after text cleanup.",
+                detail="知识文档内容为空，请补充文本后重新上传。",
             )
 
         doc_id = uuid4().hex
@@ -74,9 +75,9 @@ class RAGService:
                 self._add_chunks(document, chunks)
                 document["indexed"] = True
             except Exception as exc:
-                document["index_error"] = str(exc)
+                document["index_error"] = _user_facing_index_error(exc)
         else:
-            document["index_error"] = "RAG is disabled by configuration."
+            document["index_error"] = "向量检索未启用，已保存文档并支持文本检索。"
 
         documents = self.list_documents()
         documents.append(document)
@@ -93,7 +94,7 @@ class RAGService:
         if document is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Knowledge document not found.",
+                detail="未找到指定知识文档。",
             )
 
         if document.get("indexed"):
@@ -116,32 +117,42 @@ class RAGService:
         dataset_profile: dict[str, Any] | None = None,
         task_type: str | None = None,
     ) -> dict[str, Any]:
-        if not str(self.settings.rag_enabled).strip().lower() in {"1", "true", "yes", "on"}:
-            return _empty_search(query, "RAG is disabled by configuration.")
-
         documents = self.list_documents()
-        if not any(item.get("indexed") for item in documents):
-            return _empty_search(query, "Knowledge base is empty or no document is indexed.")
+        if not documents:
+            return _empty_search(query, "知识库中暂无文档，请先上传业务知识文档。")
 
         search_query = build_search_query(query, dataset_profile, task_type)
-        try:
-            collection = self._get_collection()
-            query_embedding = self._embed([search_query])[0]
-            result = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=max(1, int(top_k or self.settings.rag_top_k)),
-                include=["documents", "metadatas", "distances"],
-            )
-        except Exception as exc:
-            return _empty_search(query, f"RAG search unavailable: {exc}")
+        limit = max(1, int(top_k or self.settings.rag_top_k))
+        rag_enabled = str(self.settings.rag_enabled).strip().lower() in {"1", "true", "yes", "on"}
 
-        return {
-            "query": query,
-            "expanded_query": search_query,
-            "available": True,
-            "message": "RAG search completed.",
-            "results": _format_chroma_results(result),
-        }
+        if rag_enabled and any(item.get("indexed") for item in documents):
+            try:
+                collection = self._get_collection()
+                query_embedding = self._embed([search_query])[0]
+                result = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=limit,
+                    include=["documents", "metadatas", "distances"],
+                )
+                formatted = _format_chroma_results(result)
+                if formatted:
+                    return {
+                        "query": query,
+                        "expanded_query": search_query,
+                        "available": True,
+                        "message": "知识库检索完成。",
+                        "results": formatted,
+                    }
+            except Exception:
+                pass
+
+        return _fallback_text_search(
+            documents=documents,
+            query=query,
+            expanded_query=search_query,
+            top_k=limit,
+            settings=self.settings,
+        )
 
     def _add_chunks(self, document: dict[str, Any], chunks: list[str]) -> None:
         embeddings = self._embed(chunks)
@@ -178,7 +189,7 @@ class RAGService:
             from sentence_transformers import SentenceTransformer
         except ModuleNotFoundError as exc:
             raise RAGUnavailableError(
-                "sentence-transformers is not installed; RAG will use fallback mode."
+                "当前运行环境未安装向量模型组件。"
             ) from exc
         self._embedding_model = SentenceTransformer(
             model_path,
@@ -196,7 +207,7 @@ class RAGService:
             return snapshot_download(model_name, local_files_only=True)
         except Exception as exc:
             raise RAGUnavailableError(
-                f"Embedding model is not available locally: {model_name}"
+                f"当前运行环境未找到本地向量模型：{model_name}"
             ) from exc
 
     def _get_collection(self) -> Any:
@@ -206,7 +217,7 @@ class RAGService:
             import chromadb
         except ModuleNotFoundError as exc:
             raise RAGUnavailableError(
-                "chromadb is not installed; RAG will use fallback mode."
+                "当前运行环境未安装向量索引组件。"
             ) from exc
         CHROMA_ROOT.mkdir(parents=True, exist_ok=True)
         client = chromadb.PersistentClient(path=str(CHROMA_ROOT))
@@ -251,6 +262,112 @@ def format_rag_context(search_result: dict[str, Any]) -> list[dict[str, Any]]:
 
 def get_rag_service() -> RAGService:
     return RAGService()
+
+
+def _fallback_text_search(
+    documents: list[dict[str, Any]],
+    query: str,
+    expanded_query: str,
+    top_k: int,
+    settings: Any,
+) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    query_terms = _tokenize_for_search(expanded_query)
+
+    for document in documents:
+        raw_path = Path(str(document.get("raw_path") or ""))
+        if not raw_path.exists() or not raw_path.is_file():
+            continue
+        try:
+            text = _decode_text(raw_path.read_bytes())
+        except OSError:
+            continue
+        chunks = chunk_text(
+            text,
+            chunk_size=int(getattr(settings, "rag_chunk_size", 800) or 800),
+            chunk_overlap=int(getattr(settings, "rag_chunk_overlap", 120) or 120),
+        )
+        for index, chunk in enumerate(chunks):
+            score_value = _lexical_score(query_terms, chunk)
+            if score_value <= 0:
+                continue
+            candidates.append(
+                {
+                    "doc_id": str(document.get("doc_id", "")),
+                    "filename": str(document.get("filename", "")),
+                    "source": str(document.get("raw_path", "")),
+                    "chunk_index": index,
+                    "chunk": chunk,
+                    "score": _normalize_lexical_score(score_value),
+                    "distance": None,
+                    "_rank_score": score_value,
+                }
+            )
+
+    candidates.sort(key=lambda item: (-float(item.get("_rank_score", 0)), item.get("filename", ""), item.get("chunk_index", 0)))
+    results = [{key: value for key, value in item.items() if key != "_rank_score"} for item in candidates[:top_k]]
+    return {
+        "query": query,
+        "expanded_query": expanded_query,
+        "available": True,
+        "message": "知识库文本检索完成。" if results else "未检索到相关知识片段，请调整问题描述后重试。",
+        "results": results,
+    }
+
+
+def _tokenize_for_search(text: str) -> list[str]:
+    normalized = str(text or "").lower()
+    raw_tokens = re.findall(r"[\u4e00-\u9fff]+|[a-z0-9_]+", normalized)
+    terms: set[str] = set()
+    stopwords = {"task_type", "columns", "and", "the", "for", "with", "true", "false"}
+    for token in raw_tokens:
+        if token in stopwords:
+            continue
+        if re.fullmatch(r"[\u4e00-\u9fff]+", token):
+            if len(token) == 1:
+                terms.add(token)
+            else:
+                terms.add(token)
+                terms.update(token[index : index + 2] for index in range(len(token) - 1))
+                if len(token) >= 3:
+                    terms.update(token[index : index + 3] for index in range(len(token) - 2))
+        elif len(token) >= 2:
+            terms.add(token)
+    return sorted(terms, key=lambda item: (-len(item), item))
+
+
+def _lexical_score(terms: list[str], chunk: str) -> float:
+    if not terms:
+        return 0.0
+    normalized = str(chunk or "").lower()
+    score = 0.0
+    matched = 0
+    for term in terms:
+        if not term or term not in normalized:
+            continue
+        matched += 1
+        if len(term) >= 4:
+            score += 4.0
+        elif len(term) == 3:
+            score += 3.0
+        elif len(term) == 2:
+            score += 1.8
+        else:
+            score += 0.4
+    if matched >= 2:
+        score += min(matched, 8) * 0.35
+    return score
+
+
+def _normalize_lexical_score(score: float) -> float:
+    return round(max(0.0, min(1.0, score / (score + 6.0))), 6)
+
+
+def _user_facing_index_error(exc: Exception) -> str:
+    message = str(exc)
+    if "Embedding model" in message or "sentence-transformers" in message or "chromadb" in message:
+        return "当前运行环境未启用向量索引，已保存文档并支持文本检索。"
+    return "向量索引暂未建立，已保存文档并支持文本检索。"
 
 
 def _format_chroma_results(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -328,7 +445,7 @@ def _write_documents(documents: list[dict[str, Any]]) -> None:
 
 def _validate_doc_id(doc_id: str) -> None:
     if not doc_id or Path(doc_id).name != doc_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid doc_id.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="知识文档编号无效。")
 
 
 def _utc_now() -> str:

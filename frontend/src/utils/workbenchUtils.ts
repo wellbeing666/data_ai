@@ -537,14 +537,14 @@ export function buildAgentSteps(input: {
     {
       key: "rag",
       title: "RAG 正在检索业务知识库",
-      stageNames: ["rag_retrieval"],
+      stageNames: ["loading_dataset", "rag_retrieval"],
       done: Boolean(input.ragRetrieval),
       summary: ragSummary(input.ragRetrieval)
     },
     {
       key: "controller",
       title: "主控 Agent 正在规划",
-      stageNames: ["controller"],
+      stageNames: ["analysis_ir", "roadmap", "controller"],
       done: Boolean(input.controllerPlan),
       summary: controllerSummary(input.controllerPlan)
     },
@@ -668,14 +668,14 @@ export function buildPredictionSteps(input: {
     {
       key: "rag",
       title: "RAG 正在检索业务知识库",
-      stageNames: ["rag_retrieval"],
+      stageNames: ["loading_dataset", "rag_retrieval"],
       done: Boolean(input.ragRetrieval || input.job?.rag_retrieval_path),
       summary: ragSummary(input.ragRetrieval)
     },
     {
       key: "controller",
       title: "主控 Agent 正在判断工作流",
-      stageNames: ["controller"],
+      stageNames: ["analysis_ir", "roadmap", "controller"],
       done: Boolean(input.controllerPlan || input.job?.controller_plan_path),
       summary: controllerSummary(input.controllerPlan)
     },
@@ -743,14 +743,14 @@ export function buildPredictionSteps(input: {
 }
 
 export function stepStatus(input: { done: boolean; active: boolean; failed: boolean }): StepView["status"] {
-  if (input.done) {
-    return "done";
-  }
   if (input.failed) {
     return "failed";
   }
   if (input.active) {
     return "active";
+  }
+  if (input.done) {
+    return "done";
   }
   return "pending";
 }
@@ -1273,6 +1273,8 @@ export function stageLabel(value: string): string {
     queued: "任务排队",
     loading_dataset: "读取数据",
     rag_retrieval: "RAG 检索",
+    analysis_ir: "分析口径编译",
+    roadmap: "路线图生成",
     hypothesis: "假设解析",
     prediction_plan: "预测计划",
     controller: "主控规划",
@@ -1513,6 +1515,8 @@ function lastItem<T>(items: T[] | undefined): T | undefined {
   }
   return items[items.length - 1];
 }
+
+
 
 
 

@@ -43,7 +43,7 @@ export function DataMapPage({
       <div className="section-heading dashboard-heading">
         <div>
           <h2>数据地图</h2>
-          <span>Data Map Agent 将字段、实体、指标和可提问方向组织成可点击知识图谱。</span>
+          <span>数据地图 Agent 将字段、实体、指标和可提问方向组织成可点击知识图谱。</span>
         </div>
         <button className="secondary-button agent-refresh-btn" type="button" disabled={!profile || loading} onClick={onRefresh}>
           {loading ? "生成中" : "刷新数据地图"}
@@ -116,7 +116,7 @@ export function DataMapPage({
               <article className={`data-map-node-card node-${selectedNode.type}`}>
                 <span>{dataMapNodeTypeLabel(selectedNode.type)}</span>
                 <h3>{selectedNode.label}</h3>
-                <p>{selectedNode.description || "该节点来自 Data Map Agent 对字段和业务概念的自动识别。"}</p>
+                <p>{selectedNode.description || "该节点来自数据地图 Agent 对字段和业务概念的自动识别。"}</p>
                 {selectedNode.field ? <small>字段：{selectedNode.field}</small> : null}
               </article>
             ) : null}
