@@ -4,6 +4,9 @@ import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } f
 
 import { toStorageUrl } from "../api";
 import { toVersionedStorageUrl } from "./workbench/charts/chartHelpers";
+import { AgentStageModal } from "./stage/AgentStageModal";
+import { OverallStage } from "./stage/OverallStage";
+import { fullBodyPortraitPath } from "./stage/stageAssets";
 import type {
   AnalysisRoadmap,
   AnalysisResult,
@@ -12,6 +15,7 @@ import type {
   DatasetDataMap,
   DatasetDataMapNode,
   DebateReflection,
+  DebateRound,
   CleaningPlanResponse,
   CleaningReportResponse,
   ExecutionAttemptLog,
@@ -633,7 +637,6 @@ export function HistoryPanel({
   searchQuery,
   deletingJobId,
   selectedJobIds,
-  embedded = false,
   onRefresh,
   onSearchQueryChange,
   onSearch,
@@ -642,7 +645,8 @@ export function HistoryPanel({
   onToggleSelectAll,
   onDeleteSelected,
   onOpen,
-  onDelete
+  onDelete,
+  embedded = false
 }: {
   items: WorkflowJobListItem[];
   activeJobId: string | null;
@@ -651,7 +655,6 @@ export function HistoryPanel({
   searchQuery: string;
   deletingJobId: string | null;
   selectedJobIds: string[];
-  embedded?: boolean;
   onRefresh: () => void;
   onSearchQueryChange: (query: string) => void;
   onSearch: () => void;
@@ -661,19 +664,24 @@ export function HistoryPanel({
   onDeleteSelected: () => void;
   onOpen: (jobId: string) => void;
   onDelete: (jobId: string) => void;
+  embedded?: boolean;
 }) {
   const hasSearchQuery = searchQuery.trim().length > 0;
   const selectedCount = selectedJobIds.filter((jobId) => items.some((item) => item.job_id === jobId)).length;
   const allSelected = items.length > 0 && items.every((item) => selectedJobIds.includes(item.job_id));
 
+  const panelClassName = embedded ? "history-panel history-panel-embedded" : "panel history-panel";
+
   return (
-    <section className={`panel history-panel ${embedded ? "history-panel-embedded" : ""}`}>
-      <div className="panel-header">
-        <h2>分析对话列表</h2>
-        <button className="text-button" type="button" disabled={loading} onClick={onRefresh}>
-          {loading ? "刷新中" : "刷新"}
-        </button>
-      </div>
+    <section className={panelClassName}>
+      {!embedded ? (
+        <div className="panel-header">
+          <h2>分析对话列表</h2>
+          <button className="text-button" type="button" disabled={loading} onClick={onRefresh}>
+            {loading ? "刷新中" : "刷新"}
+          </button>
+        </div>
+      ) : null}
       <form
         className="history-search"
         onSubmit={(event) => {
@@ -1094,9 +1102,10 @@ function agentPortraitPath(agentKey: string): string {
 }
 
 function AgentPortrait({ card, size = "medium" }: { card: AgentCardView; size?: "small" | "medium" | "large" }) {
+  const fullBody = size === "large";
   return (
-    <span className={`agent-portrait agent-portrait-${size} agent-portrait-status-${card.status}`}>
-      <img src={agentPortraitPath(card.key)} alt={`${card.agentName} 形象`} />
+    <span className={`agent-portrait agent-portrait-${size} agent-portrait-status-${card.status} ${fullBody ? "agent-portrait-fullbody" : ""}`}>
+      <img src={fullBody ? fullBodyPortraitPath(card.key) : agentPortraitPath(card.key)} alt={`${card.agentName} 形象`} />
     </span>
   );
 }
@@ -1186,6 +1195,7 @@ export function ProcessPage({
   });
   const autoSpotlightAgent = selectSpotlightAgent(cards);
   const [selectedSpotlightKey, setSelectedSpotlightKey] = useState("");
+  const [stageAgent, setStageAgent] = useState<AgentCardView | null>(null);
   const spotlightAgent = cards.find((card) => card.key === selectedSpotlightKey) ?? autoSpotlightAgent;
   const spotlightIndex = spotlightAgent ? cards.findIndex((card) => card.key === spotlightAgent.key) : -1;
   const latestEvent = events.length ? events[events.length - 1] : null;
@@ -1209,7 +1219,10 @@ export function ProcessPage({
     if (selectedSpotlightKey && !cards.some((card) => card.key === selectedSpotlightKey)) {
       setSelectedSpotlightKey("");
     }
-  }, [cards, selectedSpotlightKey]);
+    if (stageAgent && !cards.some((card) => card.key === stageAgent.key)) {
+      setStageAgent(null);
+    }
+  }, [cards, selectedSpotlightKey, stageAgent]);
 
   useEffect(() => {
     const timeline = timelineRef.current;
@@ -1280,7 +1293,7 @@ export function ProcessPage({
           </div>
           <div className="agent-chat-list agent-dialog-list" ref={messageStreamRef} aria-label="Agent 详细输出">
             {filteredCards.length ? filteredCards.map((card) => (
-              <div key={card.key} ref={(node) => { messageRefs.current[card.key] = node; }}><AgentMessageCard card={card} /></div>
+              <div key={card.key} ref={(node) => { messageRefs.current[card.key] = node; }}><AgentMessageCard card={card} onOpenStage={setStageAgent} /></div>
             )) : <EmptyState title="没有匹配消息" text="调整消息筛选后查看其他 Agent 输出。" compact />}
           </div>
         </section>
@@ -1289,6 +1302,7 @@ export function ProcessPage({
         <QualityReviewPanel review={qualityReview} />
         <AttemptProgressSection attempts={attemptViews} isPredictionWorkflow={isPredictionWorkflow} />
       </div>
+      <AgentStageModal agent={stageAgent} open={Boolean(stageAgent)} onClose={() => setStageAgent(null)} />
     </section>
   );
 }
@@ -1314,27 +1328,8 @@ function AgentStoryStage({
 
   return (
     <div className="agent-story-stage" aria-label="Agent 协作现场概览">
-      <div className={`agent-story-spotlight ${spotlightAgent.status}`} role="status" aria-live="polite">
-        <div className="agent-story-character">
-          <span className="agent-story-halo" />
-          <AgentPortrait card={spotlightAgent} size="large" />
-        </div>
-        <div className="agent-story-dialogue">
-          <span className="agent-scene-label">{spotlightAgent.key === autoSpotlightKey ? "当前出场" : "已选角色"} · {agentOrderLabel(spotlightIndex, cards.length)}</span>
-          <h3>{spotlightAgent.agentName}</h3>
-          <p>{spotlightAgent.output || spotlightAgent.action}</p>
-          <dl>
-            <div>
-              <dt>输入</dt>
-              <dd>{spotlightAgent.inputSource}</dd>
-            </div>
-            <div>
-              <dt>动作</dt>
-              <dd>{spotlightAgent.action}</dd>
-            </div>
-          </dl>
-          {latestEvent ? <small>{formatEventStatusMeta(latestEvent)}</small> : null}
-        </div>
+      <div className="agent-story-main">
+        <OverallStage cards={cards} activeKey={spotlightAgent.key} liveKey={autoSpotlightKey} onSelectAgent={onSelectAgent} />
       </div>
       <div className="agent-cast-strip" aria-label="Agent 出场顺序">
         {cards.map((card, index) => (
@@ -1486,7 +1481,13 @@ function JobControlDock({
 
 
 
-export function AgentMessageCard({ card }: { card: AgentCardView }) {
+export function AgentMessageCard({
+  card,
+  onOpenStage
+}: {
+  card: AgentCardView;
+  onOpenStage?: (card: AgentCardView) => void;
+}) {
   const active = card.status === "active";
   return (
     <article className={`agent-message-card agent-dialog-card ${card.status}`} aria-current={active ? "step" : undefined} aria-live={active ? "polite" : undefined}>
@@ -1497,7 +1498,15 @@ export function AgentMessageCard({ card }: { card: AgentCardView }) {
             <strong>{card.agentName}</strong>
             <span>{card.title}</span>
           </div>
-          <span className={`agent-status-badge ${card.status}`}>{stepStatusLabel(card.status)}</span>
+          <div className="agent-message-actions">
+            {onOpenStage ? (
+              <button className="agent-stage-open-button" type="button" onClick={() => onOpenStage(card)}>
+                <span aria-hidden="true">✦</span>
+                推演舞台
+              </button>
+            ) : null}
+            <span className={`agent-status-badge ${card.status}`}>{stepStatusLabel(card.status)}</span>
+          </div>
         </div>
 
         <dl className="agent-detail-grid">
@@ -2198,17 +2207,17 @@ export function DashboardPage({
       {message ? <p className="message success">{message}</p> : null}
 
       <section className="dashboard-toolbar">
-        <label>
-          自动刷新频率
-          <select value={refreshInterval} onChange={(event) => updateRefreshInterval(Number(event.target.value))}>
-            <option value={0}>关闭</option>
-            <option value={60}>每 1 分钟</option>
-            <option value={300}>每 5 分钟</option>
-            <option value={900}>每 15 分钟</option>
-            <option value={3600}>每 1 小时</option>
-          </select>
-        </label>
         <div className="dashboard-filter-row">
+          <label className="dashboard-refresh-control">
+            自动刷新频率
+            <select value={refreshInterval} onChange={(event) => updateRefreshInterval(Number(event.target.value))}>
+              <option value={0}>关闭</option>
+              <option value={60}>每 1 分钟</option>
+              <option value={300}>每 5 分钟</option>
+              <option value={900}>每 15 分钟</option>
+              <option value={3600}>每 1 小时</option>
+            </select>
+          </label>
           {filters.length ? (
             filters.map((filter) => (
               <label key={filter.id}>
@@ -2224,7 +2233,7 @@ export function DashboardPage({
               </label>
             ))
           ) : (
-            <span className="agent-muted">当前数据未生成可用筛选器。</span>
+            <span className="agent-muted dashboard-filter-empty">当前数据未生成可用筛选器。</span>
           )}
         </div>
         <span className="dashboard-filter-summary">
@@ -2821,34 +2830,81 @@ function DebateReflectionPanel({ debate }: { debate?: DebateReflection | null })
 
   return (
     <section className="debate-panel">
-      <div className="section-heading compact-heading">
-        <h2>Debate Matrix 双 Agent 交互过程</h2>
+      <div className="section-heading compact-heading debate-panel-heading">
+        <div>
+          <h2>Debate Matrix 双 Agent 交互过程</h2>
+          <p>记录商业洞察与统计质检的论点收敛过程。</p>
+        </div>
         <span>{rounds.length || 0} 轮动态辩论</span>
       </div>
       {rounds.length ? (
         <div className="debate-round-grid">
-          {rounds.map((round, index) => (
-            <article key={`debate-round-${index}`} className="debate-round-card">
-              <strong>第 {round.round ?? index + 1} 轮</strong>
-              <div className="debate-agent debate-agent-a">
-                <span>角色 A：激进商业洞察 Agent</span>
-                <p>{String(round.aggressive_business_agent ?? round.agent_a ?? "-")}</p>
-              </div>
-              <div className="debate-agent debate-agent-b">
-                <span>角色 B：严谨统计质检 Agent</span>
-                <p>{String(round.statistical_qc_agent ?? round.agent_b ?? "-")}</p>
-              </div>
-            </article>
-          ))}
+          {rounds.map((round, index) => {
+            const aggressiveText = debateRoundText(round, ["aggressive_business_agent", "agent_a", "business_agent", "aggressive_argument"]);
+            const qcText = debateRoundText(round, ["statistical_qc_agent", "agent_b", "statistical_agent", "statistical_challenge"]);
+            return (
+              <article key={`debate-round-${index}`} className="debate-round-card">
+                <div className="debate-round-card-head">
+                  <strong>第 {round.round ?? index + 1} 轮</strong>
+                  <span>论点校准</span>
+                </div>
+                <div className="debate-agent debate-agent-a">
+                  <span>激进商业洞察 Agent</span>
+                  <p>{aggressiveText || "等待商业洞察论点。"}</p>
+                </div>
+                <div className="debate-agent debate-agent-b">
+                  <span>严谨统计质检 Agent</span>
+                  <p>{qcText || "等待统计质检论点。"}</p>
+                </div>
+              </article>
+            );
+          })}
         </div>
       ) : null}
       <div className="debate-consensus-grid">
-        <ResultList title="双方达成的业务共识" items={findings} />
-        <ResultList title="可执行策略建议" items={recommendations} />
-        <ResultList title="统计质检护栏" items={guardrails} />
-        <ResultList title="报告表述修正" items={revisions} />
+        <DebateInsightList title="双方达成的业务共识" items={findings} tone="finding" />
+        <DebateInsightList title="可执行策略建议" items={recommendations} tone="action" />
+        <DebateInsightList title="统计质检护栏" items={guardrails} tone="guardrail" />
+        <DebateInsightList title="报告表述修正" items={revisions} tone="revision" />
       </div>
-      {finalConsensus ? <p className="debate-final-consensus">{finalConsensus}</p> : null}
+      {finalConsensus ? (
+        <div className="debate-final-consensus">
+          <span>最终共识</span>
+          <p>{finalConsensus}</p>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function debateRoundText(round: DebateRound, keys: string[]): string {
+  for (const key of keys) {
+    const text = formatListItem(round[key]);
+    if (text) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function DebateInsightList({ title, items, tone }: { title: string; items?: unknown[] | null; tone: "finding" | "action" | "guardrail" | "revision" }) {
+  const normalizedItems = Array.isArray(items)
+    ? items.map((item) => formatListItem(item)).filter((text) => Boolean(text.trim()))
+    : [];
+  if (!normalizedItems.length) {
+    return null;
+  }
+  return (
+    <section className={`debate-insight-card ${tone}`}>
+      <h3>{title}</h3>
+      <ol>
+        {normalizedItems.map((item, index) => (
+          <li key={`${title}-${index}-${item}`}>
+            <span>{index + 1}</span>
+            <p>{item}</p>
+          </li>
+        ))}
+      </ol>
     </section>
   );
 }
@@ -3723,23 +3779,5 @@ export function EmptyState({ title, text, compact = false }: { title: string; te
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 

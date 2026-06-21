@@ -3,10 +3,7 @@ import type { CSSProperties } from "react";
 import type { AnalysisIR, WorkflowJobResponse } from "../../types";
 import { EmptyState } from "../WorkbenchComponents";
 
-type IrProgressStyle = CSSProperties & {
-  "--ir-progress"?: string;
-  "--ir-index"?: number;
-};
+type IrStyle = CSSProperties;
 
 type IrSectionConfig = {
   title: string;
@@ -236,7 +233,7 @@ export function AnalysisIrPage({
           <div
             className="ir-flow-step"
             key={step}
-            style={{ "--ir-index": index } as IrProgressStyle}
+            style={{ animationDelay: `${index * 80}ms` } as IrStyle}
           >
             <span>{index + 1}</span>
             <strong>{step}</strong>
@@ -266,7 +263,7 @@ export function AnalysisIrPage({
             <div>
               <h3>语义结构地图</h3>
               <p>
-                目标、字段、指标和约束已经拆成可读模块，便于快速判断分析口径是否完整。
+                把目标、字段、指标和约束拆成可读模块，便于快速判断分析口径是否完整。
               </p>
             </div>
             <span>
@@ -355,7 +352,7 @@ export function AnalysisIrPage({
         <div className="ir-card-heading">
           <div>
             <h3>图表意图</h3>
-            <p>呈现每张图承担的分析任务。</p>
+            <p>用更直观的方式呈现每张图承担的分析任务。</p>
           </div>
           <span>{chartIntents.length || 0} 个</span>
         </div>
@@ -437,14 +434,15 @@ function IrMetricCard({
   return (
     <article
       className="ir-metric-card"
-      style={
-        {
-          "--ir-progress": `${percent}%`,
-          "--ir-index": index,
-        } as IrProgressStyle
-      }
+      style={{ animationDelay: `${index * 90}ms` } as IrStyle}
     >
-      <div className="ir-metric-ring" aria-hidden="true">
+      <div
+        className="ir-metric-ring"
+        aria-hidden="true"
+        style={{
+          background: `radial-gradient(circle at center, #ffffff 55%, transparent 56%), conic-gradient(#0ea5e9 ${percent}%, rgba(226, 232, 240, 0.9) 0)`,
+        }}
+      >
         <span>{value}</span>
       </div>
       <div>
@@ -605,3 +603,4 @@ function formatTimeWindow(value: AnalysisIR["time_window"]): string {
     .filter(Boolean)
     .join("；");
 }
+

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">stage ambient background</title>
+  <desc id="desc">Soft futuristic stage background with grid, light beams, and a curved platform.</desc>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eff6ff"/>
+      <stop offset="0.52" stop-color="#dff7ff"/>
+      <stop offset="1" stop-color="#e0f2fe"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="54%" r="62%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.82"/>
+      <stop offset="0.52" stop-color="#7dd3fc" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#0f172a" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="120" height="120" patternUnits="userSpaceOnUse">
+      <path d="M120 0H0V120" fill="none" stroke="#38bdf8" stroke-width="1.2" opacity="0.24"/>
+    </pattern>
+  </defs>
+  <rect width="1600" height="900" fill="url(#sky)"/>
+  <rect width="1600" height="900" fill="url(#grid)"/>
+  <rect width="1600" height="900" fill="url(#glow)"/>
+  <path d="M0 900c270-180 470-236 800-236s530 56 800 236Z" fill="#0ea5e9" opacity="0.1"/>
+  <path d="M330 708c160-52 780-52 940 0" fill="none" stroke="#2563eb" stroke-width="6" opacity="0.18"/>
+  <path d="M420 748c122-28 638-28 760 0" fill="none" stroke="#14b8a6" stroke-width="7" opacity="0.18"/>
+  <path d="M600 0l78 900M1000 0l-78 900" stroke="#ffffff" stroke-width="90" opacity="0.22"/>
+  <g opacity="0.22">
+    <circle cx="158" cy="206" r="3" fill="#fff"/><circle cx="403" cy="96" r="2" fill="#fff"/><circle cx="1280" cy="182" r="3" fill="#fff"/>
+    <circle cx="1430" cy="360" r="2" fill="#fff"/><circle cx="912" cy="58" r="2" fill="#fff"/>
+  </g>
+</svg>

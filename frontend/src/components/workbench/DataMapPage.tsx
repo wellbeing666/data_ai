@@ -1,7 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { DatasetDataMap, DatasetDataMapEdge, DatasetDataMapNode, DatasetProfile } from "../../types";
 import { EmptyState } from "../WorkbenchComponents";
+
+type PositionedDataMapNode = DatasetDataMapNode & { x: number; y: number };
+type NodePositionState = Record<string, { x: number; y: number }>;
+
+type DragState = {
+  id: string;
+  pointerId: number;
+  offsetX: number;
+  offsetY: number;
+  moved: boolean;
+};
 
 export function DataMapPage({
   dataMap,
@@ -21,22 +32,100 @@ export function DataMapPage({
   const nodes = useMemo(() => normalizeDataMapNodes(dataMap), [dataMap]);
   const edges = dataMap?.graph?.edges ?? [];
   const [selectedNodeId, setSelectedNodeId] = useState<string>("");
+  const [manualPositions, setManualPositions] = useState<NodePositionState>({});
+  const [draggingNodeId, setDraggingNodeId] = useState<string>("");
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const dragStateRef = useRef<DragState | null>(null);
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? nodes[0] ?? null;
-  const positionedNodes = useMemo(() => layoutDataMapNodes(nodes), [nodes]);
-  const nodePosition = new Map<string, DatasetDataMapNode & { x: number; y: number }>(
-    positionedNodes.map((node) => [node.id, node] as const)
+  const basePositionedNodes = useMemo(() => layoutDataMapNodes(nodes), [nodes]);
+  const positionedNodes = useMemo(
+    () => basePositionedNodes.map((node) => ({ ...node, ...(manualPositions[node.id] ?? {}) })),
+    [basePositionedNodes, manualPositions]
   );
+  const nodePosition = new Map<string, PositionedDataMapNode>(positionedNodes.map((node) => [node.id, node] as const));
   const questions = selectedNode ? questionsForDataMapNode(dataMap, selectedNode) : [];
 
   useEffect(() => {
     if (!nodes.length) {
       setSelectedNodeId("");
+      setManualPositions({});
       return;
     }
     if (!nodes.some((node) => node.id === selectedNodeId)) {
       setSelectedNodeId(nodes[0].id);
     }
   }, [nodes, selectedNodeId]);
+
+  useEffect(() => {
+    setManualPositions((current) => {
+      const next: NodePositionState = {};
+      basePositionedNodes.forEach((node) => {
+        next[node.id] = current[node.id] ?? { x: node.x, y: node.y };
+      });
+      return next;
+    });
+  }, [basePositionedNodes]);
+
+  const readSvgPoint = (event: React.PointerEvent<SVGGElement>) => {
+    const svg = svgRef.current;
+    const matrix = svg?.getScreenCTM();
+    if (!svg || !matrix) {
+      return null;
+    }
+    const point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    return point.matrixTransform(matrix.inverse());
+  };
+
+  const beginNodeDrag = (event: React.PointerEvent<SVGGElement>, node: PositionedDataMapNode) => {
+    const point = readSvgPoint(event);
+    if (!point) {
+      setSelectedNodeId(node.id);
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragStateRef.current = {
+      id: node.id,
+      pointerId: event.pointerId,
+      offsetX: point.x - node.x,
+      offsetY: point.y - node.y,
+      moved: false
+    };
+    setDraggingNodeId(node.id);
+    setSelectedNodeId(node.id);
+  };
+
+  const moveNodeDrag = (event: React.PointerEvent<SVGGElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+    const point = readSvgPoint(event);
+    const node = nodePosition.get(dragState.id);
+    if (!point || !node) {
+      return;
+    }
+    event.preventDefault();
+    const radius = nodeRadius(node) + 8;
+    const nextX = clamp(point.x - dragState.offsetX, radius, 720 - radius);
+    const nextY = clamp(point.y - dragState.offsetY, radius, 460 - radius);
+    const previous = manualPositions[dragState.id] ?? { x: node.x, y: node.y };
+    if (Math.abs(previous.x - nextX) > 0.5 || Math.abs(previous.y - nextY) > 0.5) {
+      dragState.moved = true;
+    }
+    setManualPositions((current) => ({ ...current, [dragState.id]: { x: nextX, y: nextY } }));
+  };
+
+  const endNodeDrag = (event: React.PointerEvent<SVGGElement>) => {
+    const dragState = dragStateRef.current;
+    if (dragState?.pointerId === event.pointerId) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      dragStateRef.current = null;
+      setDraggingNodeId("");
+    }
+  };
 
   return (
     <section className="page-section data-map-page">
@@ -57,8 +146,9 @@ export function DataMapPage({
         />
       ) : (
         <div className="data-map-layout">
-          <section className="data-map-canvas" aria-label="可点击数据知识图谱">
-            <svg viewBox="0 0 720 460" role="img" aria-label="数据地图关系图">
+          <section className="data-map-canvas" aria-label="可拖拽数据知识图谱">
+            <div className="data-map-interaction-tip"><span />拖拽节点整理视图，点击节点查看可追问方向</div>
+            <svg ref={svgRef} viewBox="0 0 720 460" role="img" aria-label="数据地图关系图">
               <defs>
                 <radialGradient id="data-map-glow" cx="50%" cy="50%" r="50%">
                   <stop offset="0%" stopColor="rgba(20,184,166,0.28)" />
@@ -85,24 +175,39 @@ export function DataMapPage({
                   </g>
                 );
               })}
-              {positionedNodes.map((node) => (
-                <g
-                  key={node.id}
-                  className={`data-map-node node-${node.type} ${selectedNode?.id === node.id ? "selected" : ""}`}
-                  transform={`translate(${node.x}, ${node.y})`}
-                  onClick={() => setSelectedNodeId(node.id)}
-                  tabIndex={0}
-                  role="button"
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      setSelectedNodeId(node.id);
-                    }
-                  }}
-                >
-                  <circle r={nodeRadius(node)} />
-                  <text>{node.label}</text>
-                </g>
-              ))}
+              {positionedNodes.map((node) => {
+                const labelLines = nodeLabelLines(node);
+                const lineGap = labelLineGap(labelLines.length);
+                return (
+                  <g
+                    key={node.id}
+                    className={`data-map-node node-${node.type} ${selectedNode?.id === node.id ? "selected" : ""} ${draggingNodeId === node.id ? "dragging" : ""}`}
+                    transform={`translate(${node.x}, ${node.y})`}
+                    onPointerDown={(event) => beginNodeDrag(event, node)}
+                    onPointerMove={moveNodeDrag}
+                    onPointerUp={endNodeDrag}
+                    onPointerCancel={endNodeDrag}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`${dataMapNodeTypeLabel(node.type)}：${node.label}`}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        setSelectedNodeId(node.id);
+                      }
+                    }}
+                  >
+                    <title>{node.label}</title>
+                    <circle r={nodeRadius(node)} />
+                    <text className="data-map-node-label" style={{ fontSize: labelFontSize(labelLines.length) }}>
+                      {labelLines.map((line, index) => (
+                        <tspan key={`${node.id}-${line}-${index}`} x={0} y={(index - (labelLines.length - 1) / 2) * lineGap}>
+                          {line}
+                        </tspan>
+                      ))}
+                    </text>
+                  </g>
+                );
+              })}
             </svg>
           </section>
           <aside className="data-map-detail">
@@ -164,7 +269,7 @@ function normalizeDataMapNodes(dataMap: DatasetDataMap | null): DatasetDataMapNo
   ];
 }
 
-function layoutDataMapNodes(nodes: DatasetDataMapNode[]): Array<DatasetDataMapNode & { x: number; y: number }> {
+function layoutDataMapNodes(nodes: DatasetDataMapNode[]): PositionedDataMapNode[] {
   const centerX = 360;
   const centerY = 230;
   if (!nodes.length) {
@@ -172,8 +277,8 @@ function layoutDataMapNodes(nodes: DatasetDataMapNode[]): Array<DatasetDataMapNo
   }
   const entityNodes = nodes.filter((node) => node.type === "entity");
   const otherNodes = nodes.filter((node) => node.type !== "entity");
-  const positioned: Array<DatasetDataMapNode & { x: number; y: number }> = [];
-  const entitySpacing = entityNodes.length > 1 ? 140 : 0;
+  const positioned: PositionedDataMapNode[] = [];
+  const entitySpacing = entityNodes.length > 1 ? Math.min(140, 600 / Math.max(1, entityNodes.length - 1)) : 0;
   entityNodes.forEach((node, index) => {
     const startX = centerX - ((entityNodes.length - 1) * entitySpacing) / 2;
     positioned.push({ ...node, x: startX + index * entitySpacing, y: centerY });
@@ -194,7 +299,89 @@ function questionsForDataMapNode(dataMap: DatasetDataMap | null, node: DatasetDa
 
 function nodeRadius(node: DatasetDataMapNode): number {
   const base = node.type === "entity" ? 38 : node.type === "metric" ? 31 : 27;
-  return base * Number(node.size || 1);
+  const labelLength = weightedLabelLength(node.label);
+  const extra = Math.min(10, Math.max(0, labelLength - 7) * 0.7);
+  return Math.min(48, (base + extra) * Number(node.size || 1));
+}
+
+function nodeLabelLines(node: DatasetDataMapNode): string[] {
+  const label = String(node.label || "").trim();
+  if (!label) {
+    return [""];
+  }
+  const isCjk = /[\u3400-\u9fff]/.test(label);
+  const maxChars = isCjk ? (node.type === "entity" ? 5 : 4) : (node.type === "entity" ? 10 : 8);
+  const tokens = isCjk ? splitFixedLength(label, maxChars) : splitLatinLabel(label, maxChars);
+  const lines: string[] = [];
+
+  tokens.forEach((token) => {
+    const current = lines[lines.length - 1];
+    const separator = isCjk ? "" : " ";
+    if (!current) {
+      lines.push(token);
+      return;
+    }
+    const merged = `${current}${separator}${token}`.trim();
+    if (weightedLabelLength(merged) <= maxChars) {
+      lines[lines.length - 1] = merged;
+      return;
+    }
+    lines.push(token);
+  });
+
+  if (lines.length <= 3) {
+    return lines;
+  }
+  const visible = lines.slice(0, 3);
+  visible[2] = truncateLabel(visible[2], Math.max(4, maxChars - 1));
+  return visible;
+}
+
+function splitLatinLabel(label: string, maxChars: number): string[] {
+  const normalized = label
+    .replace(/[_.:/\\-]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/([A-Za-z])([0-9])/g, "$1 $2")
+    .replace(/([0-9])([A-Za-z])/g, "$1 $2");
+  return normalized
+    .split(/\s+/)
+    .filter(Boolean)
+    .flatMap((token) => splitFixedLength(token, Math.max(4, maxChars)));
+}
+
+function splitFixedLength(value: string, maxChars: number): string[] {
+  const chars = Array.from(value);
+  const result: string[] = [];
+  for (let index = 0; index < chars.length; index += maxChars) {
+    result.push(chars.slice(index, index + maxChars).join(""));
+  }
+  return result;
+}
+
+function truncateLabel(label: string, maxChars: number): string {
+  const chars = Array.from(label);
+  if (chars.length <= maxChars) {
+    return label;
+  }
+  return `${chars.slice(0, Math.max(1, maxChars - 1)).join("")}…`;
+}
+
+function weightedLabelLength(label: unknown): number {
+  return Array.from(String(label || "")).reduce((total, char) => total + (/[^\x00-\xff]/.test(char) ? 2 : 1), 0);
+}
+
+function labelFontSize(lineCount: number): number {
+  if (lineCount >= 3) {
+    return 9.5;
+  }
+  if (lineCount === 2) {
+    return 10.5;
+  }
+  return 11.5;
+}
+
+function labelLineGap(lineCount: number): number {
+  return lineCount >= 3 ? 10.5 : 12;
 }
 
 function dataMapNodeTypeLabel(type: string): string {
@@ -218,4 +405,8 @@ function shouldShowEdgeRelationLabel(edge: DatasetDataMapEdge, index: number, ed
     return false;
   }
   return edges.slice(0, index).filter((item) => String(item.relation || "").trim()).length < 6;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

@@ -1205,9 +1205,6 @@ function WorkbenchPageInner({
           <h2>分析对话列表</h2>
           <span>打开历史任务后，可以在结论报告中继续发起追问。</span>
         </div>
-        <button className="secondary-button" type="button" onClick={() => loadHistory(historyQuery)} disabled={historyLoading}>
-          {historyLoading ? "同步中" : "刷新列表"}
-        </button>
       </div>
       <div className="chat-workspace-grid">
         <HistoryPanel
@@ -1229,28 +1226,38 @@ function WorkbenchPageInner({
           onDelete={handleDeleteJob}
           embedded
         />
-        <section className="panel follow-up-panel">
-          <h2>继续追问</h2>
-          {job?.job_id ? (
-            <>
-              <p>当前任务：{job.user_goal || job.job_id}</p>
-              <textarea rows={5} value={followUpQuestion} onChange={(event) => setFollowUpQuestion(event.target.value)} placeholder="例如：为什么华东区域的波动更明显？" />
-              <button className="primary-button" type="button" disabled={!followUpQuestion.trim() || followUpLoading} onClick={handleFollowUp}>
-                {followUpLoading ? "生成中" : "提交追问"}
-              </button>
-              <div className="follow-up-list">
-                {followUps.length ? followUps.map((item, index) => (
-                  <article key={`${item.created_at || index}-${item.question}`}>
-                    <strong>{item.question}</strong>
-                    <p>{item.answer}</p>
-                  </article>
-                )) : <p>暂无追问记录。</p>}
-              </div>
-            </>
-          ) : (
-            <EmptyState title="请选择一个分析任务" text="打开任务后，这里会显示可继续追问的上下文。" compact />
-          )}
-        </section>
+        <div className="chat-follow-up-column">
+          <button
+            className="secondary-button chat-refresh-button"
+            type="button"
+            onClick={() => loadHistory(historyQuery)}
+            disabled={historyLoading}
+          >
+            {historyLoading ? "同步中" : "刷新列表"}
+          </button>
+          <section className="panel follow-up-panel">
+            <h2>继续追问</h2>
+            {job?.job_id ? (
+              <>
+                <p>当前任务：{job.user_goal || job.job_id}</p>
+                <textarea rows={5} value={followUpQuestion} onChange={(event) => setFollowUpQuestion(event.target.value)} placeholder="例如：为什么华东区域的波动更明显？" />
+                <button className="primary-button" type="button" disabled={!followUpQuestion.trim() || followUpLoading} onClick={handleFollowUp}>
+                  {followUpLoading ? "生成中" : "提交追问"}
+                </button>
+                <div className="follow-up-list">
+                  {followUps.length ? followUps.map((item, index) => (
+                    <article key={`${item.created_at || index}-${item.question}`}>
+                      <strong>{item.question}</strong>
+                      <p>{item.answer}</p>
+                    </article>
+                  )) : <p>暂无追问记录。</p>}
+                </div>
+              </>
+            ) : (
+              <EmptyState title="请选择一个分析任务" text="打开任务后，这里会显示可继续追问的上下文。" compact />
+            )}
+          </section>
+        </div>
       </div>
     </div>
   );
@@ -1397,3 +1404,4 @@ function WorkbenchPageInner({
     </main>
   );
 }
+

@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 560" role="img" aria-labelledby="title desc">
+  <title id="title">hypothesis full body agent</title>
+  <desc id="desc">Full-body stylized virtual assistant matching the hypothesis portrait.</desc>
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f5f3ff"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="20" stdDeviation="16" flood-color="#0f172a" flood-opacity="0.22"/>
+    </filter>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 .42 0"/>
+      <feBlend in="SourceGraphic" mode="screen"/>
+    </filter>
+  </defs>
+  <g opacity="0.9" filter="url(#glow)">
+    <ellipse cx="210" cy="494" rx="138" ry="34" fill="url(#accent)" opacity="0.18"/>
+    <circle cx="324" cy="96" r="38" fill="#a78bfa" opacity="0.16"/>
+    <circle cx="96" cy="116" r="50" fill="#a78bfa" opacity="0.12"/>
+  </g>
+  <g filter="url(#softShadow)">
+    <path d="M158 412c-4 24-10 53-17 86" stroke="url(#body)" stroke-width="34" stroke-linecap="round"/>
+    <path d="M262 412c4 24 10 53 17 86" stroke="url(#body)" stroke-width="34" stroke-linecap="round"/>
+    <path d="M126 505c22 9 44 8 63-3" stroke="#7c3aed" stroke-width="22" stroke-linecap="round" opacity="0.9"/>
+    <path d="M231 502c18 12 40 13 63 4" stroke="#7c3aed" stroke-width="22" stroke-linecap="round" opacity="0.9"/>
+    <path d="M112 331c12-76 52-126 98-126s86 50 98 126c8 54-21 96-70 100h-56c-49-4-78-46-70-100Z" fill="url(#body)"/>
+    <path d="M132 342c-39 24-60 54-61 90" fill="none" stroke="url(#body)" stroke-width="28" stroke-linecap="round"/>
+    <path d="M288 342c39 24 60 54 61 90" fill="none" stroke="url(#body)" stroke-width="28" stroke-linecap="round"/>
+    <circle cx="71" cy="432" r="18" fill="#f5f3ff"/>
+    <circle cx="349" cy="432" r="18" fill="#f5f3ff"/>
+    <rect x="130" y="94" width="160" height="150" rx="58" fill="#f5f3ff"/>
+    <path d="M144 110c20-50 118-58 142 0 10 24 12 58 8 76-17-30-51-38-84-38s-67 8-84 38c-4-19-1-54 18-76Z" fill="#7c3aed" opacity="0.94"/>
+    <circle cx="171" cy="171" r="12" fill="#0f172a" opacity="0.78"/>
+    <circle cx="249" cy="171" r="12" fill="#0f172a" opacity="0.78"/>
+    <path d="M181 207c18 18 40 18 58 0" fill="none" stroke="#0f172a" stroke-width="10" stroke-linecap="round" opacity="0.58"/>
+    <rect x="170" y="250" width="80" height="44" rx="22" fill="#ffffff" opacity="0.62"/>
+    <text x="210" y="279" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="24" font-weight="900" fill="#7c3aed">H</text>
+    <path d="M147 374c42 17 84 17 126 0" stroke="#ffffff" stroke-width="12" stroke-linecap="round" opacity="0.18"/>
+    <path d="M152 392h116" stroke="#ffffff" stroke-width="10" stroke-linecap="round" opacity="0.16"/>
+    
+    <g class="accessory" transform="translate(290 245)">
+      <circle cx="0" cy="0" r="36" fill="#fef3c7" stroke="#7c3aed" stroke-width="7"/>
+      <path d="M-13 34h26M-9 48h18" stroke="#7c3aed" stroke-width="8" stroke-linecap="round"/>
+      <path d="M-12-1c7-14 24-14 28 0 3 10-7 18-7 30h-18c0-12-9-20-3-30Z" fill="#a78bfa" opacity=".55"/>
+      <path d="M0-62v18M-46-38l14 14M46-38L32-24" stroke="#fde68a" stroke-width="7" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

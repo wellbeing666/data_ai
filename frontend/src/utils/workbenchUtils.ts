@@ -1214,6 +1214,8 @@ export function statusLabel(value: string): string {
     uploading: "上传中",
     running: "Agent 运行中",
     success: "已完成",
+    completed: "已完成",
+    done: "已完成",
     failed: "未完成",
     cancelled: "已取消"
   };
@@ -1267,6 +1269,7 @@ export function severityLabel(value: string): string {
 }
 
 export function stageLabel(value: string): string {
+  const normalized = String(value ?? "").trim();
   const labels: Record<string, string> = {
     idle: "待开始",
     pending: "等待启动",
@@ -1290,25 +1293,32 @@ export function stageLabel(value: string): string {
     dashboard_generation: "Dashboard 生成",
     explanation: "结论生成",
     quality_review: "质检自检",
+    cross_artifact_consistency: "跨产物口径一致性",
+    consistency_report: "一致性报告",
+    report: "报告和PPTX",
     success: "已完成",
     failed: "失败",
     running: "运行中",
     uploading: "上传中"
   };
-  return labels[value] ?? value;
+  return labels[normalized] ?? normalized;
 }
 
 export function eventStatusLabel(value: string): string {
+  const normalized = String(value ?? "").trim();
   const labels: Record<string, string> = {
     pending: "等待中",
     running: "运行中",
     success: "已完成",
+    completed: "已完成",
+    complete: "已完成",
+    done: "已完成",
     failed: "失败",
     fallback: "降级继续",
     retrying: "准备重试",
     warning: "风险提示"
   };
-  return labels[value] ?? value;
+  return labels[normalized] ?? normalized;
 }
 
 export function mergeWorkflowEvents(
@@ -1515,6 +1525,7 @@ function lastItem<T>(items: T[] | undefined): T | undefined {
   }
   return items[items.length - 1];
 }
+
 
 
 
