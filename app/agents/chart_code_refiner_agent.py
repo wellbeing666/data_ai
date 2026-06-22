@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from app.agents.code_agent import (
@@ -17,12 +18,14 @@ Return only a complete executable Python script. Do not output Markdown or expla
 
 Your task is to modify the original analysis script according to a user instruction for one target chart.
 Hard requirements:
+- Only regenerate the target chart requested by target_chart_path. Do not overwrite, delete, or restyle unrelated charts.
 - Preserve the original analytical meaning unless the instruction explicitly changes chart type, grouping, filtering, labels, sorting, or visible fields.
+- Use the target chart filename and title as important context. For example, a filename containing region/channel/category/trend should keep that chart's matching dimension or trend meaning.
+- Prefer saving the refined chart with the same filename as target_chart_path under OUTPUT_DIR / "charts".
 - Read only INPUT_FILE and files under OUTPUT_DIR.
 - Write all generated artifacts under OUTPUT_DIR.
 - Create or update PNG charts under OUTPUT_DIR / "charts".
-- Keep analysis_result.json or prediction_result.json and report_data.json valid JSON.
-- Append the refined chart path to the result charts list, or replace the target chart when safe.
+- Keep analysis_result.json or prediction_result.json and report_data.json valid JSON if you touch them.
 - Use matplotlib Agg backend and configure Chinese fonts before creating figures.
 - Do not import requests, subprocess, shutil, socket, scipy, sklearn, statsmodels, or any network/system libraries.
 - Do not call eval, exec, os.system, or access paths outside INPUT_FILE and OUTPUT_DIR.
@@ -43,9 +46,11 @@ def build_user_prompt(
     context = {
         "workflow_type": workflow_type,
         "target_chart_path": target_chart_path,
+        "target_chart_filename": Path(str(target_chart_path)).name,
         "instruction": instruction,
         "dataset_profile": dataset_profile,
         "result_payload": result_payload,
+        "execution_scope": "single_target_chart_only",
     }
     return """Modify the chart generation code in the original script.
 
@@ -135,7 +140,9 @@ def build_rule_based_chart_refinement_script(
     workflow_type: str,
 ) -> str:
     result_filename = "prediction_result.json" if workflow_type == "what_if_prediction" else "analysis_result.json"
-    refined_name = "refined_chart_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f") + ".png"
+    target_name = Path(str(target_chart_path).replace("\\", "/")).name or (
+        "refined_chart_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f") + ".png"
+    )
     return f'''import json
 from pathlib import Path
 
@@ -149,8 +156,8 @@ OUTPUT_DIR = Path(r"{output_dir}")
 CHARTS_DIR = OUTPUT_DIR / "charts"
 INSTRUCTION = {instruction!r}
 TARGET_CHART_PATH = {target_chart_path!r}
+TARGET_CHART_NAME = {target_name!r}
 RESULT_FILENAME = {result_filename!r}
-REFINED_CHART_NAME = {refined_name!r}
 
 
 def _configure_fonts():
@@ -172,6 +179,15 @@ def _write_json(path, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _load_input_frame():
+    suffix = INPUT_FILE.suffix.lower()
+    if suffix == ".csv":
+        return pd.read_csv(INPUT_FILE)
+    if suffix in [".xlsx", ".xls"]:
+        return pd.read_excel(INPUT_FILE)
+    return pd.DataFrame()
+
+
 def _rows_from_payload(payload):
     for key in ["summary", "top_impacted_entities", "data", "rows"]:
         value = payload.get(key)
@@ -190,31 +206,213 @@ def _rows_from_payload(payload):
     return []
 
 
-def _choose_columns(frame):
-    if frame.empty:
-        return None, None
-    text_columns = [column for column in frame.columns if not pd.api.types.is_numeric_dtype(frame[column])]
+def _to_numeric_columns(frame):
+    for column in frame.columns:
+        if pd.api.types.is_numeric_dtype(frame[column]):
+            continue
+        converted = pd.to_numeric(frame[column], errors="coerce")
+        if converted.notna().sum() >= max(1, len(frame) // 3):
+            frame[column] = converted
+    return frame
+
+
+def _contains_any(text, words):
+    lowered = str(text).lower()
+    return any(str(word).lower() in lowered for word in words)
+
+
+def _find_column(frame, word_groups):
+    columns = list(frame.columns)
+    for words in word_groups:
+        for column in columns:
+            if _contains_any(column, words):
+                return column
+    return ""
+
+
+def _metric_column(frame):
     numeric_columns = [column for column in frame.columns if pd.api.types.is_numeric_dtype(frame[column])]
     if not numeric_columns:
-        for column in frame.columns:
-            converted = pd.to_numeric(frame[column], errors="coerce")
-            if converted.notna().sum() > 0:
-                frame[column] = converted
-                numeric_columns.append(column)
-    x_column = text_columns[0] if text_columns else frame.columns[0]
-    y_column = numeric_columns[0] if numeric_columns else None
-    return x_column, y_column
+        return ""
+    preferred_groups = [
+        ["销量", "sales", "销售量"],
+        ["销售额", "revenue", "amount", "gmv"],
+        ["平均", "mean", "avg"],
+        ["数量", "count", "订单", "orders"],
+        ["值", "value", "metric"],
+    ]
+    matched = _find_column(frame[numeric_columns], preferred_groups)
+    return matched or numeric_columns[0]
 
 
-def _chart_type():
-    lowered = INSTRUCTION.lower()
-    if "折线" in INSTRUCTION or "line" in lowered:
+def _date_column(frame):
+    return _find_column(frame, [["日期", "date", "时间", "time"], ["月份", "month", "月"]])
+
+
+def _dimension_column(frame):
+    target_text = f"{{TARGET_CHART_PATH}} {{INSTRUCTION}}"
+    candidates = []
+    if _contains_any(target_text, ["地区", "区域", "region", "area"]):
+        candidates.append(["地区", "区域", "region", "area"])
+    if _contains_any(target_text, ["渠道", "channel"]):
+        candidates.append(["渠道", "channel"])
+    if _contains_any(target_text, ["商品类别", "品类", "类别", "category"]):
+        candidates.append(["商品类别", "品类", "类别", "category"])
+    if _contains_any(target_text, ["商品", "产品", "product"]):
+        candidates.append(["商品", "产品", "product"])
+    if _contains_any(target_text, ["班级", "class"]):
+        candidates.append(["班级", "class"])
+    candidates.extend([
+        ["地区", "区域", "region", "area"],
+        ["渠道", "channel"],
+        ["商品类别", "品类", "类别", "category"],
+        ["商品", "产品", "product"],
+        ["班级", "class"],
+    ])
+    return _find_column(frame, candidates)
+
+
+def _wants_trend():
+    return _contains_any(
+        f"{{TARGET_CHART_PATH}} {{INSTRUCTION}}",
+        ["trend", "趋势", "时间", "日期", "月份", "环比", "同比", "变化率", "峰谷", "下降最快", "反弹"],
+    )
+
+
+def _chart_kind():
+    if _contains_any(INSTRUCTION, ["折线", "line", "环比", "同比", "趋势", "变化率"]):
         return "line"
-    if "散点" in INSTRUCTION or "scatter" in lowered:
+    if _contains_any(INSTRUCTION, ["散点", "scatter"]):
         return "scatter"
-    if "横向" in INSTRUCTION:
+    if _contains_any(INSTRUCTION, ["横向", "条形", "barh"]):
         return "barh"
     return "bar"
+
+
+def _limit_rows(frame):
+    if _contains_any(INSTRUCTION, ["前 10", "前10", "top 10", "top10", "关键"]):
+        return frame.head(10)
+    return frame.head(30)
+
+
+def _plot_trend(frame, metric):
+    date_col = _date_column(frame)
+    if not date_col or not metric:
+        return False
+    working = frame[[date_col, metric]].copy().dropna(subset=[metric])
+    if working.empty:
+        return False
+    parsed = pd.to_datetime(working[date_col], errors="coerce")
+    if parsed.notna().sum() > 0:
+        working[date_col] = parsed.fillna(working[date_col])
+    trend = working.groupby(date_col, dropna=False)[metric].sum().reset_index().sort_values(date_col)
+    if trend.empty:
+        return False
+    x_values = trend[date_col].astype(str)
+    y_values = trend[metric]
+    if _contains_any(INSTRUCTION, ["同比", "环比", "变化率"]):
+        y_values = y_values.pct_change() * 100
+        ylabel = f"{{metric}}变化率(%)"
+        title = f"{{metric}}变化率趋势"
+    else:
+        ylabel = str(metric)
+        title = f"{{metric}}趋势"
+    plt.plot(x_values, y_values, marker="o")
+    plt.title(title)
+    plt.xlabel(str(date_col))
+    plt.ylabel(ylabel)
+    plt.xticks(rotation=35, ha="right")
+    if _contains_any(INSTRUCTION, ["峰谷", "最高", "最低", "最低点", "最高点"]):
+        valid = pd.to_numeric(y_values, errors="coerce")
+        if valid.notna().any():
+            max_idx = valid.idxmax()
+            min_idx = valid.idxmin()
+            for idx, label in [(max_idx, "最高"), (min_idx, "最低")]:
+                plt.scatter([x_values.loc[idx]], [y_values.loc[idx]])
+                plt.annotate(f"{{label}}: {{y_values.loc[idx]:.2f}}", (x_values.loc[idx], y_values.loc[idx]), textcoords="offset points", xytext=(0, 8), ha="center")
+    if _contains_any(INSTRUCTION, ["下降最快", "下降最大", "下滑最快"]):
+        valid = pd.to_numeric(trend[metric], errors="coerce")
+        diffs = valid.diff()
+        if diffs.notna().any():
+            drop_idx = diffs.idxmin()
+            if pd.notna(diffs.loc[drop_idx]) and drop_idx > 0:
+                prev_idx = drop_idx - 1
+                plt.axvspan(prev_idx - 0.15, drop_idx + 0.15, alpha=0.18)
+                plt.annotate(f"下降最快: {{diffs.loc[drop_idx]:.2f}}", (x_values.loc[drop_idx], trend[metric].loc[drop_idx]), textcoords="offset points", xytext=(0, -18), ha="center")
+    return True
+
+
+def _plot_dimension(frame, metric):
+    dimension = _dimension_column(frame)
+    if not dimension or not metric:
+        return False
+    grouped = frame[[dimension, metric]].copy().dropna(subset=[dimension, metric])
+    if grouped.empty:
+        return False
+    grouped[dimension] = grouped[dimension].astype(str)
+    summary = grouped.groupby(dimension, dropna=False)[metric].sum().reset_index()
+    ascending = _contains_any(INSTRUCTION, ["升序", "从低到高", "最低"])
+    if _contains_any(INSTRUCTION, ["排序", "排行", "最高", "最大", "top", "前"]):
+        summary = summary.sort_values(metric, ascending=ascending)
+    summary = _limit_rows(summary)
+    kind = _chart_kind()
+    x_values = summary[dimension]
+    y_values = summary[metric]
+    if kind == "line":
+        plt.plot(x_values, y_values, marker="o")
+        plt.xticks(rotation=35, ha="right")
+    elif kind == "scatter":
+        plt.scatter(range(len(summary)), y_values)
+        plt.xticks(range(len(summary)), x_values, rotation=35, ha="right")
+    elif kind == "barh":
+        plt.barh(x_values, y_values)
+    else:
+        plt.bar(x_values, y_values)
+        plt.xticks(rotation=35, ha="right")
+    plt.title(f"按{{dimension}}对比{{metric}}")
+    plt.xlabel(str(dimension))
+    plt.ylabel(str(metric))
+    if _contains_any(INSTRUCTION, ["数值标签", "显示数值", "标注"]):
+        if kind == "barh":
+            for index, value in enumerate(y_values):
+                plt.text(value, index, f"{{value:.2f}}", va="center")
+        else:
+            for index, value in enumerate(y_values):
+                plt.text(index, value, f"{{value:.2f}}", ha="center", va="bottom", fontsize=8)
+    if _contains_any(INSTRUCTION, ["限制", "口径", "说明"]):
+        plt.figtext(0.01, 0.01, "说明：图表基于当前数据和已选指标生成，结论需结合业务口径进一步验证。", fontsize=9)
+    return True
+
+
+def _plot_from_result_payload():
+    result_payload = _read_json(OUTPUT_DIR / RESULT_FILENAME)
+    report_payload = _read_json(OUTPUT_DIR / "report_data.json")
+    rows = _rows_from_payload(result_payload) or _rows_from_payload(report_payload)
+    if not rows:
+        return False
+    frame = _to_numeric_columns(pd.DataFrame(rows))
+    metric = _metric_column(frame)
+    return _plot_dimension(frame, metric)
+
+
+def _update_payloads(chart_entry):
+    for filename in [RESULT_FILENAME, "report_data.json"]:
+        path = OUTPUT_DIR / filename
+        payload = _read_json(path)
+        if not payload:
+            continue
+        charts = payload.get("charts")
+        if not isinstance(charts, list):
+            charts = []
+        if chart_entry not in charts:
+            charts.append(chart_entry)
+        payload["charts"] = charts
+        refinements = payload.get("chart_refinements")
+        if not isinstance(refinements, list):
+            refinements = []
+        refinements.append({{"target_chart_path": TARGET_CHART_PATH, "instruction": INSTRUCTION, "chart_path": chart_entry}})
+        payload["chart_refinements"] = refinements
+        _write_json(path, payload)
 
 
 def main():
@@ -222,70 +420,31 @@ def main():
     CHARTS_DIR.mkdir(parents=True, exist_ok=True)
     _configure_fonts()
 
-    result_path = OUTPUT_DIR / RESULT_FILENAME
-    report_path = OUTPUT_DIR / "report_data.json"
-    result_payload = _read_json(result_path)
-    report_payload = _read_json(report_path)
-    rows = _rows_from_payload(result_payload) or _rows_from_payload(report_payload)
-
-    if not rows:
-        suffix = INPUT_FILE.suffix.lower()
-        if suffix == ".csv":
-            df = pd.read_csv(INPUT_FILE)
-        elif suffix in [".xlsx", ".xls"]:
-            df = pd.read_excel(INPUT_FILE)
-        else:
-            df = pd.DataFrame()
-        rows = df.head(30).to_dict(orient="records")
-
-    frame = pd.DataFrame(rows)
-    for column in frame.columns:
-        numeric = pd.to_numeric(frame[column], errors="coerce")
-        if numeric.notna().sum() >= max(1, len(frame) // 3):
-            frame[column] = numeric
-    x_column, y_column = _choose_columns(frame)
-    chart_path = CHARTS_DIR / REFINED_CHART_NAME
-
+    chart_path = CHARTS_DIR / TARGET_CHART_NAME
     plt.figure(figsize=(10, 5.8))
-    if x_column is None or y_column is None or frame.empty:
+    plotted = False
+    try:
+        frame = _to_numeric_columns(_load_input_frame())
+        metric = _metric_column(frame)
+        if not frame.empty:
+            if _wants_trend():
+                plotted = _plot_trend(frame, metric)
+            if not plotted:
+                plotted = _plot_dimension(frame, metric)
+        if not plotted:
+            plotted = _plot_from_result_payload()
+    except Exception as exc:
+        plt.text(0.5, 0.52, "图表调整未能读取到足够数据", ha="center", va="center")
+        plt.text(0.5, 0.44, str(exc)[:120], ha="center", va="center", fontsize=9)
+        plt.axis("off")
+        plotted = True
+    if not plotted:
         plt.text(0.5, 0.5, "当前结果缺少可绘制的数据", ha="center", va="center")
         plt.axis("off")
-    else:
-        chart_frame = frame[[x_column, y_column]].dropna().head(30)
-        chart_frame[x_column] = chart_frame[x_column].astype(str)
-        kind = _chart_type()
-        if kind == "line":
-            plt.plot(chart_frame[x_column], chart_frame[y_column], marker="o")
-        elif kind == "scatter":
-            plt.scatter(range(len(chart_frame)), chart_frame[y_column])
-            plt.xticks(range(len(chart_frame)), chart_frame[x_column], rotation=35, ha="right")
-        elif kind == "barh":
-            plt.barh(chart_frame[x_column], chart_frame[y_column])
-        else:
-            plt.bar(chart_frame[x_column], chart_frame[y_column])
-            plt.xticks(rotation=35, ha="right")
-        plt.title("按要求调整后的图表")
-        plt.xlabel(str(x_column))
-        plt.ylabel(str(y_column))
-        plt.tight_layout()
+    plt.tight_layout()
     plt.savefig(chart_path, dpi=160, bbox_inches="tight")
     plt.close()
-
-    chart_entry = str(chart_path)
-    for payload in [result_payload, report_payload]:
-        charts = payload.get("charts")
-        if not isinstance(charts, list):
-            charts = []
-        charts.append(chart_entry)
-        payload["charts"] = charts
-        refinements = payload.get("chart_refinements")
-        if not isinstance(refinements, list):
-            refinements = []
-        refinements.append({{"target_chart_path": TARGET_CHART_PATH, "instruction": INSTRUCTION, "chart_path": chart_entry}})
-        payload["chart_refinements"] = refinements
-
-    _write_json(result_path, result_payload)
-    _write_json(report_path, report_payload)
+    _update_payloads(str(chart_path))
 
 
 if __name__ == "__main__":

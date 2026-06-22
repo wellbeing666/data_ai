@@ -142,6 +142,105 @@ def _load_optional_json(path: Path) -> Any | None:
         return None
 
 
+INTERNAL_ANALYSIS_IR_MARKERS = ("Analysis IR + Delta JSON", '"analysis_ir"', '"schema_version"')
+
+
+def _looks_like_internal_payload(text: str) -> bool:
+    value = str(text or "")
+    if "Analysis IR + Delta JSON" in value:
+        return True
+    if '"analysis_ir"' in value and '"delta"' in value:
+        return True
+    if '"schema_version"' in value and '"normalized_goal"' in value and '"semantic_digest"' in value:
+        return True
+    return False
+
+
+def _extract_public_goal_from_internal_payload(text: str) -> str:
+    value = str(text or "").strip()
+    start = value.find("{")
+    if start < 0:
+        return ""
+    decoder = json.JSONDecoder()
+    try:
+        payload, _ = decoder.raw_decode(value[start:])
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    analysis_ir = payload.get("analysis_ir") if isinstance(payload.get("analysis_ir"), dict) else payload
+    delta = payload.get("delta") if isinstance(payload.get("delta"), dict) else {}
+    candidates = [
+        delta.get("raw_user_goal") if isinstance(delta, dict) else None,
+        analysis_ir.get("normalized_goal") if isinstance(analysis_ir, dict) else None,
+        analysis_ir.get("semantic_digest") if isinstance(analysis_ir, dict) else None,
+    ]
+    for candidate in candidates:
+        cleaned = str(candidate or "").strip()
+        if cleaned and not _looks_like_internal_payload(cleaned):
+            return cleaned
+    return ""
+
+
+def _clean_public_text(value: Any, fallback: str = "", limit: int = 260) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return fallback
+    if _looks_like_internal_payload(text):
+        text = _extract_public_goal_from_internal_payload(text) or fallback or "请查看生成的统计表和图表。"
+    text = " ".join(text.split())
+    if limit > 0 and len(text) > limit:
+        return text[:limit].rstrip() + "..."
+    return text
+
+
+def _clean_public_list(value: Any, fallback: list[str] | None = None, limit: int = 220) -> list[str]:
+    raw_items = _as_string_list(value)
+    cleaned: list[str] = []
+    for item in raw_items:
+        text = _clean_public_text(item, "", limit=limit)
+        if text and text not in cleaned:
+            cleaned.append(text)
+    if cleaned:
+        return cleaned
+    return list(fallback or [])
+
+
+def _sanitize_outline_for_ppt(
+    outline: list[dict[str, Any]],
+    chart_paths: list[Path],
+    explanation: dict[str, Any],
+    analysis_result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not outline:
+        return []
+    sanitized: list[dict[str, Any]] = []
+    summary_fallback = _clean_public_text(
+        explanation.get("summary") or analysis_result.get("summary") or "请查看生成的统计表和图表。",
+        "请查看生成的统计表和图表。",
+        limit=220,
+    )
+    allowed_chart_names = {path.name: str(path) for path in chart_paths}
+    allowed_chart_paths = {str(path): str(path) for path in chart_paths}
+    for index, item in enumerate(outline[:8], start=1):
+        title = _clean_public_text(item.get("title"), f"第 {index} 页", limit=48)
+        bullets = _clean_public_list(item.get("bullets"), fallback=[summary_fallback], limit=180)[:6]
+        if not bullets:
+            bullets = [summary_fallback]
+        raw_chart = str(item.get("chart") or "").strip()
+        chart = ""
+        if raw_chart:
+            resolved = _resolve_chart_path(raw_chart, chart_paths[0].parent if chart_paths else Path.cwd())
+            if resolved is not None and resolved.exists():
+                chart = str(resolved)
+            else:
+                chart = allowed_chart_paths.get(raw_chart) or allowed_chart_names.get(Path(raw_chart.replace("\\", "/")).name, "")
+        elif index == 1 and chart_paths:
+            chart = str(chart_paths[0])
+        sanitized.append({"page": index, "title": title, "subtitle": "分析结论", "bullets": bullets, "chart": chart})
+    return sanitized
+
+
 def _resolve_chart_paths(
     chart_paths: list[str],
     analysis_result: dict[str, Any],
@@ -369,17 +468,19 @@ def _build_explanation_report(
     chart_paths: list[Path],
     report_dir: Path,
 ) -> str:
-    title = (
+    title = _clean_public_text(
         _deep_get(analysis_result, ["analysis_plan", "analysis_goal"])
         or _deep_get(analysis_result, ["analysis_plan", "task_name"])
         or explanation.get("title")
-        or "数据分析报告"
+        or "数据分析报告",
+        "数据分析报告",
+        limit=80,
     )
     lines = [
         f"# {title}",
         "",
         "## 摘要",
-        str(explanation.get("summary") or "暂无摘要。"),
+        _clean_public_text(explanation.get("summary"), "暂无摘要。", limit=600),
         "",
         "## 关键发现",
         *_build_explanation_items(explanation.get("key_findings")),
@@ -398,7 +499,7 @@ def _build_explanation_report(
         lines.extend(["", "## PPT 大纲"])
         for index, slide in enumerate(outline, start=1):
             lines.append(f"### {index}. {slide.get('title', '未命名页面')}")
-            for bullet in _as_string_list(slide.get("bullets")):
+            for bullet in _clean_public_list(slide.get("bullets"), limit=360):
                 lines.append(f"- {bullet}")
             chart = str(slide.get("chart") or "")
             if chart:
@@ -414,7 +515,7 @@ def _has_explanation_content(explanation: dict[str, Any]) -> bool:
 
 
 def _build_explanation_items(value: Any) -> list[str]:
-    items = _as_string_list(value)
+    items = _clean_public_list(value, limit=360)
     if not items:
         return ["- 暂无。"]
     return [f"- {item}" for item in items]
@@ -837,27 +938,14 @@ def _ppt_slide_payload(
 ) -> list[dict[str, Any]]:
     outline = _as_outline(explanation.get("ppt_outline")) if isinstance(explanation, dict) else []
     slides: list[dict[str, Any]] = []
-    if outline:
-        for index, item in enumerate(outline[:8], start=1):
-            chart = str(item.get("chart") or "")
-            if not chart and index <= len(chart_paths):
-                chart = str(chart_paths[index - 1])
-            slides.append(
-                {
-                    "page": index,
-                    "title": str(item.get("title") or f"第 {index} 页"),
-                    "subtitle": str(item.get("subtitle") or item.get("section_label") or "分析结论"),
-                    "bullets": _as_string_list(item.get("bullets")),
-                    "chart": chart,
-                }
-            )
-        if slides:
-            return slides
+    sanitized_outline = _sanitize_outline_for_ppt(outline, chart_paths, explanation if isinstance(explanation, dict) else {}, analysis_result)
+    if sanitized_outline:
+        return sanitized_outline
 
-    summary = str(explanation.get("summary") or analysis_result.get("summary") or "数据分析结果") if isinstance(explanation, dict) else "数据分析结果"
-    findings = _as_string_list(explanation.get("key_findings")) if isinstance(explanation, dict) else _build_generic_findings(analysis_result)
-    recommendations = _as_string_list(explanation.get("recommendations")) if isinstance(explanation, dict) else []
-    limitations = _as_string_list(explanation.get("limitations")) if isinstance(explanation, dict) else []
+    summary = _clean_public_text(explanation.get("summary") or analysis_result.get("summary") or "数据分析结果", "数据分析结果", limit=220) if isinstance(explanation, dict) else "数据分析结果"
+    findings = _clean_public_list(explanation.get("key_findings"), limit=180) if isinstance(explanation, dict) else _clean_public_list(_build_generic_findings(analysis_result), limit=180)
+    recommendations = _clean_public_list(explanation.get("recommendations"), limit=180) if isinstance(explanation, dict) else []
+    limitations = _clean_public_list(explanation.get("limitations"), limit=180) if isinstance(explanation, dict) else []
     slides = [
         {
             "page": 1,
@@ -896,14 +984,16 @@ def _ppt_slide_payload(
 
 def _slide_chart_path(slide_data: dict[str, Any], chart_paths: list[Path]) -> Path | None:
     raw = str(slide_data.get("chart") or "").strip()
-    if raw:
-        path = _resolve_chart_path(raw, chart_paths[0].parent if chart_paths else Path.cwd())
-        if path is not None:
-            return path
-        raw_name = Path(raw.replace("\\", "/")).name
-        for chart_path in chart_paths:
-            if chart_path.name == raw_name:
-                return chart_path
-    return chart_paths[0] if chart_paths else None
+    if not raw:
+        return None
+    path = _resolve_chart_path(raw, chart_paths[0].parent if chart_paths else Path.cwd())
+    if path is not None:
+        return path
+    raw_name = Path(raw.replace("\\", "/")).name
+    for chart_path in chart_paths:
+        if chart_path.name == raw_name:
+            return chart_path
+    return None
+
 
 

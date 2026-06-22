@@ -564,7 +564,7 @@ def main():
     df["__metric__"] = _safe_numeric(df[metric]).fillna(0)
     charts = []
     findings = []
-    limitations = ["当前自动脚本用于降低重复修复次数，输出为稳健的趋势和分组相关信号，不能证明确定因果。"]
+    limitations = ["当前结果为基于现有数据的趋势和分组相关信号，不能证明确定因果。"]
     trend = {{}}
     if DATE_COLUMN and DATE_COLUMN in df.columns:
         parsed = pd.to_datetime(df[DATE_COLUMN], errors="coerce")
@@ -1285,5 +1285,6 @@ def _find_column(columns: list[str], keywords: tuple[str, ...]) -> str | None:
 def _json_string_literal(data: dict[str, Any]) -> str:
     json_text = json.dumps(data, ensure_ascii=False)
     return repr(json_text)
+
 
 

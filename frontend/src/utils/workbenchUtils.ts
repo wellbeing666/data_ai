@@ -1093,6 +1093,81 @@ export function isRecord(value: unknown): value is AnyRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function looksLikeInternalArtifactText(text: string): boolean {
+  const value = text || "";
+  return (
+    value.includes("Analysis IR + Delta JSON") ||
+    (value.includes('"analysis_ir"') && value.includes('"delta"')) ||
+    (value.includes('"schema_version"') && value.includes('"normalized_goal"') && value.includes('"semantic_digest"'))
+  );
+}
+
+function parseFirstJsonObject(text: string): Record<string, unknown> | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+  const source = text.slice(start);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          const parsed = JSON.parse(source.slice(0, index + 1));
+          return isRecord(parsed) ? parsed : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function extractPublicGoalFromInternalText(text: string): string {
+  const payload = parseFirstJsonObject(text);
+  if (!payload) return "";
+  const analysisIr = isRecord(payload.analysis_ir) ? payload.analysis_ir : payload;
+  const delta = isRecord(payload.delta) ? payload.delta : {};
+  const candidates = [
+    stringValue(delta.raw_user_goal, ""),
+    stringValue(analysisIr.normalized_goal, ""),
+    stringValue(analysisIr.semantic_digest, "")
+  ];
+  return candidates.find((item) => item && !looksLikeInternalArtifactText(item)) || "";
+}
+
+export function sanitizePublicArtifactText(value: unknown, fallback = "", limit = 260): string {
+  let text = typeof value === "string" ? value : value === null || value === undefined ? "" : String(value);
+  text = text.replace(/\s+/g, " ").trim();
+  if (!text) return fallback;
+  if (looksLikeInternalArtifactText(text)) {
+    text = extractPublicGoalFromInternalText(text) || fallback || "请查看生成的统计表和图表。";
+  }
+  text = text.replace(/\s+/g, " ").trim();
+  if (limit > 0 && text.length > limit) {
+    return `${text.slice(0, limit).trim()}...`;
+  }
+  return text;
+}
+
 export function toExplanationResult(predictionExplanation: PredictionExplanationResult): ExplanationResult {
   return normalizeExplanationResult({
     summary: predictionExplanation.summary,
@@ -1106,7 +1181,7 @@ export function toExplanationResult(predictionExplanation: PredictionExplanation
 
 export function normalizeExplanationResult(value: Partial<ExplanationResult> | null | undefined): ExplanationResult {
   return {
-    summary: typeof value?.summary === "string" ? value.summary : "",
+    summary: sanitizePublicArtifactText(typeof value?.summary === "string" ? value.summary : "", "", 600),
     key_findings: normalizeStringArray(value?.key_findings),
     chart_explanations: Array.isArray(value?.chart_explanations) ? value.chart_explanations : [],
     recommendations: normalizeStringArray(value?.recommendations),
@@ -1124,16 +1199,16 @@ export function normalizePptOutline(value: unknown): ExplanationResult["ppt_outl
       if (typeof item === "string") {
         const [title, ...rest] = item.split(/[：:]/);
         return {
-          title: title.trim() || `第 ${index + 1} 页`,
-          bullets: [rest.join("：").trim() || item.trim()]
+          title: sanitizePublicArtifactText(title.trim(), `第 ${index + 1} 页`, 80),
+          bullets: [sanitizePublicArtifactText(rest.join("：").trim() || item.trim(), "请查看生成的统计表和图表。", 220)]
         };
       }
       if (item && typeof item === "object") {
         const record = item as Record<string, unknown>;
-        const bullets = normalizeStringArray(record.bullets);
-        const fallbackText = formatListItem(record.content ?? record.description ?? record.text);
+        const bullets = normalizeStringArray(record.bullets).map((bullet) => sanitizePublicArtifactText(bullet, "", 220)).filter(Boolean);
+        const fallbackText = sanitizePublicArtifactText(formatListItem(record.content ?? record.description ?? record.text), "", 220);
         return {
-          title: stringValue(record.title, `第 ${index + 1} 页`),
+          title: sanitizePublicArtifactText(stringValue(record.title, `第 ${index + 1} 页`), `第 ${index + 1} 页`, 80),
           bullets: bullets.length ? bullets : fallbackText ? [fallbackText] : [],
           chart: typeof record.chart === "string" ? record.chart : undefined
         };
@@ -1147,7 +1222,7 @@ export function normalizeStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.map((item) => formatListItem(item)).filter(Boolean);
+  return value.map((item) => sanitizePublicArtifactText(formatListItem(item), "", 360)).filter(Boolean);
 }
 
 export function formatListItem(value: unknown): string {
@@ -1155,7 +1230,7 @@ export function formatListItem(value: unknown): string {
     return "";
   }
   if (typeof value === "string") {
-    return localizeUiText(value.trim());
+    return sanitizePublicArtifactText(localizeUiText(value.trim()), "", 360);
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
@@ -1525,6 +1600,7 @@ function lastItem<T>(items: T[] | undefined): T | undefined {
   }
   return items[items.length - 1];
 }
+
 
 
 

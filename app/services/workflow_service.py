@@ -406,7 +406,6 @@ def refine_workflow_chart(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前任务缺少数据集信息。")
 
     workflow_type = str(status_data.get("workflow_type") or _workflow_type_for_job_dir(job_dir))
-    owner_user_id = str(status_data.get("owner_user_id") or "") or None
     result_filename = "prediction_result.json" if workflow_type == PREDICTION_TASK_TYPE else "analysis_result.json"
     result_payload = _read_json_if_exists(job_dir / result_filename) or {}
     dataset_profile = _read_json_if_exists(job_dir / "dataset_profile.json") or {}
@@ -416,6 +415,12 @@ def refine_workflow_chart(
 
     input_file, _ = load_uploaded_dataset(dataset_id)
     original_script = source_script_path.read_text(encoding="utf-8")
+    refinements_dir = job_dir / "chart_refinements"
+    refinements_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    execution_output_dir = (JOB_ROOT / f"{job_id}_chart_refine_{timestamp}").resolve()
+    _seed_chart_refinement_workspace(job_dir=job_dir, execution_output_dir=execution_output_dir)
+
     analysis_ir = _read_json_if_exists(job_dir / ANALYSIS_IR_FILENAME) or {}
     compiled_instruction = render_analysis_ir_for_agent(
         analysis_ir,
@@ -423,7 +428,7 @@ def refine_workflow_chart(
     ) if analysis_ir else instruction
     refined_script = create_refined_chart_script(
         input_file=str(input_file.resolve()),
-        output_dir=str(job_dir),
+        output_dir=str(execution_output_dir.resolve()),
         original_script=original_script,
         target_chart_path=chart_path,
         instruction=compiled_instruction,
@@ -432,16 +437,13 @@ def refine_workflow_chart(
         workflow_type=workflow_type,
     )
 
-    refinements_dir = job_dir / "chart_refinements"
-    refinements_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     refined_script_path = refinements_dir / f"refined_chart_{timestamp}.py.txt"
     refined_script_path.write_text(refined_script, encoding="utf-8")
 
     safety_issues = validate_script_static_safety(
         refined_script_path,
         input_file=input_file.resolve(),
-        output_dir=job_dir,
+        output_dir=execution_output_dir.resolve(),
     )
     if safety_issues:
         result = {
@@ -459,27 +461,33 @@ def refine_workflow_chart(
         _write_json(refinements_dir / f"refinement_result_{timestamp}.json", result)
         return result
 
-    before_chart_files = _chart_file_set(job_dir)
     execution_result = LocalSubprocessSandboxExecutor().execute(
         generated_script_path=str(refined_script_path),
         input_file=str(input_file.resolve()),
-        output_dir=str(job_dir),
+        output_dir=str(execution_output_dir.resolve()),
         timeout_seconds=timeout_seconds,
-        owner_user_id=owner_user_id,
     )
+    copied_chart_path = None
     if execution_result.get("success"):
-        _replace_target_chart_if_new_chart_created(
+        copied_chart_path = _copy_refined_target_chart(
             job_dir=job_dir,
             job_id=job_id,
             chart_path=chart_path,
-            before_chart_files=before_chart_files,
+            execution_output_dir=execution_output_dir,
         )
     execution_result_path = refinements_dir / f"refinement_execution_{timestamp}.json"
     _write_json(execution_result_path, execution_result)
     chart_paths = _collect_chart_paths(job_dir, workflow_type)
+    succeeded = bool(execution_result.get("success") and copied_chart_path)
+    if execution_result.get("success") and not copied_chart_path:
+        message = "图表调整脚本未生成可用图表，请修改要求后重试。"
+    elif succeeded:
+        message = "图表已按要求重新渲染。"
+    else:
+        message = "图表调整脚本执行失败，请修改要求后重试。"
     result = {
-        "success": bool(execution_result.get("success")),
-        "message": "图表已按要求重新渲染。" if execution_result.get("success") else "图表调整脚本执行失败，请修改要求后重试。",
+        "success": succeeded,
+        "message": message,
         "job_id": job_id,
         "chart_path": chart_path,
         "instruction": instruction,
@@ -490,6 +498,10 @@ def refine_workflow_chart(
         "safety_issues": [],
     }
     _write_json(refinements_dir / f"refinement_result_{timestamp}.json", result)
+    try:
+        shutil.rmtree(execution_output_dir, ignore_errors=True)
+    except OSError:
+        pass
     return result
 
 
@@ -1925,6 +1937,8 @@ def _follow_up_artifacts(job_dir: Path) -> dict[str, Any]:
 
 def _build_follow_up_answer(question: str, artifacts: dict[str, Any], status_data: dict[str, Any], compiled_query: str | None = None) -> str:
     fallback = _build_rule_follow_up_answer(question, artifacts)
+    if _is_action_recommendation_question(question):
+        return fallback
     prompt_payload = {
         "question": question,
         "compiled_query": compiled_query or question,
@@ -1947,8 +1961,10 @@ def _build_follow_up_answer(question: str, artifacts: dict[str, Any], status_dat
         )
     except Exception:
         return fallback
-    return _format_follow_up_answer(result) or fallback
-
+    formatted = _format_follow_up_answer(result)
+    if _is_low_value_follow_up_answer(formatted, fallback):
+        return fallback
+    return formatted
 
 def _format_follow_up_answer(result: Any) -> str:
     if isinstance(result, str):
@@ -1972,10 +1988,14 @@ def _format_follow_up_answer(result: Any) -> str:
 
 
 def _build_rule_follow_up_answer(question: str, artifacts: dict[str, Any]) -> str:
+    structured_answer = _build_structured_follow_up_answer(question, artifacts)
+    if structured_answer:
+        return structured_answer
+
     snippets = _search_artifact_snippets(question, artifacts, limit=5)
     if snippets:
         details = "；".join(f"{item['text']}（{item['source']}）" for item in snippets)
-        return f"针对“{question}”，现有分析产物中最相关的线索是：{details}。这些线索用于定位可能原因或相关信号，仍需要结合原始业务背景和后续验证判断。"
+        return f"针对“{question}”，可直接引用的分析线索是：{details}。这些线索只能用于形成可能原因或相关信号，仍需结合业务背景验证。"
 
     explanation = artifacts.get("explanation.json") or artifacts.get("prediction_explanation.json") or {}
     recommendations = _string_list(explanation.get("recommendations"))[:4] if isinstance(explanation, dict) else []
@@ -1983,6 +2003,359 @@ def _build_rule_follow_up_answer(question: str, artifacts: dict[str, Any]) -> st
     advice = "；".join(recommendations or ["建议在证据链中核对对应分组表、计算字段和图表后再决策。"])
     return f"{summary} 针对“{question}”，当前结构化产物中没有找到更细的直接证据。建议重点查看：{advice}"
 
+
+def _build_structured_follow_up_answer(question: str, artifacts: dict[str, Any]) -> str:
+    if _is_action_recommendation_question(question):
+        answer = _build_action_recommendation_answer(question, artifacts)
+        if answer:
+            return answer
+    if _looks_like_sales_decline_follow_up(question, artifacts):
+        answer = _build_sales_decline_diagnostic_answer(question, artifacts)
+        if answer:
+            return answer
+    return ""
+
+
+def _is_action_recommendation_question(question: str) -> bool:
+    normalized = str(question or "")
+    return any(keyword in normalized for keyword in ("行动建议", "建议动作", "业务负责人", "负责人", "怎么做", "下一步", "优先做"))
+
+
+def _looks_like_sales_decline_follow_up(question: str, artifacts: dict[str, Any]) -> bool:
+    normalized = str(question or "").lower()
+    if any(keyword in normalized for keyword in ("销量", "销售额", "销售", "下降", "下滑", "decline", "sales")):
+        return True
+    result = _primary_analysis_result(artifacts)
+    task_type = str(result.get("task_type") or result.get("analysis_type") or "") if isinstance(result, dict) else ""
+    return task_type == "sales_decline_analysis"
+
+
+def _build_action_recommendation_answer(question: str, artifacts: dict[str, Any]) -> str:
+    sales_brief = _extract_sales_decline_brief(artifacts)
+    if sales_brief:
+        recommendation = _compose_sales_action_recommendation(sales_brief)
+        if recommendation:
+            return recommendation
+
+    explanation = artifacts.get("explanation.json") or artifacts.get("prediction_explanation.json") or {}
+    recommendations = _string_list(explanation.get("recommendations")) if isinstance(explanation, dict) else []
+    limitations = _collect_limitations(artifacts)
+    if recommendations:
+        limitation_text = "；".join(limitations[:2]) if limitations else "当前结论仍需结合业务背景验证，不能直接外推为确定因果。"
+        return f"建议业务负责人优先执行：{recommendations[0]} 限制说明：{limitation_text}"
+    return ""
+
+
+def _build_sales_decline_diagnostic_answer(question: str, artifacts: dict[str, Any]) -> str:
+    brief = _extract_sales_decline_brief(artifacts)
+    if not brief:
+        return ""
+    trend_text = _sales_trend_sentence(brief)
+    contributor_text = _sales_contributor_sentence(brief)
+    limitation_text = _sales_limitation_sentence(brief)
+    parts = [part for part in (trend_text, contributor_text, limitation_text) if part]
+    if not parts:
+        return ""
+    return " ".join(parts)
+
+
+def _compose_sales_action_recommendation(brief: dict[str, Any]) -> str:
+    metric = str(brief.get("metric") or "销售指标")
+    trend = brief.get("trend") if isinstance(brief.get("trend"), dict) else {}
+    contributors = brief.get("contributors") if isinstance(brief.get("contributors"), list) else []
+    primary = contributors[0] if contributors else {}
+
+    scope = "当前销售下降信号"
+    if trend.get("start_period") and trend.get("end_period"):
+        scope = f"{trend.get('start_period')} 至 {trend.get('end_period')} 的{metric}变化"
+    elif metric:
+        scope = f"当前{metric}变化"
+
+    trend_piece = ""
+    if _as_float(trend.get("delta_pct")) is not None:
+        trend_piece = f"整体变化约 {_format_percent(_as_float(trend.get('delta_pct')), signed=True)}"
+    elif _as_float(trend.get("delta")) is not None:
+        trend_piece = f"整体变化量约 {_format_number(_as_float(trend.get('delta')), signed=True)}"
+
+    if primary:
+        focus = f"优先复核{primary.get('dimension')}={primary.get('label')}"
+        change = _format_contributor_change(primary)
+        if change:
+            focus += f"（{change}）"
+    else:
+        focus = "优先复核下降更明显的地区、渠道或商品分组"
+
+    other = ""
+    if len(contributors) > 1:
+        other_labels = [f"{item.get('dimension')}={item.get('label')}" for item in contributors[1:3] if item.get("dimension") and item.get("label")]
+        if other_labels:
+            other = "，并同步查看" + "、".join(other_labels)
+
+    limitation_text = _sales_limitation_sentence(brief) or "限制说明：当前数据只能提供相关信号和待验证线索，不能单独证明确定因果。"
+    trend_prefix = scope + (f"（{trend_piece}）" if trend_piece else "")
+    return (
+        f"建议业务负责人以{trend_prefix}为专项排查入口：{focus}{other}，"
+        f"围绕库存、价格/折扣、渠道活动、流量投放和竞品变化做一轮可验证复盘，并把输出沉淀为待验证假设与责任人。"
+        f" {limitation_text}"
+    )
+
+
+def _extract_sales_decline_brief(artifacts: dict[str, Any]) -> dict[str, Any]:
+    result = _primary_analysis_result(artifacts)
+    if not isinstance(result, dict):
+        return {}
+    task_type = str(result.get("task_type") or result.get("analysis_type") or "")
+    if task_type and task_type != "sales_decline_analysis" and not result.get("trend") and not result.get("contribution_tables"):
+        return {}
+
+    metric = (
+        result.get("metric_column")
+        or result.get("target_metric")
+        or _deep_first(result, ("metric", "metric_name", "target_column"))
+        or "销售指标"
+    )
+    trend = result.get("trend") if isinstance(result.get("trend"), dict) else {}
+    contributors = _extract_sales_contributors(result)
+    limitations = _collect_limitations(artifacts)
+    findings = _string_list(result.get("findings")) or _string_list(result.get("key_findings"))
+    recommendations = _string_list(result.get("recommendations"))
+    return {
+        "metric": str(metric),
+        "trend": trend,
+        "contributors": contributors,
+        "limitations": limitations,
+        "findings": findings,
+        "recommendations": recommendations,
+    }
+
+
+def _primary_analysis_result(artifacts: dict[str, Any]) -> dict[str, Any]:
+    for name in ("analysis_result.json", "report_data.json", "prediction_result.json"):
+        value = artifacts.get(name)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _extract_sales_contributors(result: dict[str, Any]) -> list[dict[str, Any]]:
+    tables = result.get("contribution_tables")
+    rows: list[dict[str, Any]] = []
+    if isinstance(tables, dict):
+        for dimension, table_rows in tables.items():
+            if not isinstance(table_rows, list):
+                continue
+            for row in table_rows:
+                if not isinstance(row, dict):
+                    continue
+                label = row.get(str(dimension))
+                if label is None:
+                    label = _first_dimension_value(row, exclude={"start_value", "end_value", "change", "change_pct", "value"})
+                rows.append({
+                    "dimension": str(dimension),
+                    "label": str(label) if label is not None else "",
+                    "start_value": _as_float(row.get("start_value")),
+                    "end_value": _as_float(row.get("end_value")),
+                    "change": _as_float(row.get("change")),
+                    "change_pct": _as_float(row.get("change_pct")),
+                    "value": _as_float(row.get("value")),
+                })
+    elif isinstance(tables, list):
+        for row in tables:
+            if not isinstance(row, dict):
+                continue
+            dimension = str(row.get("dimension") or row.get("field") or "分组")
+            label = row.get("label") or row.get("name") or row.get("category") or _first_dimension_value(row, exclude={"start_value", "end_value", "change", "change_pct", "value"})
+            rows.append({
+                "dimension": dimension,
+                "label": str(label) if label is not None else "",
+                "start_value": _as_float(row.get("start_value")),
+                "end_value": _as_float(row.get("end_value")),
+                "change": _as_float(row.get("change")),
+                "change_pct": _as_float(row.get("change_pct")),
+                "value": _as_float(row.get("value")),
+            })
+
+    rows = [row for row in rows if row.get("label")]
+    rows.sort(key=lambda item: (item.get("change") is None, item.get("change") if item.get("change") is not None else 0))
+    return rows[:5]
+
+
+def _first_dimension_value(row: dict[str, Any], *, exclude: set[str]) -> Any:
+    for key, value in row.items():
+        if key not in exclude and value not in (None, ""):
+            return value
+    return None
+
+
+def _sales_trend_sentence(brief: dict[str, Any]) -> str:
+    metric = str(brief.get("metric") or "销售指标")
+    trend = brief.get("trend") if isinstance(brief.get("trend"), dict) else {}
+    start_period = trend.get("start_period")
+    end_period = trend.get("end_period")
+    start_value = _as_float(trend.get("start_value"))
+    end_value = _as_float(trend.get("end_value"))
+    delta = _as_float(trend.get("delta"))
+    delta_pct = _as_float(trend.get("delta_pct"))
+    if start_period and end_period:
+        pieces = [f"{metric}从 {start_period} 到 {end_period}"]
+        if start_value is not None and end_value is not None:
+            pieces.append(f"由 {_format_number(start_value)} 变为 {_format_number(end_value)}")
+        if delta is not None:
+            pieces.append(f"变化量 {_format_number(delta, signed=True)}")
+        if delta_pct is not None:
+            pieces.append(f"变化幅度 {_format_percent(delta_pct, signed=True)}")
+        return "，".join(pieces) + "，这是需要优先解释的总体变化。"
+    findings = _string_list(brief.get("findings"))
+    if findings:
+        return findings[0]
+    return ""
+
+
+def _sales_contributor_sentence(brief: dict[str, Any]) -> str:
+    contributors = brief.get("contributors") if isinstance(brief.get("contributors"), list) else []
+    if not contributors:
+        findings = _string_list(brief.get("findings"))[:2]
+        return " ".join(findings) if findings else ""
+    top = contributors[:3]
+    details = []
+    for item in top:
+        label = f"{item.get('dimension')}={item.get('label')}"
+        change = _format_contributor_change(item)
+        details.append(f"{label}（{change}）" if change else label)
+    return "分组拆解显示，优先排查方向包括：" + "、".join(details) + "。这些是下降相关信号，不代表已经证明因果。"
+
+
+def _sales_limitation_sentence(brief: dict[str, Any]) -> str:
+    limitations = _string_list(brief.get("limitations"))
+    if limitations:
+        selected = []
+        for item in limitations:
+            text = str(item).strip()
+            if text and text not in selected:
+                selected.append(text)
+            if len(selected) >= 2:
+                break
+        if selected:
+            return "限制说明：" + "；".join(item.rstrip("。；; ") for item in selected) + "。"
+    return "限制说明：当前数据只能提供相关信号和待验证线索，不能单独证明确定因果；需要补充业务事件、库存、价格、投放或更长时间序列进行验证。"
+
+
+def _format_contributor_change(item: dict[str, Any]) -> str:
+    pieces: list[str] = []
+    change = _as_float(item.get("change"))
+    change_pct = _as_float(item.get("change_pct"))
+    if change is not None:
+        pieces.append(f"变化量 {_format_number(change, signed=True)}")
+    if change_pct is not None:
+        pieces.append(f"变化幅度 {_format_percent(change_pct, signed=True)}")
+    if not pieces and _as_float(item.get("value")) is not None:
+        pieces.append(f"当前值 {_format_number(_as_float(item.get('value')))}")
+    return "，".join(pieces)
+
+
+def _collect_limitations(artifacts: dict[str, Any]) -> list[str]:
+    collected: list[str] = []
+    for name in ("analysis_result.json", "report_data.json", "explanation.json", "quality_review.json", "prediction_result.json", "prediction_explanation.json"):
+        value = artifacts.get(name)
+        if not isinstance(value, dict):
+            continue
+        for key in ("limitations", "risks", "warnings"):
+            for item in _string_list(value.get(key)):
+                text = _clean_follow_up_limitation(str(item).strip())
+                if text and text not in collected:
+                    collected.append(text)
+        if name == "quality_review.json":
+            for issue in value.get("issues") if isinstance(value.get("issues"), list) else []:
+                if isinstance(issue, dict):
+                    text = _clean_follow_up_limitation(str(issue.get("message") or issue.get("suggestion") or "").strip())
+                    if text and text not in collected:
+                        collected.append(text)
+    if not any("因果" in item or "相关" in item for item in collected):
+        collected.append("当前结果只能说明相关信号和可能原因，不能证明确定因果关系")
+    return collected
+
+
+def _clean_follow_up_limitation(text: str) -> str:
+    if not text:
+        return ""
+    replacements = {
+        "当前自动脚本用于降低重复修复次数，输出为稳健的趋势和分组相关信号，不能证明确定因果。": "当前结果为基于现有数据的趋势和分组相关信号，不能证明确定因果。",
+        "当前自动脚本用于降低重复修复次数": "当前分析",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    return text.strip()
+
+
+def _deep_first(value: Any, keys: tuple[str, ...]) -> Any:
+    if isinstance(value, dict):
+        for key in keys:
+            if value.get(key) not in (None, ""):
+                return value.get(key)
+        for item in value.values():
+            found = _deep_first(item, keys)
+            if found not in (None, ""):
+                return found
+    elif isinstance(value, list):
+        for item in value[:20]:
+            found = _deep_first(item, keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace("%", "")
+    if not text:
+        return None
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    if isinstance(value, str) and "%" in value:
+        return number / 100
+    return number
+
+
+def _format_number(value: float | None, *, signed: bool = False) -> str:
+    if value is None:
+        return ""
+    sign = "+" if signed and value > 0 else ""
+    abs_value = abs(value)
+    if abs_value >= 1000:
+        return f"{sign}{value:,.0f}"
+    if abs_value >= 100:
+        return f"{sign}{value:.1f}"
+    if abs_value >= 10:
+        return f"{sign}{value:.2f}".rstrip("0").rstrip(".")
+    return f"{sign}{value:.3f}".rstrip("0").rstrip(".")
+
+
+def _format_percent(value: float | None, *, signed: bool = False) -> str:
+    if value is None:
+        return ""
+    percent = value if abs(value) > 1 else value * 100
+    sign = "+" if signed and percent > 0 else ""
+    return f"{sign}{percent:.2f}%"
+
+
+def _is_low_value_follow_up_answer(answer: str, fallback: str) -> bool:
+    normalized = str(answer or "").strip()
+    if not normalized:
+        return True
+    if len(normalized) < 24:
+        return True
+    internal_tokens = ("Analysis IR + Delta JSON", "analysis_ir", "controller_plan.json", "debate_reflection.json")
+    if any(token in normalized for token in internal_tokens) and fallback and normalized != fallback:
+        return True
+    vague_phrases = ("当前结构化产物中没有找到更细的直接证据", "当前问题需要进一步查看分析产物")
+    if any(phrase in normalized for phrase in vague_phrases) and fallback and normalized != fallback:
+        return True
+    return False
 
 def _compact_for_prompt(value: Any, *, depth: int = 0, max_depth: int = 5, max_items: int = 12, max_string: int = 1200) -> Any:
     if depth >= max_depth:
@@ -2475,6 +2848,67 @@ def _chart_file_set(job_dir: Path) -> set[Path]:
     return {path.resolve() for path in charts_dir.glob("*.png") if path.is_file()}
 
 
+def _seed_chart_refinement_workspace(*, job_dir: Path, execution_output_dir: Path) -> None:
+    execution_output_dir.mkdir(parents=True, exist_ok=True)
+    for filename in (
+        "analysis_result.json",
+        "prediction_result.json",
+        "report_data.json",
+        "dataset_profile.json",
+        "analysis_plan.json",
+        "prediction_plan.json",
+        "hypothesis_plan.json",
+        "controller_plan.json",
+        ANALYSIS_IR_FILENAME,
+    ):
+        source = job_dir / filename
+        if not source.exists() or not source.is_file():
+            continue
+        target = execution_output_dir / filename
+        try:
+            shutil.copyfile(source, target)
+        except OSError:
+            continue
+
+
+def _copy_refined_target_chart(
+    *,
+    job_dir: Path,
+    job_id: str,
+    chart_path: str,
+    execution_output_dir: Path,
+) -> str | None:
+    try:
+        target_file = _resolve_chart_file(job_dir, job_id, chart_path).resolve()
+    except HTTPException:
+        return None
+
+    charts_dir = execution_output_dir / "charts"
+    if not charts_dir.exists():
+        return None
+
+    candidates = [
+        path
+        for path in charts_dir.glob("*.png")
+        if path.is_file() and path.stat().st_size > 0
+    ]
+    if not candidates:
+        return None
+
+    same_name = [path for path in candidates if path.name == target_file.name]
+    if same_name:
+        refined_file = max(same_name, key=lambda path: path.stat().st_mtime if path.exists() else 0.0)
+    else:
+        refined_file = max(candidates, key=lambda path: path.stat().st_mtime if path.exists() else 0.0)
+
+    try:
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(refined_file, target_file)
+    except OSError:
+        return None
+    return _chart_storage_path(job_dir, target_file)
+
+
 def _replace_target_chart_if_new_chart_created(
     *,
     job_dir: Path,
@@ -2844,6 +3278,8 @@ def _event_list(value: Any) -> list[dict[str, Any]]:
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
 
 
 

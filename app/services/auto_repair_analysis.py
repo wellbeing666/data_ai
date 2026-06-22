@@ -803,7 +803,7 @@ def run_auto_repair_analysis_job(
         events.append(create_event("debate_matrix", "success", "Debate Matrix 已收敛为可交付给解释 Agent 的共识。"))
 
         explanation = create_explanation(
-            user_goal=agent_goal,
+            user_goal=user_goal,
             dataset_profile=dataset_profile,
             analysis_result=analysis_result_data,
             chart_paths=chart_paths,
@@ -1418,6 +1418,7 @@ def _build_static_safety_failure_result(
             "safety_issues": issues,
         },
     }
+
 
 
 
